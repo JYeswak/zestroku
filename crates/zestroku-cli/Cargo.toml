@@ -1,0 +1,15 @@
+[package]
+name = "zestroku-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zestroku-types = { path = "../zestroku-types" }
+zestroku-proto = { path = "../zestroku-proto" }
+zestroku-core = { path = "../zestroku-core" }
+tokio = { workspace = true }
+
+[[bin]]
+name = "zestroku"
+path = "src/main.rs"

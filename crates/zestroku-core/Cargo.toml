@@ -1,0 +1,10 @@
+[package]
+name = "zestroku-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zestroku-types = { path = "../zestroku-types" }
+zestroku-proto = { path = "../zestroku-proto" }
+thiserror = { workspace = true }
