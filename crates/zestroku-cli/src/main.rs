@@ -11,9 +11,10 @@ use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_proto::{
     Command, EcpGate, Transport, parse_active_app, parse_device_info, parse_ecp_response, query,
 };
-use zestroku_types::{AccessTier, Device, Error};
+use zestroku_types::Error;
 
 mod devices;
+mod mutate;
 mod transport;
 
 use transport::AsupersyncTransport;
@@ -25,24 +26,13 @@ fn usage() -> &'static str {
      \x20   zestroku devices                     list discovered devices\n\
      \x20   zestroku info <host>                 device-info (Open tier)\n\
      \x20   zestroku active-app <host>           focused app (Open tier)\n\
-     \x20   zestroku key <host> <Key>            keypress (Permissive tier)\n\
+     \x20   zestroku key <host> <KEY> [--confirm <token>]   keypress (Permissive)\n\
+     \x20   zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)\n\
      \n\
+     Mutations are human-led: without --confirm they are refused locally\n\
+     (exit 4), logged to the action log as denied, and nothing is sent.\n\
      Tier behavior: Permissive-tier commands are refused locally (exit 3)\n\
      when the device's observed tier is Limited — no round-trip, no 403."
-}
-
-fn device_from_args(host: &str) -> Device {
-    // Skeleton: minimal device with observed Limited tier. The discovery
-    // (M1) and inventory store (M7 core) wire the real values in.
-    Device {
-        host: host.to_string(),
-        port: 8060,
-        model_name: String::new(),
-        model_number: String::new(),
-        software_version: String::new(),
-        is_tv: false,
-        access_tier: AccessTier::Open,
-    }
 }
 
 fn main() -> ExitCode {
@@ -116,17 +106,8 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Some("key") if args.len() == 3 => {
-            let host = args[1].clone();
-            let device = device_from_args(&host);
-            let cmd = zestroku_proto::keypress_raw(&args[2].to_uppercase());
-            if let Err(e) = zestroku_core::check_tier(&cmd, &device) {
-                eprintln!("zestroku: {e}");
-                return ExitCode::from(3);
-            }
-            eprintln!("zestroku: keypress requires the per-operation confirmation gate");
-            ExitCode::FAILURE
-        }
+        Some("launch") if args.len() >= 3 => mutate::run("launch", &args[1..]),
+        Some("key") if args.len() >= 3 => mutate::run("key", &args[1..]),
         _ => {
             eprintln!("{}", usage());
             ExitCode::from(2)

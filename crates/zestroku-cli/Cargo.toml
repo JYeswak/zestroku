@@ -10,6 +10,9 @@ zestroku-proto = { path = "../zestroku-proto" }
 zestroku-core = { path = "../zestroku-core" }
 asupersync = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [[bin]]
 name = "zestroku"
 path = "src/main.rs"
