@@ -59,5 +59,8 @@ fn get_commands_still_dispatch_without_any_gate() {
     let dir = tempfile::tempdir().unwrap();
     let (code, _stdout, stderr) = run(&["active-app", "127.0.0.1"], &dir.path().join("a.db"));
     assert_ne!(code, 3, "reads must not hit the tier wall: {stderr}");
-    assert_ne!(code, 4, "reads must not hit the confirmation gate: {stderr}");
+    assert_ne!(
+        code, 4,
+        "reads must not hit the confirmation gate: {stderr}"
+    );
 }

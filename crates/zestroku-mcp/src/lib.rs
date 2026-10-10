@@ -69,9 +69,12 @@ fn device_for(host: &str, tier: AccessTier) -> Device {
 fn build_command(kind: &str, target: &str) -> Result<Command, McpError> {
     match kind {
         "launch" => {
-            let app_id: u32 = target
-                .parse()
-                .map_err(|_| mcp_error(McpErrorCode::InvalidParams, format!("app id must be a number, got {target:?}")))?;
+            let app_id: u32 = target.parse().map_err(|_| {
+                mcp_error(
+                    McpErrorCode::InvalidParams,
+                    format!("app id must be a number, got {target:?}"),
+                )
+            })?;
             Ok(zestroku_proto::launch(app_id))
         }
         "key" => Ok(zestroku_proto::keypress_raw(&target.to_uppercase())),
@@ -184,8 +187,12 @@ impl ToolHandler for MutationTool {
             Ok("permissive") | Ok("Permissive") => AccessTier::Permissive,
             _ => AccessTier::Open,
         };
-        let store =
-            SqliteStore::open(&store_path()).map_err(|e| mcp_error(McpErrorCode::InternalError, format!("action log unavailable: {e}")))?;
+        let store = SqliteStore::open(&store_path()).map_err(|e| {
+            mcp_error(
+                McpErrorCode::InternalError,
+                format!("action log unavailable: {e}"),
+            )
+        })?;
         match decide(
             &store,
             self.kind,
@@ -209,9 +216,10 @@ impl ToolHandler for MutationTool {
                 McpErrorCode::InternalError,
                 "internal: non-POST reached the gate",
             )),
-            Err(e @ MutationError::Store(_)) => {
-                Err(mcp_error(McpErrorCode::InternalError, format!("action log: {e}")))
-            }
+            Err(e @ MutationError::Store(_)) => Err(mcp_error(
+                McpErrorCode::InternalError,
+                format!("action log: {e}"),
+            )),
         }
     }
 }
@@ -257,8 +265,12 @@ impl ToolHandler for RecentActionsTool {
             .and_then(|v| v.as_u64())
             .map(|v| (v as usize).min(self.limit))
             .unwrap_or(self.limit);
-        let store =
-            SqliteStore::open(&store_path()).map_err(|e| mcp_error(McpErrorCode::InternalError, format!("action log unavailable: {e}")))?;
+        let store = SqliteStore::open(&store_path()).map_err(|e| {
+            mcp_error(
+                McpErrorCode::InternalError,
+                format!("action log unavailable: {e}"),
+            )
+        })?;
         let mut rows: Vec<ActionRow> = store
             .list_actions()
             .map_err(|e| mcp_error(McpErrorCode::InternalError, format!("action log: {e}")))?;
@@ -369,7 +381,10 @@ mod tests {
         .expect("no gate error")
         .expect_err("non-numeric app id refuses as arg error");
         assert!(arg.0.contains("app id must be a number"));
-        assert!(store.list_actions().unwrap().is_empty(), "arg errors skip the gate");
+        assert!(
+            store.list_actions().unwrap().is_empty(),
+            "arg errors skip the gate"
+        );
     }
 
     #[test]

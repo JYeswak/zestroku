@@ -17,7 +17,7 @@ mod devices;
 mod mutate;
 mod transport;
 
-use transport::AsupersyncTransport;
+use transport::{AsupersyncTransport, send_selected};
 
 fn usage() -> &'static str {
     "zestroku — owner-interop control for Roku devices\n\
@@ -39,6 +39,12 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("devices") => devices::run(&args[1..]),
+        Some("--transport-probe") => {
+            // Test-only surface (transport.rs selector_follows_env): prints
+            // whether the std fallback is selected. Not documented usage.
+            println!("{}", transport::use_std_fallback());
+            ExitCode::SUCCESS
+        }
         None => {
             println!("{}", usage());
             ExitCode::from(2)
@@ -78,9 +84,8 @@ fn main() -> ExitCode {
                 }
             };
             match runtime.block_on(async {
-                let response = AsupersyncTransport
-                    .send(&device.host, device.port, &cmd)
-                    .await?;
+                let response =
+                    send_selected(AsupersyncTransport, &device.host, device.port, &cmd).await?;
                 let classification = parse_ecp_response(&response);
                 if classification.gate == EcpGate::Limited403 {
                     eprintln!("zestroku: device returned the verified Limited-mode 403 gate");

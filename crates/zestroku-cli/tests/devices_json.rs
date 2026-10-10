@@ -35,7 +35,13 @@ fn devices_json(devices: &[zestroku_types::Device], notes: &[String]) -> Value {
     })
 }
 
-fn fixture_device(host: &str, model: &str, num: &str, fw: &str, tv: bool) -> zestroku_types::Device {
+fn fixture_device(
+    host: &str,
+    model: &str,
+    num: &str,
+    fw: &str,
+    tv: bool,
+) -> zestroku_types::Device {
     zestroku_types::Device {
         host: host.into(),
         port: 8060,
@@ -80,7 +86,13 @@ fn dead_seed_note_is_machine_checkable() {
     // A seeds file may list a powered-off device: the note must split into
     // target ("host:port") + reason so a script can assert on either.
     let doc = devices_json(
-        &[fixture_device("192.0.2.10", "Roku Express 4K+", "3941X2", "15.2.4", false)],
+        &[fixture_device(
+            "192.0.2.10",
+            "Roku Express 4K+",
+            "3941X2",
+            "15.2.4",
+            false,
+        )],
         &["192.0.2.99:8060: device unreachable: connection refused".to_string()],
     );
     assert_eq!(doc["devices"].as_array().map(Vec::len), Some(1));

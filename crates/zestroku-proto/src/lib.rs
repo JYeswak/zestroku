@@ -192,10 +192,7 @@ pub fn parse_active_app(xml: &str) -> Result<ActiveApp> {
         // short form: name is the text between <app> and </app>
         block["<app>".len()..].trim().to_string()
     };
-    Ok(ActiveApp {
-        app_id,
-        name,
-    })
+    Ok(ActiveApp { app_id, name })
 }
 
 /// The subset of `<device-info>` fields the core models.

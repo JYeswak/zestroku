@@ -25,16 +25,14 @@ use zestroku_core::store::SqliteStore;
 use zestroku_proto::{Command, EcpGate, Transport, parse_active_app, parse_ecp_response, query};
 use zestroku_types::{AccessTier, Device};
 
-use crate::transport::AsupersyncTransport;
+use crate::transport::{AsupersyncTransport, send_selected};
 
 /// Audit trail location: the owner-LAN daemon DB. Overridable for tests.
 fn store_path() -> PathBuf {
     std::env::var_os("ZESTROKU_DB")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            let mut p = PathBuf::from(
-                std::env::var_os("HOME").unwrap_or_else(|| ".".into()),
-            );
+            let mut p = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| ".".into()));
             p.push(".local/state/zestroku/actions.db");
             p
         })
@@ -63,13 +61,16 @@ fn parse_opts(kind: &str, args: &[String]) -> std::result::Result<MutationOpts, 
     while let Some(a) = it.next() {
         match a.as_str() {
             "--confirm" => {
-                confirm =
-                    Some(it.next().ok_or("--confirm needs a token")?.clone());
+                confirm = Some(it.next().ok_or("--confirm needs a token")?.clone());
             }
             other => return Err(format!("unknown option {other}")),
         }
     }
-    Ok(MutationOpts { host, target, confirm })
+    Ok(MutationOpts {
+        host,
+        target,
+        confirm,
+    })
 }
 
 fn build_command(kind: &str, target: &str) -> std::result::Result<Command, String> {
@@ -147,9 +148,13 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
     };
     let host = device.host.clone();
     let before = runtime.block_on(async {
-        match AsupersyncTransport
-            .send(&host, device.port, &query("active-app"))
-            .await
+        match send_selected(
+            AsupersyncTransport,
+            &host,
+            device.port,
+            &query("active-app"),
+        )
+        .await
         {
             Ok(response) => parse_active_app(&response.body)
                 .map(|app| app.name)
@@ -164,7 +169,10 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         intent: &format!("{kind} {}", opts.target),
         before_state: &before,
     };
-    let confirmed = opts.confirm.as_deref().is_some_and(|t| !t.trim().is_empty());
+    let confirmed = opts
+        .confirm
+        .as_deref()
+        .is_some_and(|t| !t.trim().is_empty());
 
     let action_id = match authorize_mutation(&store, &device, &command, context, confirmed) {
         Ok(id) => id,
@@ -191,8 +199,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
 
     // Approved: dispatch, then record the wire outcome either way.
     let dispatch = runtime.block_on(async {
-        let response = AsupersyncTransport
-            .send(&device.host, device.port, &command)
+        let response = send_selected(AsupersyncTransport, &device.host, device.port, &command)
             .await
             .map_err(|e| e.to_string())?;
         let classification = parse_ecp_response(&response);
@@ -205,9 +212,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         Ok::<(), String>(())
     });
     let outcome = match &dispatch {
-        Ok(()) => format!(
-            "{kind} dispatched; after_state snapshot on next active-app read"
-        ),
+        Ok(()) => format!("{kind} dispatched; after_state snapshot on next active-app read"),
         Err(e) => format!("dispatch failed: {e}"),
     };
     if let Err(e) = finish_mutation(&store, action_id, &outcome) {

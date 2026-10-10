@@ -14,7 +14,7 @@ use zestroku_core::ssdp_io::discover;
 use zestroku_proto::{Transport, parse_device_info, query};
 use zestroku_types::{Device, Error, Result};
 
-use crate::transport::AsupersyncTransport;
+use crate::transport::{AsupersyncTransport, send_selected};
 
 struct Opts {
     no_ssdp: bool,
@@ -69,9 +69,13 @@ async fn seeds_only(seeds: &str) -> Result<(Vec<Device>, Vec<String>)> {
     let (mut devices, mut notes) = (Vec::new(), Vec::new());
     for ep in parse_targets(seeds)? {
         let probed = async {
-            let resp = AsupersyncTransport
-                .send(&ep.host, ep.port, &query("device-info"))
-                .await?;
+            let resp = send_selected(
+                AsupersyncTransport,
+                &ep.host,
+                ep.port,
+                &query("device-info"),
+            )
+            .await?;
             if resp.status != 200 {
                 return Err(Error::Unreachable(format!("HTTP {}", resp.status)));
             }
