@@ -2,6 +2,8 @@
 //! The daemon's brain. I/O sits behind the Transport trait.
 #![forbid(unsafe_code)]
 
+pub mod store;
+
 use std::collections::BTreeMap;
 
 use zestroku_proto::Command;

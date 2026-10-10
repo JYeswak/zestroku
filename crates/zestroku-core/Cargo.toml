@@ -10,3 +10,6 @@ zestroku-proto = { path = "../zestroku-proto" }
 thiserror = { workspace = true }
 asupersync = { workspace = true }
 fsqlite = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
