@@ -151,17 +151,28 @@ pub struct ActiveApp {
     pub name: String,
 }
 
-/// Parse an `<active-app>` XML body. The home screen reports
-/// `<app id="…" type="home" …>` with a display name; scrubbed-fixture tested.
+/// Parse an `<active-app>` XML body. Two real forms (verified live 2026-10-10):
+/// home screen: `<app>Roku</app>` (short form — no attributes, bare text name);
+/// launched app: `<app id="…" type="…" …>Name</app>` (attribute form).
+/// Scrubbed-fixture tested for both.
 pub fn parse_active_app(xml: &str) -> Result<ActiveApp> {
-    let block_start = xml
-        .find("<app ")
-        .ok_or_else(|| Error::Malformed("missing <app> in active-app".to_string()))?;
-    let block_end = xml[block_start..]
-        .find("</app>")
-        .map(|i| block_start + i)
-        .ok_or_else(|| Error::Malformed("missing </app> in active-app".to_string()))?;
-    let block = &xml[block_start..block_end];
+    let (block_start, block) = if let Some(i) = xml.find("<app ") {
+        // Attribute form: <app id="…" …>Name</app>
+        let end = xml[i..]
+            .find("</app>")
+            .map(|e| i + e)
+            .ok_or_else(|| Error::Malformed("missing </app> in active-app".to_string()))?;
+        (i, &xml[i..end])
+    } else if let Some(i) = xml.find("<app>") {
+        // Short form: <app>Name</app> (home screen; no id)
+        let end = xml[i..]
+            .find("</app>")
+            .map(|e| i + e)
+            .ok_or_else(|| Error::Malformed("missing </app> in active-app".to_string()))?;
+        (i, &xml[i..end])
+    } else {
+        return Err(Error::Malformed("missing <app> in active-app".to_string()));
+    };
 
     let attr = |name: &str| -> Option<String> {
         let needle = format!("{name}=\"");
@@ -169,13 +180,20 @@ pub fn parse_active_app(xml: &str) -> Result<ActiveApp> {
         let e = block[s..].find('"')? + s;
         Some(block[s..e].to_string())
     };
-    let name_end = block
-        .find('>')
-        .ok_or_else(|| Error::Malformed("malformed <app> tag in active-app".to_string()))?
-        + 1;
-    let name = block[name_end..].trim().to_string();
+    let app_id = attr("id").and_then(|v| v.parse().ok());
+    let name = if block.starts_with("<app ") {
+        // attribute form: name is the text after the opening tag's '>'
+        let name_end = block
+            .find('>')
+            .ok_or_else(|| Error::Malformed("malformed <app> tag in active-app".to_string()))?
+            + 1;
+        block[name_end..].trim().to_string()
+    } else {
+        // short form: name is the text between <app> and </app>
+        block["<app>".len()..].trim().to_string()
+    };
     Ok(ActiveApp {
-        app_id: attr("id").and_then(|v| v.parse().ok()),
+        app_id,
         name,
     })
 }
@@ -278,6 +296,17 @@ mod active_app_tests {
     #[test]
     fn parse_active_app_fails_closed_when_empty() {
         assert!(parse_active_app(FIXTURE_NO_APP).is_err());
+    }
+
+    #[test]
+    fn parse_active_app_short_form_home_screen() {
+        // Real home-screen body, captured live 2026-10-10 (curl of the Express):
+        // short form, no attributes, bare text name. Planted negative: the
+        // attribute-form-only parser (pre-fix) fails this.
+        let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<active-app>\n\t<app>Roku</app>\n</active-app>";
+        let app = parse_active_app(xml).unwrap();
+        assert_eq!(app.app_id, None);
+        assert_eq!(app.name, "Roku");
     }
 
     #[test]
