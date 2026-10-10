@@ -60,6 +60,61 @@ pub fn keypress(key: Key) -> Command {
     }
 }
 
+/// Build an app-launch command (Permissive tier).
+pub fn launch(app_id: u32) -> Command {
+    Command {
+        method: Method::Post,
+        path: format!("/launch/{app_id}"),
+        tier: AccessTier::Permissive,
+    }
+}
+
+/// Build a literal keypress from a raw ECP key name not in the `Key` enum
+/// (e.g. "Lit_<char>", "PlayOnly"). Permissive tier. Prefer `keypress`
+/// for the modeled keys.
+pub fn keypress_raw(ecp_key: &str) -> Command {
+    Command {
+        method: Method::Post,
+        path: format!("/keypress/{ecp_key}"),
+        tier: AccessTier::Permissive,
+    }
+}
+
+/// The currently focused app from `<active-app>` (Open tier).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveApp {
+    pub app_id: Option<u32>,
+    pub name: String,
+}
+
+/// Parse an `<active-app>` XML body. The home screen reports
+/// `<app id="…" type="home" …>` with a display name; scrubbed-fixture tested.
+pub fn parse_active_app(xml: &str) -> Result<ActiveApp> {
+    let block_start = xml.find("<app ").ok_or_else(|| {
+        Error::Malformed("missing <app> in active-app".to_string())
+    })?;
+    let block_end = xml[block_start..]
+        .find("</app>")
+        .map(|i| block_start + i)
+        .ok_or_else(|| Error::Malformed("missing </app> in active-app".to_string()))?;
+    let block = &xml[block_start..block_end];
+
+    let attr = |name: &str| -> Option<String> {
+        let needle = format!("{name}=\"");
+        let s = block.find(&needle)? + needle.len();
+        let e = block[s..].find('"')? + s;
+        Some(block[s..e].to_string())
+    };
+    let name_end = block.find('>').ok_or_else(|| {
+        Error::Malformed("malformed <app> tag in active-app".to_string())
+    })? + 1;
+    let name = block[name_end..].trim().to_string();
+    Ok(ActiveApp {
+        app_id: attr("id").and_then(|v| v.parse().ok()),
+        name,
+    })
+}
+
 /// The subset of `<device-info>` fields the core models.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceInfo {
@@ -132,5 +187,43 @@ mod tests {
         assert_eq!(c.tier, AccessTier::Permissive);
         assert_eq!(c.method, Method::Post);
         assert_eq!(c.path, "/keypress/Home");
+    }
+}
+
+#[cfg(test)]
+mod active_app_tests {
+    use super::*;
+
+    const FIXTURE_ACTIVE_APP: &str = r#"<?xml version="1.0" encoding="UTF-8" ?>
+<active-app>
+    <app id="562859" type="home" version="14.10.5" ui-location="home">Roku Dynamic Menu</app>
+</active-app>"#;
+
+    const FIXTURE_NO_APP: &str = "<active-app>\n</active-app>";
+
+    #[test]
+    fn parse_active_app_extracts_id_and_name() {
+        let app = parse_active_app(FIXTURE_ACTIVE_APP).unwrap();
+        assert_eq!(app.app_id, Some(562859));
+        assert_eq!(app.name, "Roku Dynamic Menu");
+    }
+
+    #[test]
+    fn parse_active_app_fails_closed_when_empty() {
+        assert!(parse_active_app(FIXTURE_NO_APP).is_err());
+    }
+
+    #[test]
+    fn launch_targets_permissive_tier() {
+        let c = launch(562859);
+        assert_eq!(c.tier, AccessTier::Permissive);
+        assert_eq!(c.path, "/launch/562859");
+    }
+
+    #[test]
+    fn keypress_raw_targets_permissive_tier() {
+        let c = keypress_raw("Lit_a");
+        assert_eq!(c.tier, AccessTier::Permissive);
+        assert_eq!(c.path, "/keypress/Lit_a");
     }
 }
