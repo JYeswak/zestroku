@@ -1,7 +1,9 @@
-//! `zestroku devices [--no-ssdp] [--targets <file>] [--mx <secs>]`
+//! `zestroku devices [--no-ssdp] [--targets <file>] [--mx <secs>] [--json]`
 //!
 //! SSDP sweep ∪ targets.toml seeds, each endpoint probed for `device-info`.
 //! `--no-ssdp` is the seeds-only run (flaky or black-holed multicast).
+//! `--json` emits a machine-checkable object instead of the tab-separated
+//! lines (schema in `tests/devices_json.rs` / docs/LIVE-VERIFY.md).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -18,6 +20,7 @@ struct Opts {
     no_ssdp: bool,
     targets: Option<PathBuf>,
     mx: u8,
+    json: bool,
 }
 
 fn parse_opts(args: &[String]) -> std::result::Result<Opts, String> {
@@ -25,11 +28,13 @@ fn parse_opts(args: &[String]) -> std::result::Result<Opts, String> {
         no_ssdp: false,
         targets: std::env::var_os("ZESTROKU_TARGETS").map(PathBuf::from),
         mx: 3,
+        json: false,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--no-ssdp" => o.no_ssdp = true,
+            "--json" => o.json = true,
             "--targets" => {
                 o.targets = Some(PathBuf::from(it.next().ok_or("--targets needs a path")?));
             }
@@ -123,14 +128,38 @@ pub fn run(args: &[String]) -> ExitCode {
     });
     match result {
         Ok((devices, notes)) => {
-            for d in &devices {
-                println!(
-                    "{}:{}\t{}\t{}\tsoftware={}\ttv={}",
-                    d.host, d.port, d.model_name, d.model_number, d.software_version, d.is_tv
-                );
-            }
-            for n in &notes {
-                eprintln!("zestroku devices: note: {n}");
+            if opts.json {
+                // Machine-checkable output for scripted/live verification
+                // (docs/LIVE-VERIFY.md). Stable field order; notes carry
+                // host/port + reason so a dead seed is assertable in JSON.
+                let doc = serde_json::json!({
+                    "devices": devices.iter().map(|d| serde_json::json!({
+                        "host": d.host,
+                        "port": d.port,
+                        "model_name": d.model_name,
+                        "model_number": d.model_number,
+                        "software_version": d.software_version,
+                        "is_tv": d.is_tv,
+                    })).collect::<Vec<_>>(),
+                    "notes": notes.iter().map(|n| {
+                        let (target, reason) = match n.split_once(": ") {
+                            Some((t, r)) => (t.to_string(), r.to_string()),
+                            None => (n.clone(), String::new()),
+                        };
+                        serde_json::json!({ "target": target, "reason": reason })
+                    }).collect::<Vec<_>>(),
+                });
+                println!("{doc:#}");
+            } else {
+                for d in &devices {
+                    println!(
+                        "{}:{}\t{}\t{}\tsoftware={}\ttv={}",
+                        d.host, d.port, d.model_name, d.model_number, d.software_version, d.is_tv
+                    );
+                }
+                for n in &notes {
+                    eprintln!("zestroku devices: note: {n}");
+                }
             }
             if devices.is_empty() {
                 eprintln!("zestroku devices: no devices found");
