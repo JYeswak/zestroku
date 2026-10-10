@@ -4,6 +4,7 @@
 
 pub mod discovery;
 pub mod mutation;
+pub mod ssdp_io;
 pub mod store;
 
 use std::collections::BTreeMap;
@@ -12,7 +13,6 @@ use zestroku_proto::Command;
 use zestroku_types::{AccessTier, Device, Error, Result};
 
 /// I/O stays at the protocol edge; core owns policy and state.
-
 /// The tier gate: refuses out-of-tier commands BEFORE any I/O.
 pub fn check_tier(cmd: &Command, device: &Device) -> Result<()> {
     match (cmd.tier, device.access_tier) {
