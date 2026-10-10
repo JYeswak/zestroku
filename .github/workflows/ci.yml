@@ -7,10 +7,19 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # GH free runners: 4 vCPU / 7 GB. The franken stack (fsqlite + fastmcp +
+  # fastapi + asupersync) OOM-killed at -j default: rustc processes were
+  # SIGTERM'd mid-compile (exit 143) on both cold runs. -j 2 caps parallel
+  # rustc memory; CARGO_NET_GIT_FETCH_WITH_CLI avoids libgit2 flakiness on
+  # the git deps. This mirrors the rch fleet discipline (-j 2 everywhere).
+  CARGO_BUILD_JOBS: 2
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
 
 jobs:
   gates:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -22,6 +31,11 @@ jobs:
 
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
+        with:
+          # cache the git-dep check artifacts too (fastmcp/fastapi are git revs)
+          workspaces: |
+            .
+          cache-on-failure: true
 
       # ── Gate battery (repo AGENTS.md test discipline; offline legs only) ──
       - name: fmt
@@ -29,19 +43,21 @@ jobs:
 
       - name: check
         run: cargo check --workspace --all-targets
-        timeout-minutes: 60  # cold cache: the franken stack (fsqlite+fastmcp+fastapi) needs ~40min on GH runners; warm cache ≪5min
+        timeout-minutes: 75
 
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+        timeout-minutes: 75
 
       - name: test (offline; live-LAN legs are --ignored by design)
         run: cargo test --workspace
+        timeout-minutes: 60
 
       # ── Franken-stack invariant: ONE asupersync version in the graph ──
       - name: one asupersync (Cx type universe)
         run: |
-          versions=$(cargo tree -i asupersync --workspace | grep -c '^asupersync v' || true)
-          cargo tree -i asupersync --workspace
+          cargo tree -i asupersync --workspace | tee /tmp/asup-tree.txt
+          versions=$(grep -c '^asupersync v' /tmp/asup-tree.txt || true)
           test "$versions" -le 1 || { echo "::error::asupersync version fork — Cx is not one type"; exit 1; }
 
       # ── No tokio/reqwest re-entrenchment (scaffold-drift guard) ──
