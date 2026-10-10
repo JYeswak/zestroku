@@ -16,6 +16,70 @@ use std::fmt;
 
 use zestroku_types::{AccessTier, Error, Key, Result};
 
+/// An HTTP response from an ECP endpoint, before protocol classification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EcpResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EcpResponseClass {
+    Introspection,
+    Gated,
+    GatedAnomaly,
+    Absent,
+    Unclassified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EcpGate {
+    Open,
+    Limited403,
+    Unknown403,
+    Absent404,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EcpClassification {
+    pub class: EcpResponseClass,
+    pub gate: EcpGate,
+}
+
+const LIMITED_403_BODY: &str = "ECP command not allowed in Limited mode.";
+
+/// Classifies an HTTP response using the verified ECP response reference.
+/// The exact body is required before treating HTTP 403 as the Limited gate.
+pub fn parse_ecp_response(response: &EcpResponse) -> EcpClassification {
+    let (class, gate) = match response.status {
+        200 => (EcpResponseClass::Introspection, EcpGate::Open),
+        403 if response.body.trim() == LIMITED_403_BODY => {
+            (EcpResponseClass::Gated, EcpGate::Limited403)
+        }
+        403 => (EcpResponseClass::GatedAnomaly, EcpGate::Unknown403),
+        404 => (EcpResponseClass::Absent, EcpGate::Absent404),
+        _ => (EcpResponseClass::Unclassified, EcpGate::Other),
+    };
+    EcpClassification { class, gate }
+}
+
+/// Async ECP I/O boundary. Implementations own runtime-specific networking;
+/// callers only provide a host, port, and protocol command.
+pub trait Transport: Send + Sync {
+    /// Sends one command and returns raw response fields for pure parsing.
+    ///
+    /// RPITIT keeps this async boundary dependency-free while requiring the
+    /// returned future to be movable across executor threads.
+    fn send(
+        &self,
+        host: &str,
+        port: u16,
+        cmd: &Command,
+    ) -> impl Future<Output = Result<EcpResponse>> + Send;
+}
+
 /// One ECP command: everything the Transport needs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Command {
@@ -228,5 +292,60 @@ mod active_app_tests {
         let c = keypress_raw("Lit_a");
         assert_eq!(c.tier, AccessTier::Permissive);
         assert_eq!(c.path, "/keypress/Lit_a");
+    }
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+
+    fn response(status: u16, body: &str) -> EcpResponse {
+        EcpResponse {
+            status,
+            headers: Vec::new(),
+            body: body.to_string(),
+        }
+    }
+
+    #[test]
+    fn classifies_open_limited_absent_and_other_responses() {
+        assert_eq!(
+            parse_ecp_response(&response(200, "<device-info/>")),
+            EcpClassification {
+                class: EcpResponseClass::Introspection,
+                gate: EcpGate::Open,
+            }
+        );
+        assert_eq!(
+            parse_ecp_response(&response(
+                403,
+                " ECP command not allowed in Limited mode. \n",
+            )),
+            EcpClassification {
+                class: EcpResponseClass::Gated,
+                gate: EcpGate::Limited403,
+            }
+        );
+        assert_eq!(
+            parse_ecp_response(&response(403, "Different response.")),
+            EcpClassification {
+                class: EcpResponseClass::GatedAnomaly,
+                gate: EcpGate::Unknown403,
+            }
+        );
+        assert_eq!(
+            parse_ecp_response(&response(404, "")),
+            EcpClassification {
+                class: EcpResponseClass::Absent,
+                gate: EcpGate::Absent404,
+            }
+        );
+        assert_eq!(
+            parse_ecp_response(&response(503, "ECP command not allowed in Limited mode.")),
+            EcpClassification {
+                class: EcpResponseClass::Unclassified,
+                gate: EcpGate::Other,
+            }
+        );
     }
 }

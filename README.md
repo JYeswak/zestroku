@@ -30,6 +30,13 @@ Design principles (inherited):
 - Access tiers are a domain concept: every command carries the tier it needs
   (open vs permissive); the core refuses out-of-tier commands by construction.
 
+## Current CLI surface
+
+`zestroku info <host>` and `zestroku active-app <host>` use the asupersync ECP
+transport. `zestroku key <host> <Key>` remains refused until the per-operation
+mutation gate is wired. Transport GET/POST behavior has loopback coverage;
+live-device transport verification remains pending.
+
 ## Ground truth (verified live 2026-10-09)
 
 - ECP `:8060`, no pairing; XML responses.

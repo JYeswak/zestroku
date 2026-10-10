@@ -7,8 +7,15 @@
 
 use std::process::ExitCode;
 
-use zestroku_proto::{Command, query};
-use zestroku_types::{AccessTier, Device};
+use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
+use zestroku_proto::{
+    Command, EcpGate, Transport, parse_active_app, parse_device_info, parse_ecp_response, query,
+};
+use zestroku_types::{AccessTier, Device, Error};
+
+mod transport;
+
+use transport::AsupersyncTransport;
 
 fn usage() -> &'static str {
     "zestroku — owner-interop control for Roku devices\n\
@@ -52,17 +59,60 @@ fn main() -> ExitCode {
             } else {
                 query("active-app")
             };
-            if let Err(e) = zestroku_core::check_tier(&cmd, &device) {
-                eprintln!("zestroku: {e}");
+            if let Err(error) = zestroku_core::check_tier(&cmd, &device) {
+                eprintln!("zestroku: {error}");
                 return ExitCode::from(3);
             }
-            // Transport wiring lands with the M7 daemon lane; the command
-            // construction + tier gate are the tested surface today.
-            println!(
-                "{} {} -> dispatch pending transport wiring",
-                cmd.method, cmd.path
-            );
-            ExitCode::SUCCESS
+            let runtime = match create_reactor()
+                .map_err(|error| error.to_string())
+                .and_then(|reactor| {
+                    RuntimeBuilder::current_thread()
+                        .with_reactor(reactor)
+                        .build()
+                        .map_err(|error| error.to_string())
+                }) {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("zestroku: could not start asupersync runtime: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match runtime.block_on(async {
+                let response = AsupersyncTransport
+                    .send(&device.host, device.port, &cmd)
+                    .await?;
+                let classification = parse_ecp_response(&response);
+                if classification.gate == EcpGate::Limited403 {
+                    eprintln!("zestroku: device returned the verified Limited-mode 403 gate");
+                    return Ok(ExitCode::from(3));
+                }
+                if classification.gate != EcpGate::Open {
+                    return Err(Error::Unreachable(format!(
+                        "{} {} returned an unclassified response: {:?}",
+                        cmd.method, cmd.path, classification
+                    )));
+                }
+                if args[0] == "info" {
+                    let info = parse_device_info(&response.body)?;
+                    println!(
+                        "{} ({}) software={} tv={}",
+                        info.model_name, info.model_number, info.software_version, info.is_tv
+                    );
+                } else {
+                    let app = parse_active_app(&response.body)?;
+                    match app.app_id {
+                        Some(id) => println!("{} ({id})", app.name),
+                        None => println!("{}", app.name),
+                    }
+                }
+                Ok::<ExitCode, Error>(ExitCode::SUCCESS)
+            }) {
+                Ok(code) => code,
+                Err(error) => {
+                    eprintln!("zestroku: {error}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Some("key") if args.len() == 3 => {
             let host = args[1].clone();
@@ -72,11 +122,8 @@ fn main() -> ExitCode {
                 eprintln!("zestroku: {e}");
                 return ExitCode::from(3);
             }
-            println!(
-                "{} {} -> dispatch pending transport wiring",
-                cmd.method, cmd.path
-            );
-            ExitCode::SUCCESS
+            eprintln!("zestroku: keypress requires the per-operation confirmation gate");
+            ExitCode::FAILURE
         }
         _ => {
             eprintln!("{}", usage());
