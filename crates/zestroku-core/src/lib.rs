@@ -1,8 +1,9 @@
 //! zestroku-core — LANE B: inventory, access-tier gate, reconciliation.
-//! The daemon's brain. I/O sits behind the Transport trait.
+//! The daemon's brain: policy, inventory, and persistence.
 #![forbid(unsafe_code)]
 
 pub mod discovery;
+pub mod mutation;
 pub mod store;
 
 use std::collections::BTreeMap;
@@ -10,11 +11,7 @@ use std::collections::BTreeMap;
 use zestroku_proto::Command;
 use zestroku_types::{AccessTier, Device, Error, Result};
 
-/// Transport abstraction: the ONLY place I/O happens. Implemented over
-/// the async runtime in zestroku-cli; tests use a fixture transport.
-pub trait Transport {
-    fn send(&mut self, host: &str, port: u16, cmd: &Command) -> Result<(u16, String)>;
-}
+/// I/O stays at the protocol edge; core owns policy and state.
 
 /// The tier gate: refuses out-of-tier commands BEFORE any I/O.
 pub fn check_tier(cmd: &Command, device: &Device) -> Result<()> {
