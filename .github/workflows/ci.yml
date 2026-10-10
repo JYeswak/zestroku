@@ -29,6 +29,7 @@ jobs:
 
       - name: check
         run: cargo check --workspace --all-targets
+        timeout-minutes: 60  # cold cache: the franken stack (fsqlite+fastmcp+fastapi) needs ~40min on GH runners; warm cache ≪5min
 
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
