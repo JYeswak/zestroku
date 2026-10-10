@@ -5,8 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
 zestroku-types = { path = "../zestroku-types" }
 zestroku-proto = { path = "../zestroku-proto" }
 zestroku-core = { path = "../zestroku-core" }
 asupersync = { workspace = true }
 fastapi = { workspace = true }
+
+[dev-dependencies]
+fastapi = { workspace = true, features = ["testing"] }
+tempfile = { workspace = true }
