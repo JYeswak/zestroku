@@ -73,3 +73,5 @@ mod tests {
         assert!(e.to_string().contains("403"));
     }
 }
+
+// warm-cache probe: measure CI turnaround on a populated cache
