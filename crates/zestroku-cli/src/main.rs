@@ -7,7 +7,7 @@
 
 use std::process::ExitCode;
 
-use zestroku_proto::{query, Command};
+use zestroku_proto::{Command, query};
 use zestroku_types::{AccessTier, Device};
 
 fn usage() -> &'static str {
@@ -58,7 +58,10 @@ fn main() -> ExitCode {
             }
             // Transport wiring lands with the M7 daemon lane; the command
             // construction + tier gate are the tested surface today.
-            println!("{} {} -> dispatch pending transport wiring", cmd.method, cmd.path);
+            println!(
+                "{} {} -> dispatch pending transport wiring",
+                cmd.method, cmd.path
+            );
             ExitCode::SUCCESS
         }
         Some("key") if args.len() == 3 => {
@@ -69,7 +72,10 @@ fn main() -> ExitCode {
                 eprintln!("zestroku: {e}");
                 return ExitCode::from(3);
             }
-            println!("{} {} -> dispatch pending transport wiring", cmd.method, cmd.path);
+            println!(
+                "{} {} -> dispatch pending transport wiring",
+                cmd.method, cmd.path
+            );
             ExitCode::SUCCESS
         }
         _ => {
