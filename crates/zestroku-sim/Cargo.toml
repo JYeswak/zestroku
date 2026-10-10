@@ -1,0 +1,11 @@
+[package]
+name = "zestroku-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Virtual Roku ECP devices on loopback sockets for LAN-free e2e tests (bead zestroku-m7f-sim-9bt)"
+
+[dependencies]
+zestroku-types = { path = "../zestroku-types" }
+zestroku-proto = { path = "../zestroku-proto" }
+asupersync = { workspace = true }
