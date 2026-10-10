@@ -90,9 +90,9 @@ pub struct ActiveApp {
 /// Parse an `<active-app>` XML body. The home screen reports
 /// `<app id="…" type="home" …>` with a display name; scrubbed-fixture tested.
 pub fn parse_active_app(xml: &str) -> Result<ActiveApp> {
-    let block_start = xml.find("<app ").ok_or_else(|| {
-        Error::Malformed("missing <app> in active-app".to_string())
-    })?;
+    let block_start = xml
+        .find("<app ")
+        .ok_or_else(|| Error::Malformed("missing <app> in active-app".to_string()))?;
     let block_end = xml[block_start..]
         .find("</app>")
         .map(|i| block_start + i)
@@ -105,9 +105,10 @@ pub fn parse_active_app(xml: &str) -> Result<ActiveApp> {
         let e = block[s..].find('"')? + s;
         Some(block[s..e].to_string())
     };
-    let name_end = block.find('>').ok_or_else(|| {
-        Error::Malformed("malformed <app> tag in active-app".to_string())
-    })? + 1;
+    let name_end = block
+        .find('>')
+        .ok_or_else(|| Error::Malformed("malformed <app> tag in active-app".to_string()))?
+        + 1;
     let name = block[name_end..].trim().to_string();
     Ok(ActiveApp {
         app_id: attr("id").and_then(|v| v.parse().ok()),
@@ -129,12 +130,14 @@ pub fn parse_device_info(xml: &str) -> Result<DeviceInfo> {
     let field = |tag: &str| -> Result<String> {
         let open = format!("<{tag}>");
         let close = format!("</{tag}>");
-        let start = xml.find(&open).map(|i| i + open.len()).ok_or_else(|| {
-            Error::Malformed(format!("missing <{tag}> in device-info"))
-        })?;
-        let end = xml[start..].find(&close).map(|i| start + i).ok_or_else(|| {
-            Error::Malformed(format!("missing </{tag}> in device-info"))
-        })?;
+        let start = xml
+            .find(&open)
+            .map(|i| i + open.len())
+            .ok_or_else(|| Error::Malformed(format!("missing <{tag}> in device-info")))?;
+        let end = xml[start..]
+            .find(&close)
+            .map(|i| start + i)
+            .ok_or_else(|| Error::Malformed(format!("missing </{tag}> in device-info")))?;
         Ok(xml[start..end].to_string())
     };
     Ok(DeviceInfo {

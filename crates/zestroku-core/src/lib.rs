@@ -72,7 +72,11 @@ mod tests {
     #[test]
     fn tier_gate_refuses_permissive_command_on_limited_device() {
         let d = device(AccessTier::Open);
-        let cmd = Command { method: zestroku_proto::Method::Post, path: "/keypress/Home".into(), tier: AccessTier::Permissive };
+        let cmd = Command {
+            method: zestroku_proto::Method::Post,
+            path: "/keypress/Home".into(),
+            tier: AccessTier::Permissive,
+        };
         let err = check_tier(&cmd, &d).unwrap_err();
         assert!(err.to_string().contains("403"));
     }
