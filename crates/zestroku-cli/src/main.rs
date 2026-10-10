@@ -13,6 +13,7 @@ use zestroku_proto::{
 };
 use zestroku_types::{AccessTier, Device, Error};
 
+mod devices;
 mod transport;
 
 use transport::AsupersyncTransport;
@@ -47,7 +48,8 @@ fn device_from_args(host: &str) -> Device {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        Some("devices") | None => {
+        Some("devices") => devices::run(&args[1..]),
+        None => {
             println!("{}", usage());
             ExitCode::from(2)
         }
