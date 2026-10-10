@@ -28,6 +28,7 @@
 use std::time::Duration;
 
 use asupersync::net::UdpSocket;
+use std::time::{Duration, Instant};
 use asupersync::time::{timeout, wall_now};
 use zestroku_proto::{DeviceInfo, Transport};
 use zestroku_types::{Device, Error, Result};
@@ -74,13 +75,19 @@ pub async fn sweep(mx_secs: u8) -> Result<SweepResult> {
     }
 
     let window = Duration::from_secs(u64::from(mx_secs));
-    let collected = timeout(wall_now(), window, collect_replies(&mut socket)).await;
+    // The accumulator lives in `collect_replies`; wrapping it in `timeout`
+    // would DROP every reply received inside the window when the deadline
+    // fires (PeachKnoll finding, 2026-10-10: the whole accumulator is owned
+    // by the cancelled future). Instead: pass the window INTO the collector
+    // and let it return its accumulator when the deadline expires.
+    let collected =
+        timeout(wall_now(), window, collect_replies(&mut socket, window)).await;
     match collected {
         Ok(result) => Ok(result),
         Err(_elapsed) => {
-            // Window closed: what we have is what answered. A sweep with zero
-            // replies is a legitimate empty result (SSDP is flaky), not an
-            // error — seeds carry the run (bead (c)).
+            // Deadline fired and the collector was cancelled mid-recv: at
+            // most one reply was in flight. That is the honest empty case —
+            // never synthesize devices.
             Ok(SweepResult {
                 endpoints: Vec::new(),
                 refused: Vec::new(),
@@ -91,24 +98,30 @@ pub async fn sweep(mx_secs: u8) -> Result<SweepResult> {
 
 /// Receive until the caller's timeout cancels us (cancel-safe: each
 /// `recv_from` either completes or is dropped whole with the socket).
-async fn collect_replies(socket: &mut UdpSocket) -> SweepResult {
+async fn collect_replies(socket: &mut UdpSocket, window: Duration) -> SweepResult {
     let mut endpoints = Vec::new();
     let mut refused = Vec::new();
     let mut buf = vec![0u8; MAX_DATAGRAM + 1]; // +1: detect oversize on read
+    let deadline = Instant::now() + window;
     while endpoints.len() + refused.len() < MAX_REPLIES_PER_SWEEP {
-        match socket.recv_from(&mut buf).await {
-            Ok((n, _source)) => match parse_ssdp_response(&buf[..n]) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match timeout(wall_now(), remaining, socket.recv_from(&mut buf)).await {
+            Ok(Ok((n, _source))) => match parse_ssdp_response(&buf[..n]) {
                 // merge_endpoints dedupes; push everything, dedupe at the end.
                 Ok(endpoint) => endpoints.push(endpoint),
                 Err(error) => refused.push(error.to_string()),
             },
-            Err(error) => {
+            Ok(Err(error)) => {
                 refused.push(format!("recv: {error}"));
                 // Transient interrupt → keep collecting; anything else stops.
                 if error.kind() != std::io::ErrorKind::Interrupted {
                     break;
                 }
             }
+            Err(_elapsed) => break, // window closed: return what we have
         }
     }
     SweepResult {
