@@ -148,9 +148,7 @@ pub async fn discover(
 /// Probe one endpoint's `query/device-info` (Open tier, read-only).
 async fn probe_device_info(transport: &impl Transport, endpoint: &Endpoint) -> Result<DeviceInfo> {
     let cmd = zestroku_proto::query("device-info");
-    let response = transport
-        .send(&endpoint.host, endpoint.port, &cmd)
-        .await?;
+    let response = transport.send(&endpoint.host, endpoint.port, &cmd).await?;
     if response.status != 200 {
         return Err(Error::Unreachable(format!(
             "device-info returned HTTP {}",
@@ -246,10 +244,9 @@ mod tests {
 
     #[test]
     fn discover_merges_seeds_and_reconciles_probes() {
-        let seeds = parse_targets(
-            "[[target]]\nhost = \"192.0.2.10\"\n[[target]]\nhost = \"192.0.2.11\"\n",
-        )
-        .unwrap();
+        let seeds =
+            parse_targets("[[target]]\nhost = \"192.0.2.10\"\n[[target]]\nhost = \"192.0.2.11\"\n")
+                .unwrap();
         assert_eq!(seeds.len(), 2);
         let transport = FixtureTransport {
             bodies: std::collections::BTreeMap::from([
@@ -267,7 +264,11 @@ mod tests {
         assert_eq!(devices[1].model_name, "Roku TV");
         assert!(devices.iter().all(|d| d.port == ECP_DEFAULT_PORT));
         assert!(notes.is_empty(), "{notes:?}");
-        assert_eq!(transport.probed.read().expect("probed lock").len(), 2, "one probe per endpoint");
+        assert_eq!(
+            transport.probed.read().expect("probed lock").len(),
+            2,
+            "one probe per endpoint"
+        );
     }
 
     #[test]
@@ -275,8 +276,14 @@ mod tests {
         // A seeds file may list a powered-off device: probe failure → note,
         // the rest of the run continues (store keeps last-known state, m7d).
         let seeds = vec![
-            Endpoint { host: "192.0.2.10".into(), port: ECP_DEFAULT_PORT },
-            Endpoint { host: "192.0.2.99".into(), port: ECP_DEFAULT_PORT },
+            Endpoint {
+                host: "192.0.2.10".into(),
+                port: ECP_DEFAULT_PORT,
+            },
+            Endpoint {
+                host: "192.0.2.99".into(),
+                port: ECP_DEFAULT_PORT,
+            },
         ];
         let transport = FixtureTransport {
             bodies: std::collections::BTreeMap::from([(
@@ -296,7 +303,10 @@ mod tests {
     fn probe_error_message_carries_host_and_status() {
         // The note format is the operator's only signal for a dead seed —
         // pin its shape (host + reason) so it can't silently degrade.
-        let seeds = vec![Endpoint { host: "192.0.2.50".into(), port: 8061 }];
+        let seeds = vec![Endpoint {
+            host: "192.0.2.50".into(),
+            port: 8061,
+        }];
         let transport = FixtureTransport {
             bodies: std::collections::BTreeMap::new(), // everything 404s
             probed: std::sync::RwLock::new(Vec::new()),

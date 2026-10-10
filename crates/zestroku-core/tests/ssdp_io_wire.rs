@@ -10,26 +10,23 @@
 #![forbid(unsafe_code)]
 
 use zestroku_core::discovery::{
-    build_msearch, merge_endpoints, parse_ssdp_response, parse_targets, reconcile, Endpoint,
+    Endpoint, build_msearch, merge_endpoints, parse_ssdp_response, parse_targets, reconcile,
 };
 use zestroku_proto::{Command, EcpResponse, Transport};
 use zestroku_types::Result;
 
 /// A reply fixture with a synthetic (TEST-NET) LOCATION and fake serial.
-const REPLY_OK: &[u8] =
-    b"HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=1800\r\nEXT:\r\n\
+const REPLY_OK: &[u8] = b"HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=1800\r\nEXT:\r\n\
       LOCATION: http://192.0.2.10:8060/\r\n\
       SERVER: Roku/9.10.0 UPnP/1.0 Roku/9.10.0\r\n\
       ST: roku:ecp\r\nUSN: uuid:roku:ecp:FIXTURESERIAL1\r\n\r\n";
 
-const REPLY_TV: &[u8] =
-    b"HTTP/1.1 200 OK\r\nLOCATION: http://192.0.2.11:8060/\r\n\
+const REPLY_TV: &[u8] = b"HTTP/1.1 200 OK\r\nLOCATION: http://192.0.2.11:8060/\r\n\
       ST: roku:ecp\r\nUSN: uuid:roku:ecp:FIXTURESERIAL2\r\n\r\n";
 
 /// Same reply with the DIAL ST a Roku also advertises (ECP-WIRE-DOC §1) —
 /// the parser must refuse it: zestroku acts on `roku:ecp` only (bead (d)).
-const REPLY_DIAL_ST: &[u8] =
-    b"HTTP/1.1 200 OK\r\nLOCATION: http://192.0.2.10:8060/\r\n\
+const REPLY_DIAL_ST: &[u8] = b"HTTP/1.1 200 OK\r\nLOCATION: http://192.0.2.10:8060/\r\n\
       ST: urn:dial-multiscreen-org:service:dial:1\r\n\
       USN: uuid:roku:ecp:FIXTURESERIAL1\r\n\r\n";
 
@@ -38,7 +35,10 @@ fn msearch_bytes_match_the_wire_contract() {
     let req = build_msearch(3);
     let s = std::str::from_utf8(&req).unwrap();
     assert!(s.starts_with("M-SEARCH * HTTP/1.1\r\n"));
-    assert!(s.contains("HOST: 239.255.255.250:1900\r\n"), "multicast endpoint");
+    assert!(
+        s.contains("HOST: 239.255.255.250:1900\r\n"),
+        "multicast endpoint"
+    );
     assert!(s.contains("MAN: \"ssdp:discover\"\r\n"), "quoted MAN");
     assert!(s.contains("MX: 3\r\n"));
     assert!(s.contains("ST: roku:ecp\r\n"));
@@ -50,14 +50,19 @@ fn msearch_bytes_match_the_wire_contract() {
 fn replies_parse_to_endpoints_and_merge_with_seeds() {
     let a = parse_ssdp_response(REPLY_OK).expect("express reply parses");
     let b = parse_ssdp_response(REPLY_TV).expect("tv reply parses");
-    assert_eq!(a, Endpoint { host: "192.0.2.10".into(), port: 8060 });
+    assert_eq!(
+        a,
+        Endpoint {
+            host: "192.0.2.10".into(),
+            port: 8060
+        }
+    );
     assert_eq!(b.port, 8060);
 
     // Seeds (multicast black-holed fallback) alone must cover every device:
-    let seeds = parse_targets(
-        "[[target]]\nhost = \"192.0.2.10\"\n[[target]]\nhost = \"192.0.2.11\"\n",
-    )
-    .expect("targets parse");
+    let seeds =
+        parse_targets("[[target]]\nhost = \"192.0.2.10\"\n[[target]]\nhost = \"192.0.2.11\"\n")
+            .expect("targets parse");
     assert_eq!(merge_endpoints(&[], &seeds).len(), 2, "seeds-only run");
     // Sweep + seeds: deduped union, stable order.
     assert_eq!(merge_endpoints(&[a, b], &seeds).len(), 2);
@@ -69,7 +74,10 @@ fn planted_negative_non_roku_st_is_refused() {
     // check in parse_ssdp_response turns THIS test red (the DIAL reply would
     // parse into an endpoint instead of erroring).
     let err = parse_ssdp_response(REPLY_DIAL_ST).expect_err("dial ST must be refused");
-    assert!(err.to_string().contains("ST"), "error names the ST gate: {err}");
+    assert!(
+        err.to_string().contains("ST"),
+        "error names the ST gate: {err}"
+    );
 }
 
 /// Fixture transport over the real `Transport` seam (as m7a defined it):
@@ -81,7 +89,11 @@ impl WireTransport {
     /// method delegates here; fixture futures are immediately ready).
     fn send_sync(&self, host: &str, _port: u16, cmd: &Command) -> EcpResponse {
         if cmd.path == "/query/device-info" {
-            let model = if host == "192.0.2.11" { "Roku TV" } else { "Roku Express" };
+            let model = if host == "192.0.2.11" {
+                "Roku TV"
+            } else {
+                "Roku Express"
+            };
             EcpResponse {
                 status: 200,
                 headers: Vec::new(),
@@ -95,7 +107,11 @@ impl WireTransport {
                 ),
             }
         } else {
-            EcpResponse { status: 404, headers: Vec::new(), body: String::new() }
+            EcpResponse {
+                status: 404,
+                headers: Vec::new(),
+                body: String::new(),
+            }
         }
     }
 }
