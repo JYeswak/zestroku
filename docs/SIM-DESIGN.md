@@ -130,3 +130,26 @@ second responder to prove the ST filter end-to-end.
 4. m7f dependency: blocked by m7b close. Sim crate scaffold itself (Cargo.toml,
    workspace member) touches root Cargo.toml + crates/zestroku-sim only; no overlap
    with active reservations.
+
+## 8. Scenario table (`zestroku sim --scenario <name>`)
+
+Each scenario is a list of steps over named virtual devices (`express`, `tv`) that the
+e2e suite and a human can both run. A step is `Serve`, `SetTier`, `Suspend`, `Resume`,
+`IpChange`, `Latency`, `Garbage`, or `Expect` (an assertion on the sim's request log).
+
+| Scenario | Devices | Steps | What it proves |
+|---|---|---|---|
+| `two-devices` | express + tv, both Permissive | Serve both; `devices`, `info`, `apps`, `active-app` on each | The §1 read workflows: both devices inventoried, TV-only `tv-active-channel` present on the TV and 404 on the express |
+| `limited-gate` | express, Limited | Serve; `apps`, `media-player`, `key Home` | Exact 40-byte Limited 403 body and headers; `key` refused locally before any POST (`Expect` no POST received) |
+| `tier-flip` | express, Limited then Permissive | `apps` (403) -> `SetTier(Permissive)` -> `apps` (200) -> `icon/<absent id>` (404) | Wrapper-not-filter: every Limited 403 becomes 200 or 404, never 403; census must be re-walked after a flip |
+| `launch-key` | express, Permissive | `launch <id> --confirm` -> `active-app` -> `key Home --confirm` -> `active-app` | Focus and active-app transitions; launch of an absent id is 404; the action log gets a denied row without `--confirm` and an approved row with it |
+| `seeds-only` | express + tv | no SSDP responder; `devices --no-ssdp --targets <file>` | Discovery works with multicast black-holed (m7b box c, offline) |
+| `dead-seed` | express + one unbound port | `devices --no-ssdp` with both seeds | A dead seed yields a note and exit 0 while the live device is listed |
+| `suspend-resume` | express | Serve -> `Suspend` -> `info` (connect refused, bounded retry) -> `Resume` -> `info` ok | Unreachable-device path and retry (§12.14 pre-work) |
+| `ip-change` | express | Serve on port A -> `IpChange` (port B) -> `devices` with SSDP responder | A moved device is found again by the sweep (M1 acceptance) |
+| `slow-device` | express | `Latency(d)` below then above the transport timeout | Timeout maps to Unreachable, not a hang; success under the timeout |
+| `garbage-body` | express | `Garbage` on `device-info` and `active-app` | Parsers return Malformed; the CLI exits non-zero with a message and no panic |
+
+Each scenario has a planted negative recorded next to its test: break the property it
+proves (wrong 403 body, a Permissive 403, a POST that slips past the gate) and the
+matching test must go red.
