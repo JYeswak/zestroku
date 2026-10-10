@@ -2,6 +2,7 @@
 //! The daemon's brain. I/O sits behind the Transport trait.
 #![forbid(unsafe_code)]
 
+pub mod discovery;
 pub mod store;
 
 use std::collections::BTreeMap;
