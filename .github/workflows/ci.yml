@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned nightly (matches rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-08-31
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      # ── Gate battery (repo AGENTS.md test discipline; offline legs only) ──
+      - name: fmt
+        run: cargo fmt --check --all
+
+      - name: check
+        run: cargo check --workspace --all-targets
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test (offline; live-LAN legs are --ignored by design)
+        run: cargo test --workspace
+
+      # ── Franken-stack invariant: ONE asupersync version in the graph ──
+      - name: one asupersync (Cx type universe)
+        run: |
+          versions=$(cargo tree -i asupersync --workspace | grep -c '^asupersync v' || true)
+          cargo tree -i asupersync --workspace
+          test "$versions" -le 1 || { echo "::error::asupersync version fork — Cx is not one type"; exit 1; }
+
+      # ── No tokio/reqwest re-entrenchment (scaffold-drift guard) ──
+      - name: no tokio or reqwest in workspace manifests
+        run: |
+          if grep -rn '^\(tokio\|reqwest\)' Cargo.toml crates/*/Cargo.toml; then
+            echo "::error::tokio/reqwest are banned; the franken stack is the wiring (plan §3)"
+            exit 1
+          fi
+
+      # ── Identifier scrub gate: serial/UDN/MAC/ad-id shapes never land ──
+      - name: identifier scrub (plan ZP:58-59)
+        run: bash scripts/check-identifiers.sh

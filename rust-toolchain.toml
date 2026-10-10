@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned date so every build host (local + rch workers) resolves the SAME
+# nightly. Matches the proven combined build of the franken dependency stack
+# (asupersync / fsqlite / fastmcp / fastapi), same pin as frankensonos.
+channel = "nightly-2026-08-31"
+components = ["rustfmt", "clippy"]

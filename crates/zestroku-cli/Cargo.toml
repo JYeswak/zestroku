@@ -8,7 +8,7 @@ license.workspace = true
 zestroku-types = { path = "../zestroku-types" }
 zestroku-proto = { path = "../zestroku-proto" }
 zestroku-core = { path = "../zestroku-core" }
-tokio = { workspace = true }
+asupersync = { workspace = true }
 
 [[bin]]
 name = "zestroku"

@@ -1,16 +1,58 @@
 [workspace]
 resolver = "2"
-members = ["crates/zestroku-types", "crates/zestroku-proto", "crates/zestroku-core", "crates/zestroku-api", "crates/zestroku-mcp", "crates/zestroku-cli"]
+members = [
+    "crates/zestroku-types",
+    "crates/zestroku-proto",
+    "crates/zestroku-core",
+    "crates/zestroku-api",
+    "crates/zestroku-mcp",
+    "crates/zestroku-cli",
+]
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-quick-xml = "0.36"
+# ── Internal crates ───────────────────────────────────────────────────────
+zestroku-types = { path = "crates/zestroku-types" }
+zestroku-proto = { path = "crates/zestroku-proto" }
+zestroku-core  = { path = "crates/zestroku-core" }
+zestroku-api   = { path = "crates/zestroku-api" }
+zestroku-mcp   = { path = "crates/zestroku-mcp" }
+zestroku-cli   = { path = "crates/zestroku-cli" }
+
+# ── Registry deps (the green baseline) ────────────────────────────────────
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Read-only XML DOM (pure Rust, forbid(unsafe), zero deps) for ECP response
+# documents (device-info, apps, active-app, media-player).
+roxmltree = "0.21"
+# Hand-edited data-dir config (targets.toml).
+toml = "1"
+tempfile = "3"
+
+# ── FRANKEN STACK (zestroku FND-DEPS; mirrors frankensonos bead FND-DEPS) ─
+# Every franken crate below resolves to the ONE registry asupersync 0.5.0
+# (fastmcp pins `=0.5.0`; fastapi and fsqlite 0.4.9 require `0.5.0`), so `Cx`
+# is a single type across our code, the MCP server, the HTTP API and the
+# store. `cargo tree -i asupersync` must show exactly one version. Never
+# path/git-dep asupersync: the local checkout is 0.6 and would fork the type
+# universe. Proven pins copied from frankensonos@Cargo.toml (FND-DEPS).
+asupersync = { version = "0.5", features = ["tls-webpki-roots"] }
+fsqlite = { version = "=0.4.9", features = ["async-api"] }
+fastmcp = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a", package = "fastmcp-rust" }
+# Required next to the facade: at this rev the `#[tool]` expansion names
+# `::fastmcp_server::promote_legacy_tool_content` by absolute path.
+fastmcp-server = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
+# Register routes with `App::builder().get(..)`, not the `#[get]` macros: their
+# expansion emits `#[allow(unsafe_code)]` (a Linux `link_section` route
+# registry), which cannot coexist with the workspace `forbid(unsafe_code)`.
+fastapi = { git = "https://github.com/Dicklesworthstone/fastapi_rust", rev = "cb9d72926434e2ec3e08cced5eae7f7c13168c7d", package = "fastapi-rust", default-features = false }
+

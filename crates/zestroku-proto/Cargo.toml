@@ -6,6 +6,6 @@ license.workspace = true
 
 [dependencies]
 zestroku-types = { path = "../zestroku-types" }
-quick-xml = { workspace = true }
-serde = { workspace = true }
+asupersync = { workspace = true }
+roxmltree = { workspace = true }
 thiserror = { workspace = true }

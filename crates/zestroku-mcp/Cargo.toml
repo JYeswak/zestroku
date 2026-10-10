@@ -8,3 +8,6 @@ license.workspace = true
 zestroku-types = { path = "../zestroku-types" }
 zestroku-proto = { path = "../zestroku-proto" }
 zestroku-core = { path = "../zestroku-core" }
+asupersync = { workspace = true }
+fastmcp = { workspace = true }
+fastmcp-server = { workspace = true }
