@@ -54,7 +54,7 @@ fn mcp_error(code: McpErrorCode, message: impl Into<String>) -> McpError {
     McpError::new(code, message.into())
 }
 
-fn device_for(host: &str) -> Device {
+fn device_for(host: &str, tier: AccessTier) -> Device {
     Device {
         host: host.to_string(),
         port: 8060,
@@ -62,7 +62,7 @@ fn device_for(host: &str) -> Device {
         model_number: String::new(),
         software_version: String::new(),
         is_tv: false,
-        access_tier: AccessTier::Open,
+        access_tier: tier,
     }
 }
 
@@ -94,6 +94,7 @@ pub fn decide<S: Store + ?Sized>(
     kind: &str,
     host: &str,
     target: &str,
+    tier: AccessTier,
     confirmed: bool,
     before_state: &str,
 ) -> Result<Result<String, ArgError>, MutationError> {
@@ -108,7 +109,7 @@ pub fn decide<S: Store + ?Sized>(
         intent: &format!("{kind} {target}"),
         before_state,
     };
-    match authorize_mutation(store, &device_for(host), &command, context, confirmed) {
+    match authorize_mutation(store, &device_for(host, tier), &command, context, confirmed) {
         Ok(action_id) => Ok(Ok(format!(
             "approved: audit id {action_id}; dispatch happens in serve (m7c)"
         ))),
@@ -176,6 +177,13 @@ impl ToolHandler for MutationTool {
             .ok_or_else(|| mcp_error(McpErrorCode::InvalidParams, "missing `target`"))?
             .to_string();
         let confirmed = confirmed_from(&arguments).unwrap_or(false);
+        // Tier mirrors the CLI's ZESTROKU_TIER operator override (the live
+        // Express is Permissive since the M3 flip); Open stays the fail-safe
+        // default until discovery populates tier in m7c.
+        let tier = match std::env::var("ZESTROKU_TIER").as_deref() {
+            Ok("permissive") | Ok("Permissive") => AccessTier::Permissive,
+            _ => AccessTier::Open,
+        };
         let store =
             SqliteStore::open(&store_path()).map_err(|e| mcp_error(McpErrorCode::InternalError, format!("action log unavailable: {e}")))?;
         match decide(
@@ -183,6 +191,7 @@ impl ToolHandler for MutationTool {
             self.kind,
             &host,
             &target,
+            tier,
             confirmed,
             "unavailable (m7c wires the probe)",
         ) {
@@ -260,7 +269,7 @@ impl ToolHandler for RecentActionsTool {
             .map(|r| {
                 format!(
                     "#{} at={} client={} surface={} intent={:?} decision={} result={:?} before={}",
-                    r.id, r.at, r.client, r.surface, r.intent, r.result, r.before_state
+                    r.id, r.at, r.client, r.surface, r.intent, r.decision, r.result, r.before_state
                 )
             })
             .collect();
@@ -300,8 +309,16 @@ mod tests {
     #[test]
     fn unconfirmed_launch_is_refused_and_audited_denied() {
         let (_dir, store) = store_in_tmp();
-        let err = decide(&store, "launch", "192.0.2.10", "12", false, "{}")
-            .expect_err("unconfirmed refuses");
+        let err = decide(
+            &store,
+            "launch",
+            "192.0.2.10",
+            "12",
+            AccessTier::Permissive,
+            false,
+            "{}",
+        )
+        .expect_err("unconfirmed refuses");
         let MutationError::ConfirmationRequired { action_id, .. } = &err else {
             panic!("wrong error: {err:?}");
         };
@@ -318,9 +335,17 @@ mod tests {
     #[test]
     fn confirmed_launch_audits_approved_pending_and_honest_dispatch_note() {
         let (_dir, store) = store_in_tmp();
-        let text = decide(&store, "launch", "192.0.2.10", "12", true, r#"{"app":"home"}"#)
-            .expect("gate error impossible here")
-            .expect("confirmed authorizes");
+        let text = decide(
+            &store,
+            "launch",
+            "192.0.2.10",
+            "12",
+            AccessTier::Permissive,
+            true,
+            r#"{"app":"home"}"#,
+        )
+        .expect("gate error impossible here")
+        .expect("confirmed authorizes");
         assert!(text.contains("approved: audit id"), "{text}");
         assert!(text.contains("m7c"), "must not claim it dispatched: {text}");
         let rows = store.list_actions().unwrap();
@@ -332,9 +357,17 @@ mod tests {
     #[test]
     fn non_numeric_launch_id_is_arg_error_not_audited() {
         let (_dir, store) = store_in_tmp();
-        let arg = decide(&store, "launch", "192.0.2.10", "netflix", true, "{}")
-            .expect("no gate error")
-            .expect_err("non-numeric app id refuses as arg error");
+        let arg = decide(
+            &store,
+            "launch",
+            "192.0.2.10",
+            "netflix",
+            AccessTier::Permissive,
+            true,
+            "{}",
+        )
+        .expect("no gate error")
+        .expect_err("non-numeric app id refuses as arg error");
         assert!(arg.0.contains("app id must be a number"));
         assert!(store.list_actions().unwrap().is_empty(), "arg errors skip the gate");
     }
@@ -342,9 +375,18 @@ mod tests {
     #[test]
     fn tier_refusal_is_audited_before_confirmation() {
         let (_dir, store) = store_in_tmp();
-        // device_for defaults to Open tier; every mutation is tier-refused.
-        let err = decide(&store, "key", "192.0.2.10", "home", true, "{}")
-            .expect_err("open tier refuses mutations");
+        // Open tier refuses mutations even with confirmation — the tier
+        // wall precedes the confirmation gate (load-bearing ordering).
+        let err = decide(
+            &store,
+            "key",
+            "192.0.2.10",
+            "home",
+            AccessTier::Open,
+            true,
+            "{}",
+        )
+        .expect_err("open tier refuses mutations");
         assert!(matches!(err, MutationError::TierRefused(_)));
         let rows = store.list_actions().unwrap();
         assert_eq!(rows.len(), 1);

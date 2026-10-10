@@ -19,11 +19,11 @@ use std::process::ExitCode;
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::mutation::{
-    self, MutationContext, MutationError, authorize_mutation, finish_mutation,
+    MutationContext, MutationError, authorize_mutation, finish_mutation,
 };
 use zestroku_core::store::SqliteStore;
 use zestroku_proto::{Command, EcpGate, Transport, parse_active_app, parse_ecp_response, query};
-use zestroku_types::{AccessTier, Device, Error};
+use zestroku_types::{AccessTier, Device};
 
 use crate::transport::AsupersyncTransport;
 
@@ -118,7 +118,14 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         model_number: String::new(),
         software_version: String::new(),
         is_tv: false,
-        access_tier: AccessTier::Open,
+        // Tier comes from discovery (m7c). Until then ZESTROKU_TIER is the
+        // explicit operator override — the live Express is Permissive
+        // (M3 flip), and the default stays Open (fail-safe: mutations
+        // refused until the operator or discovery asserts Permissive).
+        access_tier: match std::env::var("ZESTROKU_TIER").as_deref() {
+            Ok("permissive") | Ok("Permissive") => AccessTier::Permissive,
+            _ => AccessTier::Open,
+        },
     };
 
     let store = match SqliteStore::open(&store_path()) {
@@ -186,7 +193,8 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
     let dispatch = runtime.block_on(async {
         let response = AsupersyncTransport
             .send(&device.host, device.port, &command)
-            .await?;
+            .await
+            .map_err(|e| e.to_string())?;
         let classification = parse_ecp_response(&response);
         if classification.gate == EcpGate::Limited403 {
             return Err("device returned the Limited-mode 403 gate".to_string());
@@ -194,9 +202,9 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         if classification.gate != EcpGate::Open {
             return Err(format!("unclassified response: {classification:?}"));
         }
-        Ok::<(), Error>(())
+        Ok::<(), String>(())
     });
-    let outcome = match dispatch {
+    let outcome = match &dispatch {
         Ok(()) => format!(
             "{kind} dispatched; after_state snapshot on next active-app read"
         ),

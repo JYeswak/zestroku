@@ -11,7 +11,7 @@ use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_proto::{
     Command, EcpGate, Transport, parse_active_app, parse_device_info, parse_ecp_response, query,
 };
-use zestroku_types::Error;
+use zestroku_types::{AccessTier, Device, Error};
 
 mod devices;
 mod mutate;
@@ -45,7 +45,15 @@ fn main() -> ExitCode {
         }
         Some("info") | Some("active-app") if args.len() == 2 => {
             let host = args[1].clone();
-            let device = device_from_args(&host);
+            let device = Device {
+                host: host.clone(),
+                port: 8060,
+                model_name: String::new(),
+                model_number: String::new(),
+                software_version: String::new(),
+                is_tv: false,
+                access_tier: AccessTier::Open,
+            };
             let cmd: Command = if args[0] == "info" {
                 query("device-info")
             } else {
