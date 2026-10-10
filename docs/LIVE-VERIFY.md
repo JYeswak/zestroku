@@ -72,8 +72,50 @@ No device state touched; nothing to roll back. `rm "$SEEDS"` when done.
 Do NOT commit the seeds file or paste raw device-info output (serial/UDN/MAC
 scrub rules apply) — record only the fields compared above.
 
-## After both legs
+## After both m7b legs
 
 Post `DONE m7b (b)(c)` to zestroku-guide-loop with the two output blocks
 (model/fw/tv fields only) + exit codes. The bead closer (director) runs the
 independent offline re-run; live legs are Josh's evidence, not re-runnable in CI.
+
+For machine-checkable output use `zestroku devices --json` (schema pinned in
+`crates/zestroku-cli/tests/devices_json.rs`): `{"devices":[{host,port,
+model_name,model_number,software_version,is_tv}…],"notes":[{target,reason}…]}` —
+a dead seed shows up as a `notes` entry with `target` = `host:port`.
+
+## m7e addendum: live launch leg (text: CoralDuck, integrated by OrangeShore)
+
+Prerequisites: arm64 binary (sha 47a2dfbb), device on Permissive tier (M3
+flip), action-log DB writable (`$ZESTROKU_DB` or default
+`~/.local/state/zestroku/actions.db`), explicit owner go for the mutation
+(AGENTS.md rule 3). The CLI captures the before-state automatically pre-gate,
+so no manual `active-app` capture is needed (but capturing one makes the
+audit-row comparison easier to eyeball).
+
+Leg (box 1 of zestroku-m7e-mutation-gate-svq):
+
+1. **Denial path (no owner go needed — nothing dispatches)**:
+   `zestroku launch <express-host> <app-id>` WITHOUT `--confirm`.
+   Expected: exit 4, stderr `CONFIRMATION_REQUIRED — pass --confirm <token>
+   ... (audit id N)`. Nothing sent to the device.
+2. **Audit check**: `sqlite3 ~/.local/state/zestroku/actions.db 'select
+   id,at,client,surface,intent,decision,result from actions order by id desc
+   limit 3;'` — newest row: decision=denied, result=CONFIRMATION_REQUIRED,
+   surface=launch, before_state=<pre-launch app>.
+3. **Approved launch (needs explicit owner go)**:
+   `zestroku launch <express-host> <app-id> --confirm <token>` (token = any
+   non-blank acknowledgment; Josh's go IS the approval).
+   Expected: exit 0, stdout `ok: launch <app-id> (audit id M)`; device
+   switches to the app.
+4. **After-state**: `zestroku active-app <express-host>` — shows the launched
+   app; the actions row's result was updated from `pending` to the dispatch
+   outcome by finish_mutation.
+5. **Verifier (box 4)**: a second agent re-runs steps 1-4 with Josh present
+   and countersigns; the implementer (CoralDuck) must not be the only witness.
+   Slot open — whoever runs the batch seats themselves there.
+
+Negative control: `--confirm "   "` (whitespace) behaves exactly like no flag
+(exit 4) — a blank token never launches.
+
+Rollback: relaunch the prior app (`zestroku launch <express-host>
+<prior-app-id> --confirm <token>` — itself a logged, gated mutation).
