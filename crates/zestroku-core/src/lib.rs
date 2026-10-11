@@ -6,6 +6,7 @@ pub mod discovery;
 pub mod mutation;
 pub mod ssdp_io;
 pub mod store;
+pub mod tier;
 
 use std::collections::BTreeMap;
 
