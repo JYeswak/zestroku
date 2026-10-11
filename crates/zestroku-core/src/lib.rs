@@ -7,6 +7,7 @@ pub mod mutation;
 pub mod ssdp_io;
 pub mod store;
 pub mod tier;
+pub mod version;
 
 use std::collections::BTreeMap;
 
