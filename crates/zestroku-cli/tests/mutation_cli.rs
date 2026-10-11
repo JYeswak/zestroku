@@ -152,8 +152,8 @@ fn recorded_limited_tier_refuses_without_any_override() {
         run_key_with_recorded_tier("limited", &[], &["--confirm", "yes"]);
     assert_eq!(code, 3, "stderr={stderr}");
     assert!(stderr.contains("not allowed in Open mode"), "{stderr}");
-    let store = zestroku_core::store::SqliteStore::open(&dir.path().join("actions.db"))
-        .expect("reopen");
+    let store =
+        zestroku_core::store::SqliteStore::open(&dir.path().join("actions.db")).expect("reopen");
     let rows = store.list_actions().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].result, "TIER_REFUSED");
