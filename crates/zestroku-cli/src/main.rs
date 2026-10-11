@@ -157,8 +157,7 @@ fn main() -> ExitCode {
                     if let Ok(response) = &apps
                         && let Ok(store) = store_db::open()
                     {
-                        let observed =
-                            zestroku_core::tier::classify_tier_from_response(response);
+                        let observed = zestroku_core::tier::classify_tier_from_response(response);
                         let _ = zestroku_core::tier::record_probe(
                             &store,
                             &zestroku_core::tier::device_id(&device.host, device.port),
