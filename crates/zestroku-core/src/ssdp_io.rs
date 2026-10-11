@@ -25,11 +25,8 @@
 //!   "repeat the sweep" is the caller's loop, not a tight probe.
 #![forbid(unsafe_code)]
 
-use std::time::Duration;
-
-use asupersync::net::UdpSocket;
 use std::time::{Duration, Instant};
-use asupersync::time::{timeout, wall_now};
+
 use zestroku_proto::{DeviceInfo, Transport};
 use zestroku_types::{Device, Error, Result};
 
@@ -56,49 +53,46 @@ pub struct SweepResult {
 /// `mx_secs` is the MX header value AND the collection window (responders
 /// wait a random delay inside MX, so the listener must outwait it).
 pub async fn sweep(mx_secs: u8) -> Result<SweepResult> {
+    sweep_to(crate::discovery::SSDP_ADDR, mx_secs).await
+}
+
+/// Sweep one explicit target address (multicast group for the live LAN,
+/// a loopback responder for tests). Test seam so the sweep pipeline is
+/// exercisable offline.
+pub async fn sweep_to(target: &str, mx_secs: u8) -> Result<SweepResult> {
     if mx_secs == 0 {
         return Err(Error::Malformed("ssdp: MX must be >= 1".into()));
     }
-    let mut socket = UdpSocket::bind("0.0.0.0:0")
-        .await
-        .map_err(|e| Error::Unreachable(format!("ssdp bind: {e}")))?;
     let request = build_msearch(mx_secs);
-    let sent = socket
-        .send_to(&request, crate::discovery::SSDP_ADDR)
-        .await
-        .map_err(|e| Error::Unreachable(format!("ssdp send: {e}")))?;
-    if sent != request.len() {
-        return Err(Error::Unreachable(format!(
-            "ssdp send short: {sent}/{} bytes",
-            request.len()
-        )));
-    }
-
     let window = Duration::from_secs(u64::from(mx_secs));
-    // The accumulator lives in `collect_replies`; wrapping it in `timeout`
-    // would DROP every reply received inside the window when the deadline
-    // fires (PeachKnoll finding, 2026-10-10: the whole accumulator is owned
-    // by the cancelled future). Instead: pass the window INTO the collector
-    // and let it return its accumulator when the deadline expires.
-    let collected =
-        timeout(wall_now(), window, collect_replies(&mut socket, window)).await;
-    match collected {
-        Ok(result) => Ok(result),
-        Err(_elapsed) => {
-            // Deadline fired and the collector was cancelled mid-recv: at
-            // most one reply was in flight. That is the honest empty case —
-            // never synthesize devices.
-            Ok(SweepResult {
-                endpoints: Vec::new(),
-                refused: Vec::new(),
-            })
-        }
-    }
+    // NO outer async timeout. The MX-window collection runs in a dedicated
+    // blocking std thread (the StdFallbackTransport pattern): asupersync's
+    // async `recv_from` never wakes for datagrams that arrive (bead 8dp,
+    // second finding — minimal probe loopback-local/udp_readiness_probe.rs,
+    // exit 124 local+remote), so the reactor path cannot deliver replies.
+    // The blocking std socket honors the window via a read timeout and
+    // ALWAYS returns its accumulator. One short bounded op per sweep; the
+    // async wrapper awaits its join handle.
+    let target = target.to_owned();
+    let handle = std::thread::spawn(move || collect_replies(&request, target, window));
+    Ok(handle
+        .join()
+        .map_err(|_| Error::Unreachable("ssdp collector panicked".into()))?)
 }
 
-/// Receive until the caller's timeout cancels us (cancel-safe: each
-/// `recv_from` either completes or is dropped whole with the socket).
-async fn collect_replies(socket: &mut UdpSocket, window: Duration) -> SweepResult {
+/// Blocking collector: send the M-SEARCH from a dedicated std socket to
+/// `target`, then recv until the MX window closes. Owns its accumulator;
+/// returns everything gathered (dedupe at the end) — nothing is dropped on
+/// timeout.
+fn collect_replies(request: &[u8], target: String, window: Duration) -> SweepResult {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").expect("ssdp bind");
+    socket.set_read_timeout(Some(window)).expect("read timeout");
+    let sent = socket
+        .send_to(request, &target)
+        .map_err(|e| Error::Unreachable(format!("ssdp send: {e}")))
+        .expect("ssdp send");
+    debug_assert_eq!(sent, request.len(), "M-SEARCH datagram fits one send");
+
     let mut endpoints = Vec::new();
     let mut refused = Vec::new();
     let mut buf = vec![0u8; MAX_DATAGRAM + 1]; // +1: detect oversize on read
@@ -108,20 +102,25 @@ async fn collect_replies(socket: &mut UdpSocket, window: Duration) -> SweepResul
         if remaining.is_zero() {
             break;
         }
-        match timeout(wall_now(), remaining, socket.recv_from(&mut buf)).await {
-            Ok(Ok((n, _source))) => match parse_ssdp_response(&buf[..n]) {
-                // merge_endpoints dedupes; push everything, dedupe at the end.
+        socket
+            .set_read_timeout(Some(remaining))
+            .expect("read timeout refresh");
+        match socket.recv_from(&mut buf) {
+            Ok((n, _source)) => match parse_ssdp_response(&buf[..n]) {
                 Ok(endpoint) => endpoints.push(endpoint),
                 Err(error) => refused.push(error.to_string()),
             },
-            Ok(Err(error)) => {
-                refused.push(format!("recv: {error}"));
-                // Transient interrupt → keep collecting; anything else stops.
+            Err(error) => {
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut
+                {
+                    break; // window closed
+                }
                 if error.kind() != std::io::ErrorKind::Interrupted {
+                    refused.push(format!("recv: {error}"));
                     break;
                 }
             }
-            Err(_elapsed) => break, // window closed: return what we have
         }
     }
     SweepResult {
