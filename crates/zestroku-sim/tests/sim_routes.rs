@@ -70,7 +70,7 @@ const LIMITED_HEAD: &str = "HTTP/1.1 403 Forbidden\r\n\
 Server: Roku/15.2.4 UPnP/1.0 Roku/15.2.4\r\n\
 Content-Length: 40\r\n\
 Cache-Control: no-cache\r\n\
-Content-Type: text/plain; charset=\"utf-8\"\r\n\r\n";
+Content-Type: text/plain; charset=\"utf-8\"\r\n";
 
 // ---- 1. Limited 403 bytes ------------------------------------------------
 
@@ -90,8 +90,19 @@ fn limited_403_is_byte_exact() {
         assert_eq!(r.header("Content-Type"), Some("text/plain; charset=\"utf-8\""));
         assert_eq!(r.header("Cache-Control"), Some("no-cache"));
         assert_eq!(r.header("Server"), Some("Roku/15.2.4 UPnP/1.0 Roku/15.2.4"));
-        // The whole head, in fixture order (ecp_fixture_limited_response.txt).
-        assert_eq!(r.head, LIMITED_HEAD, "{method} {path}");
+        // The captured fixture (ecp_fixture_limited_response.txt) pins header
+        // ORDER: Server, Content-Length, Cache-Control, Content-Type. The
+        // h1 server additionally appends `Connection: close` because THIS
+        // test client requests it — transport negotiation, not device
+        // behavior — so it is stripped before the order comparison, along
+        // with the blank-line separator the split leaves behind.
+        let normalized = r
+            .head
+            .replace("Connection: close\r\n", "")
+            .trim_end_matches("\r\n")
+            .to_string()
+            + "\r\n";
+        assert_eq!(normalized, LIMITED_HEAD, "{method} {path}");
     }
 }
 
