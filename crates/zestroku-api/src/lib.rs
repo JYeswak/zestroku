@@ -270,7 +270,7 @@ mod tests {
     use zestroku_proto::{Command, EcpResponse, Transport, keypress};
     use zestroku_types::{AccessTier, Device, Error, Result};
 
-    use super::{build_app, gate_before_dispatch};
+    use super::{ApiState, build_app, send_checked};
 
     const DEVICE_INFO_XML: &str = "<device-info><model-name>Roku Express 4K+</model-name>\
          <model-number>9999X</model-number><software-version>0.0.0</software-version>\
@@ -390,18 +390,29 @@ mod tests {
     }
 
     #[test]
-    fn unknown_host_returns_not_found_without_dispatch() {
+    fn unknown_hosts_return_not_found_without_dispatch_on_both_read_routes() {
         let (_dir, store) = store_with_device();
         let transport = Arc::new(FakeTransport::new([]));
         let client = TestClient::new(build_app(store, Arc::clone(&transport)));
 
-        let response = client.get("/v1/devices/192.0.2.99/info").send();
-        assert_eq!(response.status().as_u16(), 404);
-        assert!(transport.calls().is_empty());
+        for path in [
+            "/v1/devices/192.0.2.99/info",
+            "/v1/devices/192.0.2.99/active-app",
+        ] {
+            let response = client.get(path).send();
+            assert_eq!(response.status().as_u16(), 404, "path={path}");
+            assert!(transport.calls().is_empty(), "path={path}");
+        }
     }
 
     #[test]
-    fn tier_refusal_happens_before_transport_dispatch() {
+    fn send_checked_refuses_permissive_command_before_transport_dispatch() {
+        let (_dir, store) = store_with_device();
+        let transport = Arc::new(FakeTransport::new([]));
+        let state = ApiState {
+            store,
+            transport: Arc::clone(&transport),
+        };
         let device = Device {
             host: "192.0.2.10".into(),
             port: 8060,
@@ -412,13 +423,16 @@ mod tests {
             access_tier: AccessTier::Open,
         };
         let command = keypress(zestroku_types::Key::Home);
-        let mut calls = 0;
-        let result = gate_before_dispatch(&device, &command, || {
-            calls += 1;
-            ()
-        });
+        let runtime = asupersync::runtime::reactor::create_reactor()
+            .and_then(|reactor| {
+                asupersync::runtime::RuntimeBuilder::current_thread()
+                    .with_reactor(reactor)
+                    .build()
+            })
+            .expect("runtime");
+        let result = runtime.block_on(async { send_checked(&state, &device, &command).await });
 
         assert!(matches!(result, Err(Error::TierRefused { .. })));
-        assert_eq!(calls, 0);
+        assert!(transport.calls().is_empty());
     }
 }
