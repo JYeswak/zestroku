@@ -15,12 +15,15 @@ those before coding. The `serve` daemon and MCP/API lanes are not started.
 
 `zestroku` is a Mach-O arm64 binary cross-built on the Contabo workers (plain
 `--target` trips rch's os gate; `--config build.target` produces the identical
-binary). From a clean checkout at commit C:
+binary). `ring` compiles C, so the build links through
+`bin/zigcc-darwin-adapter.sh` (wired in `.cargo/config.toml`, darwin target
+only) onto the fleet's zig shim; a plain `cc` fails with `unrecognized
+command-line option '-arch'`. From a clean checkout at commit C:
 
 ```
 export ZESTROKU_BUILD_SHA=$(git rev-parse HEAD)
-export ZESTROKU_BUILD_DIRTY=$(git diff --quiet || echo true)
-RCH_REQUIRE_REMOTE=1 rch exec -- \
+export ZESTROKU_BUILD_DIRTY=$([ -n "$(git status --porcelain)" ] && echo true || echo false)
+RCH_WORKER=<your lane worker> RCH_REQUIRE_REMOTE=1 rch exec -- \
   cargo build --release -j 2 --locked \
   --config 'build.target="aarch64-apple-darwin"' \
   --config "env.ZESTROKU_BUILD_SHA=\"$ZESTROKU_BUILD_SHA\"" \
@@ -28,9 +31,13 @@ RCH_REQUIRE_REMOTE=1 rch exec -- \
   -p zestroku-cli
 ```
 
-The result is `target/aarch64-apple-darwin/release/zestroku`; `file` must
-report `Mach-O 64-bit executable arm64` — treat any untargeted artifact as
-Linux ELF until proven otherwise. `zestroku --version` prints
+A cold build takes about 22 minutes; run it unbounded. The result is
+`target/aarch64-apple-darwin/release/zestroku`; `file` must report `Mach-O
+64-bit executable arm64` — treat any untargeted artifact as Linux ELF until
+proven otherwise. `zestroku mcp` serves the MCP tools over stdio (`echo`, `list_devices`,
+`recent_actions`, and the confirmation-gated `key` and `launch`). It reads the
+shared store; it does not open LAN sockets itself.
+`zestroku --version` prints
 `zestroku <semver> <git-sha7>[-dirty]`; the sha7 equals
 `git rev-parse --short C`. A `-dirty` binary is never acceptable evidence.
 
