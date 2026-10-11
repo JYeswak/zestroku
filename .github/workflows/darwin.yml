@@ -1,0 +1,56 @@
+name: darwin
+
+# Native Mach-O arm64 build on a GitHub macOS runner (zestroku-build-darwin-l6d).
+# The rch workers are Linux: this is the reproducible route to a macOS binary
+# without the zig cross toolchain, and it runs the workspace tests natively on
+# macOS. Manual only; it is not a merge gate.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 3
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned nightly (matches rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-08-31
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+          cache-on-failure: true
+
+      - name: build release binary
+        env:
+          ZESTROKU_BUILD_SHA: ${{ github.sha }}
+          ZESTROKU_BUILD_DIRTY: "false"
+        run: cargo build --release --locked -p zestroku-cli
+
+      - name: identify the binary
+        run: |
+          file target/release/zestroku
+          shasum -a 256 target/release/zestroku
+          target/release/zestroku --version
+
+      - name: upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: zestroku-aarch64-apple-darwin
+          path: target/release/zestroku
+          if-no-files-found: error
+
+      - name: test (offline, native macOS)
+        run: cargo test --workspace
