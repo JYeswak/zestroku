@@ -40,6 +40,12 @@ where
 
     App::builder()
         .get(
+            "/health",
+            |_ctx: &RequestContext, _req: &mut Request| async {
+                json_response(StatusCode::OK, &HealthView { status: "ok" })
+            },
+        )
+        .get(
             "/v1/devices",
             move |_ctx: &RequestContext, _req: &mut Request| {
                 let state = Arc::clone(&devices_state);
@@ -73,6 +79,41 @@ where
             },
         )
         .build()
+}
+
+#[derive(Debug, Serialize)]
+struct HealthView {
+    status: &'static str,
+}
+
+/// Bind guard for the daemon listener: loopback and private (RFC 1918 or
+/// link-local) addresses only. A wildcard (`0.0.0.0`, `::`) listens on every
+/// interface and needs the explicit override flag; a public address is never
+/// accepted. Returns the parsed socket address.
+pub fn check_bind(bind: &str, allow_wildcard: bool) -> Result<std::net::SocketAddr> {
+    let addr: std::net::SocketAddr = bind
+        .parse()
+        .map_err(|_| Error::Malformed(format!("--bind {bind:?}: expected ip:port")))?;
+    let ip = addr.ip();
+    if ip.is_unspecified() {
+        return if allow_wildcard {
+            Ok(addr)
+        } else {
+            Err(Error::Malformed(format!(
+                "--bind {bind}: wildcard listens on every interface; pass --allow-unsafe-bind to accept that"
+            )))
+        };
+    }
+    let local = match ip {
+        std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => v6.is_loopback(),
+    };
+    if !local {
+        return Err(Error::Malformed(format!(
+            "--bind {bind}: only loopback or private-LAN addresses are served"
+        )));
+    }
+    Ok(addr)
 }
 
 #[derive(Debug, Serialize)]
@@ -424,15 +465,53 @@ mod tests {
         };
         let command = keypress(zestroku_types::Key::Home);
         let runtime = asupersync::runtime::reactor::create_reactor()
+            .map_err(|e| e.to_string())
             .and_then(|reactor| {
                 asupersync::runtime::RuntimeBuilder::current_thread()
                     .with_reactor(reactor)
                     .build()
+                    .map_err(|e| e.to_string())
             })
             .expect("runtime");
         let result = runtime.block_on(async { send_checked(&state, &device, &command).await });
 
         assert!(matches!(result, Err(Error::TierRefused { .. })));
         assert!(transport.calls().is_empty());
+    }
+
+    #[test]
+    fn health_route_answers_ok_without_touching_store_or_transport() {
+        let (_dir, store) = store_with_device();
+        let transport = Arc::new(FakeTransport::new([]));
+        let client = TestClient::new(build_app(store, Arc::clone(&transport)));
+
+        let response = client.get("/health").send();
+        assert_eq!(response.status().as_u16(), 200);
+        let body: serde_json::Value = serde_json::from_str(&response.text()).expect("health JSON");
+        assert_eq!(body["status"], "ok");
+        assert!(transport.calls().is_empty());
+    }
+
+    #[test]
+    fn check_bind_allows_loopback_and_private_refuses_wildcard_and_public() {
+        assert!(super::check_bind("127.0.0.1:8099", false).is_ok());
+        assert!(super::check_bind("192.168.1.20:8099", false).is_ok());
+        // Planted negatives: each guard removed turns one of these red.
+        assert!(
+            super::check_bind("0.0.0.0:8099", false).is_err(),
+            "wildcard"
+        );
+        assert!(
+            super::check_bind("[::]:8099", false).is_err(),
+            "v6 wildcard"
+        );
+        assert!(super::check_bind("8.8.8.8:8099", false).is_err(), "public");
+        assert!(
+            super::check_bind("not-an-addr", false).is_err(),
+            "malformed"
+        );
+        // The explicit override admits the wildcard, and only the wildcard.
+        assert!(super::check_bind("0.0.0.0:8099", true).is_ok());
+        assert!(super::check_bind("8.8.8.8:8099", true).is_err());
     }
 }
