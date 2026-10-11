@@ -165,20 +165,20 @@ pub struct ActiveApp {
 /// launched app: `<app id="…" type="…" …>Name</app>` (attribute form).
 /// Scrubbed-fixture tested for both.
 pub fn parse_active_app(xml: &str) -> Result<ActiveApp> {
-    let (block_start, block) = if let Some(i) = xml.find("<app ") {
+    let block = if let Some(i) = xml.find("<app ") {
         // Attribute form: <app id="…" …>Name</app>
         let end = xml[i..]
             .find("</app>")
             .map(|e| i + e)
             .ok_or_else(|| Error::Malformed("missing </app> in active-app".to_string()))?;
-        (i, &xml[i..end])
+        &xml[i..end]
     } else if let Some(i) = xml.find("<app>") {
         // Short form: <app>Name</app> (home screen; no id)
         let end = xml[i..]
             .find("</app>")
             .map(|e| i + e)
             .ok_or_else(|| Error::Malformed("missing </app> in active-app".to_string()))?;
-        (i, &xml[i..end])
+        &xml[i..end]
     } else {
         return Err(Error::Malformed("missing <app> in active-app".to_string()));
     };
@@ -215,7 +215,6 @@ pub struct InstalledApp {
 
 /// Parse the installed-app XML response. The exact Limited-mode denial body
 /// is a typed tier refusal, not an empty app list.
-#[must_use]
 pub fn parse_apps(xml: &str) -> Result<Vec<InstalledApp>> {
     if xml == LIMITED_403_BODY {
         return Err(Error::TierRefused {
