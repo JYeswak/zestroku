@@ -386,7 +386,7 @@ mod tests {
         let response = client.get("/v1/devices").send();
         assert_eq!(response.status().as_u16(), 200);
         let devices: serde_json::Value =
-            serde_json::from_str(&response.text()).expect("device JSON");
+            serde_json::from_str(response.text()).expect("device JSON");
         assert_eq!(devices[0]["host"], "192.0.2.10");
         assert_eq!(devices[0]["name"], "Fixture Roku");
         assert_eq!(devices[0]["access_tier"], "permissive");
@@ -406,7 +406,7 @@ mod tests {
 
         let info = client.get("/v1/devices/192.0.2.10/info").send();
         assert_eq!(info.status().as_u16(), 200);
-        let info_json: serde_json::Value = serde_json::from_str(&info.text()).expect("info JSON");
+        let info_json: serde_json::Value = serde_json::from_str(info.text()).expect("info JSON");
         assert_eq!(info_json["host"], "192.0.2.10");
         assert_eq!(info_json["model_name"], "Roku Express 4K+");
         assert_eq!(info_json["model_number"], "9999X");
@@ -416,7 +416,7 @@ mod tests {
         let active_app = client.get("/v1/devices/192.0.2.10/active-app").send();
         assert_eq!(active_app.status().as_u16(), 200);
         let active_json: serde_json::Value =
-            serde_json::from_str(&active_app.text()).expect("active-app JSON");
+            serde_json::from_str(active_app.text()).expect("active-app JSON");
         assert_eq!(active_json["host"], "192.0.2.10");
         assert_eq!(active_json["app_id"], 12);
         assert_eq!(active_json["name"], "Fixture App");
@@ -487,7 +487,7 @@ mod tests {
 
         let response = client.get("/health").send();
         assert_eq!(response.status().as_u16(), 200);
-        let body: serde_json::Value = serde_json::from_str(&response.text()).expect("health JSON");
+        let body: serde_json::Value = serde_json::from_str(response.text()).expect("health JSON");
         assert_eq!(body["status"], "ok");
         assert!(transport.calls().is_empty());
     }
