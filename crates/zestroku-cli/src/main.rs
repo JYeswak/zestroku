@@ -16,6 +16,7 @@ use zestroku_types::{AccessTier, Device, Error};
 mod apps;
 mod devices;
 mod mutate;
+mod serve;
 mod store_db;
 mod transport;
 
@@ -32,6 +33,7 @@ fn usage() -> &'static str {
      \x20   zestroku key <host> <KEY> [--confirm <token>]   keypress (Permissive)\n\
      \x20   zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)\n\
      \x20   zestroku mcp                         MCP server on stdio (agent tools)\n\
+     \x20   zestroku serve [--bind <ip:port>]    read-only HTTP API daemon (loopback default)\n\
      \n\
      Mutations are human-led: without --confirm they are refused locally\n\
      (exit 4), logged to the action log as denied, and nothing is sent.\n\
@@ -44,6 +46,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("devices") => devices::run(&args[1..]),
         Some("apps") => apps::run(&args[1..]),
+        Some("serve") => serve::run(&args[1..]),
         Some("mcp") => match zestroku_mcp::run_stdio() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {

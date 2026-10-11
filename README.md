@@ -93,6 +93,11 @@ App names and versions are not stable across firmware.
 `zestroku launch <host> <app-id> [--confirm <token>]` require per-operation
 confirmation and a Permissive tier; without `--confirm` they are refused
 locally (exit 4) and logged to the action log as denied.
+`zestroku serve [--bind <ip:port>]` runs the read-only HTTP API (`/health`,
+`/v1/devices`, `/v1/devices/{host}/info`, `/v1/devices/{host}/active-app`)
+over the shared store on loopback by default (`127.0.0.1:8070`). It binds
+loopback or private-LAN addresses only; a wildcard needs
+`--allow-unsafe-bind`, and the Host header must match the bind address.
 `zestroku --version` prints `zestroku <semver> <git-sha7>[-dirty]`.
 
 ## Ground truth (verified live 2026-10-09)

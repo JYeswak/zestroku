@@ -9,7 +9,9 @@ zestroku-types = { path = "../zestroku-types" }
 zestroku-proto = { path = "../zestroku-proto" }
 zestroku-core = { path = "../zestroku-core" }
 zestroku-mcp = { path = "../zestroku-mcp" }
+zestroku-api = { path = "../zestroku-api" }
 asupersync = { workspace = true }
+fastapi = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
