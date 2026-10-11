@@ -70,3 +70,14 @@ every listener. Full recipe: plan §3 in the edge-library canonical copy.
 `RCH_WORKER=contabo-1 RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -j 2` — all
 crates, every commit. The tier-gate tests (core) and fixture parser tests (proto)
 are load-bearing: they encode the Limited/Permissive finding structurally.
+
+Run `cargo fmt --all --check` (non-compiling, allowed locally) before every
+commit, and `cargo clippy --workspace --all-targets -- -D warnings` remotely
+when a worker has a slot: CI runs fmt, check, clippy, test, one-asupersync,
+tokio-ban and identifier-scrub in that order and a failure at one step skips
+all the later ones, so a red fmt hides everything behind it (15 consecutive
+runs did, 2026-10-10 20:06Z to 22:55Z). A `[test]` tag means a remote
+`Remote command finished: exit=0` was observed, not that CI passed. After a
+remote failure of the form `cannot find ... in zestroku_core`, `touch` the
+core crate's `src/lib.rs` and rerun: rch workers keep a stale fingerprint
+when another agent built a different tree on the same worker.
