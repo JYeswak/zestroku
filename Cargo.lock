@@ -3893,7 +3893,9 @@ dependencies = [
  "serde_json",
  "tempfile",
  "zestroku-core",
+ "zestroku-mcp",
  "zestroku-proto",
+ "zestroku-sim",
  "zestroku-types",
 ]
 

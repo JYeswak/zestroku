@@ -2,6 +2,8 @@
 //!
 //! SSDP sweep ∪ targets.toml seeds, each endpoint probed for `device-info`.
 //! `--no-ssdp` is the seeds-only run (flaky or black-holed multicast).
+//! `--scan <cidr>` adds hosts that answer on the ECP port (private ranges
+//! only, at most a /22): discovery that needs no multicast grant.
 //! `--json` emits a machine-checkable object instead of the tab-separated
 //! lines (schema in `tests/devices_json.rs` / docs/LIVE-VERIFY.md).
 
@@ -11,16 +13,23 @@ use std::process::ExitCode;
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::discovery::{parse_targets, reconcile};
 use zestroku_core::ssdp_io::discover;
+use zestroku_core::store::Store;
 use zestroku_proto::{Transport, parse_device_info, query};
 use zestroku_types::{Device, Error, Result};
 
+use crate::store_db;
 use crate::transport::{AsupersyncTransport, send_selected};
+
+#[path = "scan.rs"]
+mod scan;
 
 struct Opts {
     no_ssdp: bool,
     targets: Option<PathBuf>,
     mx: u8,
     json: bool,
+    scan: Option<String>,
+    scan_port: u16,
 }
 
 fn parse_opts(args: &[String]) -> std::result::Result<Opts, String> {
@@ -29,6 +38,8 @@ fn parse_opts(args: &[String]) -> std::result::Result<Opts, String> {
         targets: std::env::var_os("ZESTROKU_TARGETS").map(PathBuf::from),
         mx: 3,
         json: false,
+        scan: None,
+        scan_port: zestroku_core::discovery::ECP_DEFAULT_PORT,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -44,6 +55,16 @@ fn parse_opts(args: &[String]) -> std::result::Result<Opts, String> {
                     .and_then(|v| v.parse().ok())
                     .filter(|v| (1..=5).contains(v))
                     .ok_or("--mx needs 1..=5")?;
+            }
+            "--scan" => {
+                o.scan = Some(it.next().ok_or("--scan needs a CIDR (a.b.c.d/n)")?.clone());
+            }
+            "--scan-port" => {
+                o.scan_port = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|p| *p != 0)
+                    .ok_or("--scan-port needs 1..=65535")?;
             }
             other => return Err(format!("unknown option {other}")),
         }
@@ -105,6 +126,29 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let seeds = match &opts.scan {
+        None => seeds,
+        Some(cidr) => {
+            let hosts = match zestroku_core::discovery::expand_cidr(cidr) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("zestroku devices: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let open = scan::open_hosts(&hosts, opts.scan_port, scan::CONNECT_TIMEOUT);
+            eprintln!(
+                "zestroku devices: scanned {} hosts, {} answered on port {}",
+                hosts.len(),
+                open.len(),
+                opts.scan_port
+            );
+            let mut text = seeds.unwrap_or_default();
+            text.push('\n');
+            text.push_str(&scan::seeds_text(&open, opts.scan_port));
+            Some(text)
+        }
+    };
     if opts.no_ssdp && seeds.is_none() {
         eprintln!(
             "zestroku devices: --no-ssdp needs a targets.toml (--targets or ZESTROKU_TARGETS)"
@@ -132,6 +176,66 @@ pub fn run(args: &[String]) -> ExitCode {
     });
     match result {
         Ok((devices, notes)) => {
+            // Persist inventory (zestroku-tier-discovery-jt8 [d]): one
+            // DeviceRow per discovered device, id = "host:port". Privacy:
+            // model-name/number/version only; never serial, UDN, MAC,
+            // device-id, advertising-id or the friendly name; the raw
+            // device-info body is not retained. A store failure must not
+            // hide the devices: they are printed below regardless, with a
+            // typed note on stderr and a non-zero exit.
+            let mut store_err: Option<String> = None;
+            let opened = store_db::open();
+            let store = match &opened {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    store_err = Some(format!("store unavailable: {e}"));
+                    None
+                }
+            };
+            let mut rows = Vec::with_capacity(devices.len());
+            for d in &devices {
+                let id = zestroku_core::tier::device_id(&d.host, d.port);
+                let access_tier = match store {
+                    Some(s) => match zestroku_core::tier::recorded_tier_for(s, &d.host, d.port) {
+                        Ok(Some(t)) => t.as_str().to_string(),
+                        Ok(None) => "unknown".to_string(),
+                        Err(e) => {
+                            if store_err.is_none() {
+                                store_err = Some(format!("tier lookup {id}: {e}"));
+                            }
+                            "unknown".to_string()
+                        }
+                    },
+                    None => "unknown".to_string(),
+                };
+                rows.push(zestroku_core::store::DeviceRow {
+                    id: id.clone(),
+                    name: d.model_name.clone(),
+                    ip: d.host.clone(),
+                    model: d.model_name.clone(),
+                    model_num: d.model_number.clone(),
+                    firmware: d.software_version.clone(),
+                    wifi_driver: String::new(),
+                    access_tier,
+                    last_seen: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|t| t.as_secs() as i64)
+                        .unwrap_or(0),
+                });
+            }
+            if let Some(s) = store {
+                for row in &rows {
+                    if let Err(e) = s.upsert_device(row) {
+                        if store_err.is_none() {
+                            store_err = Some(format!("upsert {}: {e}", row.id));
+                        }
+                        break;
+                    }
+                }
+            }
+            if let Some(note) = &store_err {
+                eprintln!("zestroku devices: store note: {note}");
+            }
             if opts.json {
                 // Machine-checkable output for scripted/live verification
                 // (docs/LIVE-VERIFY.md). Stable field order; notes carry
@@ -168,6 +272,10 @@ pub fn run(args: &[String]) -> ExitCode {
             if devices.is_empty() {
                 eprintln!("zestroku devices: no devices found");
                 ExitCode::FAILURE
+            } else if store_err.is_some() {
+                // Devices were found and printed; the persist failure is
+                // still real and must not read as a clean run.
+                ExitCode::from(5)
             } else {
                 ExitCode::SUCCESS
             }

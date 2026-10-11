@@ -8,12 +8,14 @@ license.workspace = true
 zestroku-types = { path = "../zestroku-types" }
 zestroku-proto = { path = "../zestroku-proto" }
 zestroku-core = { path = "../zestroku-core" }
+zestroku-mcp = { path = "../zestroku-mcp" }
 asupersync = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+zestroku-sim = { path = "../zestroku-sim" }
 
 [[bin]]
 name = "zestroku"

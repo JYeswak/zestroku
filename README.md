@@ -34,7 +34,10 @@ RCH_WORKER=<your lane worker> RCH_REQUIRE_REMOTE=1 rch exec -- \
 A cold build takes about 22 minutes; run it unbounded. The result is
 `target/aarch64-apple-darwin/release/zestroku`; `file` must report `Mach-O
 64-bit executable arm64` — treat any untargeted artifact as Linux ELF until
-proven otherwise. `zestroku --version` prints
+proven otherwise. `zestroku mcp` serves the MCP tools over stdio (`echo`, `list_devices`,
+`recent_actions`, and the confirmation-gated `key` and `launch`). It reads the
+shared store; it does not open LAN sockets itself.
+`zestroku --version` prints
 `zestroku <semver> <git-sha7>[-dirty]`; the sha7 equals
 `git rev-parse --short C`. A `-dirty` binary is never acceptable evidence.
 
@@ -72,7 +75,12 @@ Design principles (inherited):
 
 ## Current CLI surface
 
-`zestroku devices` lists discovered devices from the store.
+`zestroku devices` discovers devices (SSDP plus optional seeds) and records
+them in the store. macOS gates UDP multicast per executable: a freshly built
+binary can find zero devices by SSDP while TCP to the ECP port works
+(measured 2026-10-11, byte-identical copies behaved differently). Use
+`--scan <cidr>` (private ranges, at most a /22, e.g. `--scan 192.168.1.0/24`)
+or `--targets <file>` for discovery that needs no multicast grant.
 `zestroku info <host>` fetches device-info and records the device's observed
 tier; `zestroku active-app <host>` reads the focused app.
 `zestroku apps <host> [--json]` lists installed apps in name order. It

@@ -295,6 +295,137 @@ impl ToolHandler for RecentActionsTool {
     }
 }
 
+/// Connectivity check: returns `text` unchanged. Proves the stdio
+/// handshake end to end without touching the store or the network.
+pub struct EchoTool;
+
+impl ToolHandler for EchoTool {
+    fn definition(&self) -> Tool {
+        Tool {
+            name: "echo".to_string(),
+            description: Some("Echo the given text back unchanged (connectivity check).".into()),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"]
+            }),
+            output_schema: None,
+            icon: None,
+            version: None,
+            tags: vec!["zestroku".to_string()],
+            annotations: Some(ToolAnnotations {
+                read_only: Some(true),
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn execution_mode(&self) -> ToolExecutionMode {
+        ToolExecutionMode::Blocking
+    }
+
+    fn call(&self, _ctx: &McpContext, arguments: serde_json::Value) -> McpResult<Vec<Content>> {
+        let text = arguments
+            .get("text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| mcp_error(McpErrorCode::InvalidParams, "missing `text`"))?;
+        Ok(vec![Content::Text {
+            text: text.to_string(),
+        }])
+    }
+}
+
+/// Render stored devices, one line each. Only fields the store already
+/// holds privately-safe: id (`host:port`), model number, firmware, tier,
+/// last-seen. No serial, UDN, MAC, ad-id or friendly name is ever stored.
+pub fn render_devices(rows: &[zestroku_core::store::DeviceRow]) -> String {
+    if rows.is_empty() {
+        return "no devices recorded (run `zestroku devices`)".to_string();
+    }
+    rows.iter()
+        .map(|d| {
+            format!(
+                "{} model={} firmware={} tier={} last_seen={}",
+                d.id, d.model_num, d.firmware, d.access_tier, d.last_seen
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Read-only inventory: the devices the CLI discovery sweep persisted.
+/// Store read only, so it works from a process tree that cannot open LAN
+/// sockets.
+pub struct ListDevicesTool;
+
+impl ToolHandler for ListDevicesTool {
+    fn definition(&self) -> Tool {
+        Tool {
+            name: "list_devices".to_string(),
+            description: Some(
+                "Read-only inventory of discovered Roku devices (from the shared store)."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
+            icon: None,
+            version: None,
+            tags: vec!["zestroku".to_string()],
+            annotations: Some(ToolAnnotations {
+                read_only: Some(true),
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn execution_mode(&self) -> ToolExecutionMode {
+        ToolExecutionMode::Blocking
+    }
+
+    fn call(&self, _ctx: &McpContext, _arguments: serde_json::Value) -> McpResult<Vec<Content>> {
+        let store = SqliteStore::open(&store_path()).map_err(|e| {
+            mcp_error(
+                McpErrorCode::InternalError,
+                format!("store unavailable: {e}"),
+            )
+        })?;
+        let rows = store
+            .list_devices()
+            .map_err(|e| mcp_error(McpErrorCode::InternalError, format!("store: {e}")))?;
+        Ok(vec![Content::Text {
+            text: render_devices(&rows),
+        }])
+    }
+}
+
+/// The MCP server: one tool per implemented CLI surface (inventory, audit
+/// log, gated key/launch) plus `echo`.
+pub fn server() -> fastmcp::auto::Server {
+    fastmcp::auto::server_builder("zestroku", env!("CARGO_PKG_VERSION"))
+        .tool(EchoTool)
+        .tool(ListDevicesTool)
+        .tool(RecentActionsTool { limit: 20 })
+        .tool(MutationTool { kind: "key" })
+        .tool(MutationTool { kind: "launch" })
+        .build()
+}
+
+/// Serve the MCP tools over stdio under one asupersync runtime. Returns
+/// only on setup failure: a running stdio server ends the process.
+pub fn run_stdio() -> Result<(), String> {
+    use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
+    let reactor = create_reactor().map_err(|e| format!("create I/O reactor: {e}"))?;
+    let runtime = RuntimeBuilder::current_thread()
+        .with_reactor(reactor)
+        .blocking_threads(0, 16)
+        .build()
+        .map_err(|e| format!("build asupersync runtime: {e}"))?;
+    runtime.block_on(async {
+        let cx = asupersync::Cx::current().ok_or("runtime installs no ambient Cx")?;
+        server().run_stdio_with_cx(&cx).await
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

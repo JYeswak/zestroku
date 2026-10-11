@@ -43,7 +43,7 @@ fn access_tier_for(host: &str) -> std::result::Result<AccessTier, TierLookupErro
 
     let store =
         crate::store_db::open().map_err(|error| TierLookupError::Store(error.to_string()))?;
-    let recorded = zestroku_core::tier::recorded_tier(&store, host)
+    let recorded = zestroku_core::tier::recorded_tier_for(&store, host, 8060)
         .map_err(|error| TierLookupError::Store(error.to_string()))?;
     recorded
         .map(|tier| tier.access_tier())

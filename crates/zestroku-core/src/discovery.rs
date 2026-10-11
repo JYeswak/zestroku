@@ -110,6 +110,47 @@ pub fn merge_endpoints(found: &[Endpoint], seeds: &[Endpoint]) -> Vec<Endpoint> 
     all
 }
 
+/// Widest scan the CLI will run: a /22 (1022 hosts). A bigger sweep is not
+/// a home-LAN sweep and is refused.
+pub const SCAN_MAX_PREFIX_WIDTH: u8 = 22;
+
+/// Expand `a.b.c.d/n` into the host addresses to probe (non-multicast
+/// discovery: a bounded TCP probe of ECP's port). Own-LAN rule: only
+/// RFC 1918 and loopback ranges, and at most a /22. For prefixes shorter
+/// than /31 the network and broadcast addresses are excluded.
+pub fn expand_cidr(cidr: &str) -> Result<Vec<std::net::Ipv4Addr>> {
+    let bad = |m: &str| Error::Malformed(format!("--scan {cidr:?}: {m}"));
+    let (addr, prefix) = cidr
+        .split_once('/')
+        .ok_or_else(|| bad("expected a.b.c.d/n"))?;
+    let addr: std::net::Ipv4Addr = addr.parse().map_err(|_| bad("not an IPv4 address"))?;
+    let prefix: u8 = prefix.parse().map_err(|_| bad("bad prefix length"))?;
+    if prefix > 32 {
+        return Err(bad("prefix longer than /32"));
+    }
+    if prefix < SCAN_MAX_PREFIX_WIDTH {
+        return Err(bad("wider than /22 (1022 hosts) is not a home-LAN sweep"));
+    }
+    if !(addr.is_private() || addr.is_loopback()) {
+        return Err(bad(
+            "only private (RFC 1918) or loopback ranges are scanned",
+        ));
+    }
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    let base = u32::from(addr) & mask;
+    let last = base | !mask;
+    let (first, end) = match prefix {
+        32 => (base, base),
+        31 => (base, last),
+        _ => (base + 1, last - 1),
+    };
+    Ok((first..=end).map(std::net::Ipv4Addr::from).collect())
+}
+
 /// Reconcile an endpoint plus its `query/device-info` into a `Device`.
 /// Tier starts `Open` (the safe assumption) until a probe says otherwise.
 pub fn reconcile(ep: &Endpoint, info: &DeviceInfo) -> Device {
@@ -220,5 +261,35 @@ mod tests {
             ("192.0.2.10", 8060, false)
         );
         assert_eq!(d.model_number, "3941X");
+    }
+
+    #[test]
+    fn expand_cidr_excludes_network_and_broadcast() {
+        let hosts = expand_cidr("192.168.1.77/24").unwrap();
+        assert_eq!(hosts.len(), 254);
+        assert_eq!(hosts[0].to_string(), "192.168.1.1");
+        assert_eq!(hosts[253].to_string(), "192.168.1.254");
+    }
+
+    #[test]
+    fn expand_cidr_small_prefixes() {
+        assert_eq!(expand_cidr("192.168.1.9/32").unwrap().len(), 1);
+        assert_eq!(expand_cidr("192.168.1.8/31").unwrap().len(), 2);
+        assert_eq!(
+            expand_cidr("127.0.0.1/32").unwrap()[0].to_string(),
+            "127.0.0.1"
+        );
+        assert_eq!(expand_cidr("10.0.0.0/22").unwrap().len(), 1022);
+    }
+
+    #[test]
+    fn expand_cidr_refuses_public_wide_and_malformed() {
+        // Planted negatives: each removal of a guard turns one of these red.
+        assert!(expand_cidr("8.8.8.0/24").is_err(), "public range");
+        assert!(expand_cidr("192.168.0.0/16").is_err(), "wider than /22");
+        assert!(expand_cidr("192.168.1.0/33").is_err(), "prefix > 32");
+        assert!(expand_cidr("192.168.1.0").is_err(), "no prefix");
+        assert!(expand_cidr("not-an-ip/24").is_err(), "not an address");
+        assert!(expand_cidr("192.168.1.0/x").is_err(), "bad prefix");
     }
 }

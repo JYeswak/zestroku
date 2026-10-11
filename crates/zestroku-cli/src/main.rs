@@ -31,6 +31,7 @@ fn usage() -> &'static str {
      \x20   zestroku active-app <host>           focused app (Open tier)\n\
      \x20   zestroku key <host> <KEY> [--confirm <token>]   keypress (Permissive)\n\
      \x20   zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)\n\
+     \x20   zestroku mcp                         MCP server on stdio (agent tools)\n\
      \n\
      Mutations are human-led: without --confirm they are refused locally\n\
      (exit 4), logged to the action log as denied, and nothing is sent.\n\
@@ -43,8 +44,18 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("devices") => devices::run(&args[1..]),
         Some("apps") => apps::run(&args[1..]),
+        Some("mcp") => match zestroku_mcp::run_stdio() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("zestroku mcp: {e}");
+                ExitCode::from(1)
+            }
+        },
         Some("--version") | Some("version") => {
-            println!("{}", zestroku_core::version::version_string(env!("CARGO_PKG_VERSION")));
+            println!(
+                "{}",
+                zestroku_core::version::version_string(env!("CARGO_PKG_VERSION"))
+            );
             ExitCode::SUCCESS
         }
         Some("--transport-probe") => {
@@ -149,7 +160,7 @@ fn main() -> ExitCode {
                                 zestroku_core::tier::classify_tier_from_response(response);
                             let _ = zestroku_core::tier::record_probe(
                                 &store,
-                                &device.host,
+                                &zestroku_core::tier::device_id(&device.host, device.port),
                                 observed,
                                 &format!("{}", parse_ecp_response(response).gate as i32),
                             );

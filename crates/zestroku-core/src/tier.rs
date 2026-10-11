@@ -147,6 +147,26 @@ pub fn recorded_tier<S: Store + ?Sized>(
         .and_then(|row| ObservedTier::parse(&row.tier)))
 }
 
+/// The one canonical key for a device across `info`, `devices`, `apps`
+/// and the mutation gate: `host:port`.
+pub fn device_id(host: &str, port: u16) -> String {
+    format!("{host}:{port}")
+}
+
+/// Recorded tier under the canonical `host:port` key, falling back to the
+/// bare-host key that earlier builds wrote (so an existing recorded tier is
+/// not lost to the unification). The canonical row wins when both exist.
+pub fn recorded_tier_for<S: Store + ?Sized>(
+    store: &S,
+    host: &str,
+    port: u16,
+) -> Result<Option<ObservedTier>, StoreError> {
+    if let Some(t) = recorded_tier(store, &device_id(host, port))? {
+        return Ok(Some(t));
+    }
+    recorded_tier(store, host)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +331,63 @@ mod tests {
             Some(ObservedTier::Limited)
         );
         assert!(store.get_device("192.0.2.99").unwrap().is_none());
+    }
+
+    #[test]
+    fn device_id_is_host_colon_port() {
+        assert_eq!(device_id("192.0.2.7", 8060), "192.0.2.7:8060");
+    }
+
+    #[test]
+    fn info_and_devices_agree_on_one_key() {
+        // `info` records under device_id(host, port); `devices` reads and
+        // writes the inventory row under "host:port". Same key, so the
+        // inventory row's tier follows the probe (was `unknown` forever
+        // when info keyed by bare host).
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&dir.path().join("k.db")).expect("open");
+        let id = device_id("192.0.2.8", 8060);
+        store
+            .upsert_device(&crate::store::DeviceRow {
+                id: id.clone(),
+                name: String::new(),
+                ip: "192.0.2.8".into(),
+                model: String::new(),
+                model_num: "X".into(),
+                firmware: "1".into(),
+                wifi_driver: String::new(),
+                access_tier: "unknown".into(),
+                last_seen: 1,
+            })
+            .unwrap();
+        record_probe(&store, &id, ObservedTier::Permissive, "200").unwrap();
+        assert_eq!(
+            store.get_device(&id).unwrap().unwrap().access_tier,
+            "permissive"
+        );
+        assert_eq!(
+            recorded_tier_for(&store, "192.0.2.8", 8060).unwrap(),
+            Some(ObservedTier::Permissive)
+        );
+    }
+
+    #[test]
+    fn recorded_tier_for_reads_legacy_bare_host_rows() {
+        // Rows written before the unification used the bare host.
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&dir.path().join("l.db")).expect("open");
+        record_probe(&store, "192.0.2.9", ObservedTier::Permissive, "200").unwrap();
+        assert_eq!(
+            recorded_tier_for(&store, "192.0.2.9", 8060).unwrap(),
+            Some(ObservedTier::Permissive)
+        );
+        // The canonical row wins when both exist.
+        record_probe(&store, "192.0.2.9:8060", ObservedTier::Limited, "403").unwrap();
+        assert_eq!(
+            recorded_tier_for(&store, "192.0.2.9", 8060).unwrap(),
+            Some(ObservedTier::Limited)
+        );
+        // Unrelated host: nothing.
+        assert_eq!(recorded_tier_for(&store, "192.0.2.10", 8060).unwrap(), None);
     }
 }
