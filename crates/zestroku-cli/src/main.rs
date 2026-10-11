@@ -44,7 +44,10 @@ fn main() -> ExitCode {
         Some("devices") => devices::run(&args[1..]),
         Some("apps") => apps::run(&args[1..]),
         Some("--version") | Some("version") => {
-            println!("{}", zestroku_core::version::version_string(env!("CARGO_PKG_VERSION")));
+            println!(
+                "{}",
+                zestroku_core::version::version_string(env!("CARGO_PKG_VERSION"))
+            );
             ExitCode::SUCCESS
         }
         Some("--transport-probe") => {

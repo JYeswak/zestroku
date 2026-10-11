@@ -10,7 +10,13 @@
 #[must_use]
 pub fn sha7() -> &'static str {
     match option_env!("ZESTROKU_BUILD_SHA") {
-        Some(sha) if !sha.is_empty() && sha.len() >= 7 && sha[..7].bytes().all(|b| b.is_ascii_hexdigit()) => &sha[..7],
+        Some(sha)
+            if !sha.is_empty()
+                && sha.len() >= 7
+                && sha[..7].bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            &sha[..7]
+        }
         _ => "unknown",
     }
 }
@@ -46,10 +52,16 @@ mod tests {
         assert_eq!(fields[1], env!("CARGO_PKG_VERSION"));
         let last = fields[2];
         if dirty() {
-            assert!(last.ends_with("-dirty"), "dirty build must print -dirty: {v}");
+            assert!(
+                last.ends_with("-dirty"),
+                "dirty build must print -dirty: {v}"
+            );
             assert_eq!(fields.len(), 3);
         } else {
-            assert!(!last.contains('-'), "clean build must not print -dirty: {v}");
+            assert!(
+                !last.contains('-'),
+                "clean build must not print -dirty: {v}"
+            );
         }
         if sha7() != "unknown" {
             assert_eq!(last.trim_end_matches("-dirty").len(), 7);
