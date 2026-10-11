@@ -22,11 +22,12 @@ struct ApiState<S, T> {
 /// Build the read-only v1 HTTP API over a shared store and ECP transport.
 ///
 /// It registers `GET /v1/devices`, `GET /v1/devices/{host}/info`, and
-/// `GET /v1/devices/{host}/active-app`. Host-specific reads return 404 unless
-/// the host is already in the store; non-open ECP responses map to 502.
-/// The store mutex is held only for synchronous store calls and is released
-/// before any transport await. Host-specific reads are limited to devices
-/// already present in the inventory.
+/// `GET /v1/devices/{host}/active-app`; `{host}` accepts a host or host:port
+/// inventory id. Host-specific reads return 404 unless that exact device id
+/// is present in the store. Required info/active-app reads map non-open ECP
+/// responses to 502; info treats the apps tier probe and channel 404 as data
+/// and refreshes the stored tier. The store mutex is held only for synchronous
+/// store calls and is released before each transport await.
 pub fn build_app<S, T>(store: Arc<Mutex<S>>, transport: Arc<T>) -> App
 where
     S: Store + Send + 'static,
@@ -55,11 +56,11 @@ where
         .get(
             "/v1/devices/{host}/info",
             move |_ctx: &RequestContext, req: &mut Request| {
-                let host = path_host(req);
+                let target = path_target(req);
                 let state = Arc::clone(&info_state);
                 async move {
-                    match host {
-                        Some(host) => device_info(&state, &host).await,
+                    match target {
+                        Some(target) => device_info(&state, &target).await,
                         None => error_response(StatusCode::BAD_REQUEST, "missing_host"),
                     }
                 }
@@ -68,11 +69,11 @@ where
         .get(
             "/v1/devices/{host}/active-app",
             move |_ctx: &RequestContext, req: &mut Request| {
-                let host = path_host(req);
+                let target = path_target(req);
                 let state = Arc::clone(&active_app_state);
                 async move {
-                    match host {
-                        Some(host) => active_app(&state, &host).await,
+                    match target {
+                        Some(target) => active_app(&state, &target).await,
                         None => error_response(StatusCode::BAD_REQUEST, "missing_host"),
                     }
                 }
@@ -127,13 +128,14 @@ struct DeviceSummary {
     last_seen: i64,
 }
 
-#[derive(Debug, Serialize)]
 struct DeviceInfoView {
     host: String,
     model_name: String,
     model_number: String,
     software_version: String,
     is_tv: bool,
+    access_tier: String,
+    tv_active_channel: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -172,16 +174,59 @@ fn list_devices<S: Store, T>(state: &ApiState<S, T>) -> Response {
     json_response(StatusCode::OK, &devices)
 }
 
-fn path_host(req: &Request) -> Option<String> {
+fn path_target(req: &Request) -> Option<String> {
     req.get_extension::<PathParams>()
         .and_then(|params| params.get("host"))
         .map(str::to_owned)
 }
 
-fn device_for_gate(row: &DeviceRow) -> Device {
+#[derive(Debug)]
+struct DeviceTarget {
+    port: u16,
+    id: String,
+}
+
+fn parse_device_target(raw: &str) -> Option<DeviceTarget> {
+    if raw.is_empty()
+        || raw
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || matches!(byte, b'/' | b'\\' | b'?' | b'#'))
+    {
+        return None;
+    }
+
+    let (host, port) = if let Some(bracketed) = raw.strip_prefix('[') {
+        let close = bracketed.find(']')?;
+        let host = &bracketed[..close];
+        let suffix = &bracketed[close + 1..];
+        let port = if suffix.is_empty() {
+            ECP_DEFAULT_PORT
+        } else {
+            suffix.strip_prefix(':')?.parse::<u16>().ok()?
+        };
+        (host.to_owned(), port)
+    } else if let Some((host, port)) = raw.rsplit_once(':') {
+        if !host.contains(':') {
+            (host.to_owned(), port.parse::<u16>().ok()?)
+        } else if raw.parse::<std::net::Ipv6Addr>().is_ok() {
+            (raw.to_owned(), ECP_DEFAULT_PORT)
+        } else {
+            return None;
+        }
+    } else {
+        (raw.to_owned(), ECP_DEFAULT_PORT)
+    };
+    if host.is_empty() || port == 0 {
+        return None;
+    }
+    let id = zestroku_core::tier::device_id(&host, port);
+    Some(DeviceTarget { port, id })
+}
+
+fn device_for_gate(row: &DeviceRow, target: &DeviceTarget) -> Device {
     Device {
         host: row.ip.clone(),
-        port: ECP_DEFAULT_PORT,
+        port: target.port,
         model_name: row.model.clone(),
         model_number: row.model_num.clone(),
         software_version: row.firmware.clone(),
@@ -195,14 +240,16 @@ fn device_for_gate(row: &DeviceRow) -> Device {
     }
 }
 
-fn find_device<S: Store, T>(state: &ApiState<S, T>, host: &str) -> Result<Option<DeviceRow>> {
+fn find_device<S: Store, T>(
+    state: &ApiState<S, T>,
+    target: &DeviceTarget,
+) -> Result<Option<DeviceRow>> {
     let store = state
         .store
         .lock()
         .map_err(|_| Error::Unreachable("inventory store lock poisoned".into()))?;
     store
-        .list_devices()
-        .map(|rows| rows.into_iter().find(|row| row.ip == host))
+        .get_device(&target.id)
         .map_err(|error| Error::Unreachable(format!("inventory store: {error}")))
 }
 
@@ -226,13 +273,17 @@ async fn send_checked<T: Transport>(
     .await
 }
 
-async fn device_info<S: Store, T: Transport>(state: &ApiState<S, T>, host: &str) -> Response {
-    let row = match find_device(state, host) {
+async fn device_info<S: Store, T: Transport>(state: &ApiState<S, T>, raw_target: &str) -> Response {
+    let target = match parse_device_target(raw_target) {
+        Some(target) => target,
+        None => return error_response(StatusCode::BAD_REQUEST, "invalid_device_target"),
+    };
+    let row = match find_device(state, &target) {
         Ok(Some(row)) => row,
         Ok(None) => return error_response(StatusCode::NOT_FOUND, "device_not_found"),
         Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
     };
-    let device = device_for_gate(&row);
+    let device = device_for_gate(&row, &target);
     let command = query("device-info");
     let response = match send_checked(state, &device, &command).await {
         Ok(response) if parse_ecp_response(&response).gate == EcpGate::Open => response,
@@ -242,19 +293,58 @@ async fn device_info<S: Store, T: Transport>(state: &ApiState<S, T>, host: &str)
         }
         Err(_) => return error_response(StatusCode::from_u16(502), "transport_error"),
     };
-    match parse_device_info(&response.body) {
-        Ok(info) => json_response(StatusCode::OK, &device_info_view(host, info)),
-        Err(_) => error_response(StatusCode::from_u16(502), "malformed_device_info"),
-    }
+    let info = match parse_device_info(&response.body) {
+        Ok(info) => info,
+        Err(_) => return error_response(StatusCode::from_u16(502), "malformed_device_info"),
+    };
+
+    // Match the CLI info probe: tier comes from the live apps response, not
+    // a potentially stale inventory value. This is a read-only ECP probe.
+    let apps = state
+        .transport
+        .send(&device.host, device.port, &query("apps"))
+        .await;
+    let access_tier = match &apps {
+        Ok(response) => {
+            let observed = zestroku_core::tier::classify_tier_from_response(response);
+            let tier = observed.as_str().to_owned();
+            let outcome = format!("{}", parse_ecp_response(response).gate as i32);
+            if let Ok(store) = state.store.lock() {
+                let _ = zestroku_core::tier::record_probe(&*store, &target.id, observed, &outcome);
+            }
+            tier
+        }
+        Err(_) => "unknown".to_owned(),
+    };
+    let tv_channel = match state
+        .transport
+        .send(&device.host, device.port, &query("tv-active-channel"))
+        .await
+    {
+        Ok(response) => match parse_ecp_response(&response).gate {
+            EcpGate::Open | EcpGate::Limited403 => Some(true),
+            EcpGate::Absent404 => Some(false),
+            _ => None,
+        },
+        Err(_) => None,
+    };
+    json_response(
+        StatusCode::OK,
+        &device_info_view(&device.host, info, access_tier, tv_channel),
+    )
 }
 
-async fn active_app<S: Store, T: Transport>(state: &ApiState<S, T>, host: &str) -> Response {
-    let row = match find_device(state, host) {
+async fn active_app<S: Store, T: Transport>(state: &ApiState<S, T>, raw_target: &str) -> Response {
+    let target = match parse_device_target(raw_target) {
+        Some(target) => target,
+        None => return error_response(StatusCode::BAD_REQUEST, "invalid_device_target"),
+    };
+    let row = match find_device(state, &target) {
         Ok(Some(row)) => row,
         Ok(None) => return error_response(StatusCode::NOT_FOUND, "device_not_found"),
         Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
     };
-    let device = device_for_gate(&row);
+    let device = device_for_gate(&row, &target);
     let command = query("active-app");
     let response = match send_checked(state, &device, &command).await {
         Ok(response) if parse_ecp_response(&response).gate == EcpGate::Open => response,
@@ -265,18 +355,25 @@ async fn active_app<S: Store, T: Transport>(state: &ApiState<S, T>, host: &str) 
         Err(_) => return error_response(StatusCode::from_u16(502), "transport_error"),
     };
     match parse_active_app(&response.body) {
-        Ok(app) => json_response(StatusCode::OK, &active_app_view(host, app)),
+        Ok(app) => json_response(StatusCode::OK, &active_app_view(&device.host, app)),
         Err(_) => error_response(StatusCode::from_u16(502), "malformed_active_app"),
     }
 }
 
-fn device_info_view(host: &str, info: DeviceInfo) -> DeviceInfoView {
+fn device_info_view(
+    host: &str,
+    info: DeviceInfo,
+    access_tier: String,
+    tv_active_channel: Option<bool>,
+) -> DeviceInfoView {
     DeviceInfoView {
         host: host.to_owned(),
         model_name: info.model_name,
         model_number: info.model_number,
         software_version: info.software_version,
         is_tv: info.is_tv,
+        access_tier,
+        tv_active_channel,
     }
 }
 
@@ -351,21 +448,29 @@ mod tests {
     }
 
     fn response(body: &str) -> EcpResponse {
+        response_with_status(200, body)
+    }
+
+    fn response_with_status(status: u16, body: &str) -> EcpResponse {
         EcpResponse {
-            status: 200,
+            status,
             headers: Vec::new(),
             body: body.to_owned(),
         }
     }
 
     fn store_with_device() -> (tempfile::TempDir, Arc<Mutex<SqliteStore>>) {
+        store_with_device_at("192.0.2.10", zestroku_core::discovery::ECP_DEFAULT_PORT)
+    }
+
+    fn store_with_device_at(host: &str, port: u16) -> (tempfile::TempDir, Arc<Mutex<SqliteStore>>) {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = SqliteStore::open(&dir.path().join("api.db")).expect("open store");
         store
             .upsert_device(&DeviceRow {
-                id: "fixture-row".into(),
+                id: zestroku_core::tier::device_id(host, port),
                 name: "Fixture Roku".into(),
-                ip: "192.0.2.10".into(),
+                ip: host.into(),
                 model: "Roku Fixture".into(),
                 model_num: "9999X".into(),
                 firmware: "0.0.0".into(),
@@ -397,14 +502,19 @@ mod tests {
 
     #[test]
     fn device_info_and_active_app_routes_dispatch_read_only_queries() {
-        let (_dir, store) = store_with_device();
+        let port = 18060;
+        let (_dir, store) = store_with_device_at("192.0.2.10", port);
         let transport = Arc::new(FakeTransport::new([
             response(DEVICE_INFO_XML),
+            response("<apps/>"),
+            response_with_status(404, ""),
             response(ACTIVE_APP_XML),
         ]));
         let client = TestClient::new(build_app(store, Arc::clone(&transport)));
 
-        let info = client.get("/v1/devices/192.0.2.10/info").send();
+        let info = client
+            .get(&format!("/v1/devices/192.0.2.10:{port}/info"))
+            .send();
         assert_eq!(info.status().as_u16(), 200);
         let info_json: serde_json::Value = serde_json::from_str(&info.text()).expect("info JSON");
         assert_eq!(info_json["host"], "192.0.2.10");
@@ -412,8 +522,12 @@ mod tests {
         assert_eq!(info_json["model_number"], "9999X");
         assert_eq!(info_json["software_version"], "0.0.0");
         assert_eq!(info_json["is_tv"], false);
+        assert_eq!(info_json["access_tier"], "permissive");
+        assert_eq!(info_json["tv_active_channel"], false);
 
-        let active_app = client.get("/v1/devices/192.0.2.10/active-app").send();
+        let active_app = client
+            .get(&format!("/v1/devices/192.0.2.10:{port}/active-app"))
+            .send();
         assert_eq!(active_app.status().as_u16(), 200);
         let active_json: serde_json::Value =
             serde_json::from_str(&active_app.text()).expect("active-app JSON");
@@ -422,12 +536,65 @@ mod tests {
         assert_eq!(active_json["name"], "Fixture App");
 
         let calls = transport.calls();
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 4);
         assert_eq!(calls[0].0, "192.0.2.10");
+        assert_eq!(calls[0].1, port);
         assert_eq!(calls[0].2.path, "/query/device-info");
         assert_eq!(calls[0].2.method, zestroku_proto::Method::Get);
-        assert_eq!(calls[1].2.path, "/query/active-app");
-        assert_eq!(calls[1].2.method, zestroku_proto::Method::Get);
+        assert_eq!(calls[1].2.path, "/query/apps");
+        assert_eq!(calls[2].2.path, "/query/tv-active-channel");
+        assert_eq!(calls[3].2.path, "/query/active-app");
+        assert!(calls.iter().all(|call| call.1 == port));
+    }
+
+    #[test]
+    fn info_route_reports_and_records_limited_tier_from_live_probe() {
+        let port = 18061;
+        let (_dir, store) = store_with_device_at("192.0.2.10", port);
+        let transport = Arc::new(FakeTransport::new([
+            response(DEVICE_INFO_XML),
+            response_with_status(403, "ECP command not allowed in Limited mode."),
+            response_with_status(403, "ECP command not allowed in Limited mode."),
+        ]));
+        let client = TestClient::new(build_app(Arc::clone(&store), Arc::clone(&transport)));
+
+        let info = client
+            .get(&format!("/v1/devices/192.0.2.10:{port}/info"))
+            .send();
+        assert_eq!(info.status().as_u16(), 200);
+        let info_json: serde_json::Value = serde_json::from_str(&info.text()).expect("info JSON");
+        assert_eq!(info_json["access_tier"], "limited");
+        assert_eq!(info_json["tv_active_channel"], true);
+
+        let id = zestroku_core::tier::device_id("192.0.2.10", port);
+        let tier = store
+            .lock()
+            .expect("store lock")
+            .get_access_tier(&id)
+            .expect("read tier")
+            .expect("tier row");
+        assert_eq!(tier.tier, "limited");
+        let calls = transport.calls();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[1].2.path, "/query/apps");
+        assert_eq!(calls[2].2.path, "/query/tv-active-channel");
+    }
+    #[test]
+    fn info_route_reports_unknown_tv_channel_when_probe_fails() {
+        let port = 18062;
+        let (_dir, store) = store_with_device_at("192.0.2.10", port);
+        let transport = Arc::new(FakeTransport::new([
+            response(DEVICE_INFO_XML),
+            response("<apps/>"),
+        ]));
+        let client = TestClient::new(build_app(store, transport));
+
+        let info = client
+            .get(&format!("/v1/devices/192.0.2.10:{port}/info"))
+            .send();
+        assert_eq!(info.status().as_u16(), 200);
+        let info_json: serde_json::Value = serde_json::from_str(&info.text()).expect("info JSON");
+        assert!(info_json["tv_active_channel"].is_null());
     }
 
     #[test]
