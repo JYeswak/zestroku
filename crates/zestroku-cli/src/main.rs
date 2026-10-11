@@ -72,10 +72,17 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         Some("info") | Some("active-app") if args.len() == 2 => {
-            let host = args[1].clone();
+            // `host` or `host:port` (the device id form `devices` prints);
+            // a bare host means the ECP default port.
+            let (host, port) = match args[1].rsplit_once(':') {
+                Some((h, p)) if !h.is_empty() && p.parse::<u16>().is_ok() => {
+                    (h.to_string(), p.parse::<u16>().unwrap_or(8060))
+                }
+                _ => (args[1].clone(), 8060),
+            };
             let device = Device {
                 host: host.clone(),
-                port: 8060,
+                port,
                 model_name: String::new(),
                 model_number: String::new(),
                 software_version: String::new(),
