@@ -3935,6 +3935,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zestroku-sim"
+version = "0.1.0"
+dependencies = [
+ "asupersync",
+ "zestroku-proto",
+ "zestroku-types",
+]
+
+[[package]]
 name = "zestroku-types"
 version = "0.1.0"
 dependencies = [

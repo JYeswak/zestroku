@@ -14,29 +14,17 @@
 //! Josh-gated per the dispatch queue.
 #![forbid(unsafe_code)]
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::mutation::{
     MutationContext, MutationError, authorize_mutation, finish_mutation,
 };
-use zestroku_core::store::SqliteStore;
 use zestroku_proto::{Command, EcpGate, Transport, parse_active_app, parse_ecp_response, query};
 use zestroku_types::{AccessTier, Device};
 
+use crate::store_db;
 use crate::transport::{AsupersyncTransport, send_selected};
-
-/// Audit trail location: the owner-LAN daemon DB. Overridable for tests.
-fn store_path() -> PathBuf {
-    std::env::var_os("ZESTROKU_DB")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let mut p = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| ".".into()));
-            p.push(".local/state/zestroku/actions.db");
-            p
-        })
-}
 
 struct MutationOpts {
     host: String,
@@ -112,6 +100,45 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Tier resolution (zestroku-tier-discovery-jt8 [c]): recorded tier from
+    // the store, refreshed by `zestroku info`; ZESTROKU_TIER is only an
+    // explicit, AUDITED override. Unknown refuses before any POST — the
+    // message says to run `zestroku info`.
+    let override_raw = std::env::var("ZESTROKU_TIER").ok();
+    let store = match store_db::open() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("zestroku: action log unavailable: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let recorded = match zestroku_core::tier::recorded_tier(&store, &opts.host) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("zestroku: cannot read recorded tier: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let (tier_source, access_tier): (&'static str, AccessTier) = match override_raw.as_deref() {
+        Some("permissive") | Some("Permissive") => ("env-override", AccessTier::Permissive),
+        Some(other) if !other.trim().is_empty() && !other.eq_ignore_ascii_case("open") => {
+            eprintln!("zestroku: ignoring unrecognized ZESTROKU_TIER={other:?}");
+            match recorded {
+                Some(t) => ("recorded", t.access_tier()),
+                None => ("unknown-unprobed", AccessTier::Open),
+            }
+        }
+        _ => match recorded {
+            Some(t) => ("recorded", t.access_tier()),
+            None => {
+                eprintln!(
+                    "zestroku: no recorded tier for {} — run `zestroku info {}` first (or set ZESTROKU_TIER=permissive explicitly)",
+                    opts.host, opts.host
+                );
+                return ExitCode::from(3);
+            }
+        },
+    };
     let device = Device {
         host: opts.host.clone(),
         port: 8060,
@@ -119,22 +146,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         model_number: String::new(),
         software_version: String::new(),
         is_tv: false,
-        // Tier comes from discovery (m7c). Until then ZESTROKU_TIER is the
-        // explicit operator override — the live Express is Permissive
-        // (M3 flip), and the default stays Open (fail-safe: mutations
-        // refused until the operator or discovery asserts Permissive).
-        access_tier: match std::env::var("ZESTROKU_TIER").as_deref() {
-            Ok("permissive") | Ok("Permissive") => AccessTier::Permissive,
-            _ => AccessTier::Open,
-        },
-    };
-
-    let store = match SqliteStore::open(&store_path()) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("zestroku: action log unavailable: {e}");
-            return ExitCode::FAILURE;
-        }
+        access_tier,
     };
 
     // Runtime + BEFORE snapshot come first: the audit row needs the
@@ -167,7 +179,9 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         client: "cli",
         surface: kind,
         intent: &format!("{kind} {}", opts.target),
-        before_state: &before,
+        // Tier-source marker (zestroku-tier-discovery-jt8 [c]) prepended to
+        // the snapshot; removing this marker turns the audit-row test red.
+        before_state: &zestroku_core::tier::marked_before_state(tier_source, &before),
     };
     let confirmed = opts
         .confirm
