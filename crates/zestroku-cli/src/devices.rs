@@ -11,9 +11,11 @@ use std::process::ExitCode;
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::discovery::{parse_targets, reconcile};
 use zestroku_core::ssdp_io::discover;
+use zestroku_core::store::Store;
 use zestroku_proto::{Transport, parse_device_info, query};
 use zestroku_types::{Device, Error, Result};
 
+use crate::store_db;
 use crate::transport::{AsupersyncTransport, send_selected};
 
 struct Opts {
@@ -132,6 +134,66 @@ pub fn run(args: &[String]) -> ExitCode {
     });
     match result {
         Ok((devices, notes)) => {
+            // Persist inventory (zestroku-tier-discovery-jt8 [d]): one
+            // DeviceRow per discovered device, id = "host:port". Privacy:
+            // model-name/number/version only; never serial, UDN, MAC,
+            // device-id, advertising-id or the friendly name; the raw
+            // device-info body is not retained. A store failure must not
+            // hide the devices: they are printed below regardless, with a
+            // typed note on stderr and a non-zero exit.
+            let mut store_err: Option<String> = None;
+            let opened = store_db::open();
+            let store = match &opened {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    store_err = Some(format!("store unavailable: {e}"));
+                    None
+                }
+            };
+            let mut rows = Vec::with_capacity(devices.len());
+            for d in &devices {
+                let id = format!("{}:{}", d.host, d.port);
+                let access_tier = match store {
+                    Some(s) => match zestroku_core::tier::recorded_tier(s, &id) {
+                        Ok(Some(t)) => t.as_str().to_string(),
+                        Ok(None) => "unknown".to_string(),
+                        Err(e) => {
+                            if store_err.is_none() {
+                                store_err = Some(format!("tier lookup {id}: {e}"));
+                            }
+                            "unknown".to_string()
+                        }
+                    },
+                    None => "unknown".to_string(),
+                };
+                rows.push(zestroku_core::store::DeviceRow {
+                    id: id.clone(),
+                    name: d.model_name.clone(),
+                    ip: d.host.clone(),
+                    model: d.model_name.clone(),
+                    model_num: d.model_number.clone(),
+                    firmware: d.software_version.clone(),
+                    wifi_driver: String::new(),
+                    access_tier,
+                    last_seen: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|t| t.as_secs() as i64)
+                        .unwrap_or(0),
+                });
+            }
+            if let Some(s) = store {
+                for row in &rows {
+                    if let Err(e) = s.upsert_device(row) {
+                        if store_err.is_none() {
+                            store_err = Some(format!("upsert {}: {e}", row.id));
+                        }
+                        break;
+                    }
+                }
+            }
+            if let Some(note) = &store_err {
+                eprintln!("zestroku devices: store note: {note}");
+            }
             if opts.json {
                 // Machine-checkable output for scripted/live verification
                 // (docs/LIVE-VERIFY.md). Stable field order; notes carry
@@ -168,6 +230,10 @@ pub fn run(args: &[String]) -> ExitCode {
             if devices.is_empty() {
                 eprintln!("zestroku devices: no devices found");
                 ExitCode::FAILURE
+            } else if store_err.is_some() {
+                // Devices were found and printed; the persist failure is
+                // still real and must not read as a clean run.
+                ExitCode::from(5)
             } else {
                 ExitCode::SUCCESS
             }

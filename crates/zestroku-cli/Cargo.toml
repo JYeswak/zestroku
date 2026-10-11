@@ -14,6 +14,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+zestroku-sim = { path = "../zestroku-sim" }
 
 [[bin]]
 name = "zestroku"
