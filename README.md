@@ -33,9 +33,15 @@ Design principles (inherited):
 ## Current CLI surface
 
 `zestroku info <host>` and `zestroku active-app <host>` use the asupersync ECP
-transport. `zestroku key <host> <Key>` remains refused until the per-operation
-mutation gate is wired. Transport GET/POST behavior has loopback coverage;
-live-device transport verification remains pending.
+transport; `info` also records the device's observed tier.
+`zestroku apps <host> [--json]` lists installed apps in name order. It requires
+a recorded Permissive tier from `info`, or an explicit
+`ZESTROKU_TIER=permissive` override. Limited or unknown tier is refused locally
+before `/query/apps` is sent (exit 3). `--json` emits an `apps` array with `id`,
+`name`, `type`, `subtype`, and `version`.
+App names and versions are not stable across firmware.
+`zestroku key` and `zestroku launch` require per-operation confirmation and a
+Permissive tier; otherwise they are refused locally.
 
 ## Ground truth (verified live 2026-10-09)
 

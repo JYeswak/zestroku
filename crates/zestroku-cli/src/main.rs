@@ -13,8 +13,10 @@ use zestroku_proto::{
 };
 use zestroku_types::{AccessTier, Device, Error};
 
+mod apps;
 mod devices;
 mod mutate;
+mod store_db;
 mod transport;
 
 use transport::{AsupersyncTransport, send_selected};
@@ -24,6 +26,7 @@ fn usage() -> &'static str {
      \n\
      USAGE:\n\
      \x20   zestroku devices                     list discovered devices\n\
+     \x20   zestroku apps <host> [--json]        list installed apps (Permissive)\n\
      \x20   zestroku info <host>                 device-info (Open tier)\n\
      \x20   zestroku active-app <host>           focused app (Open tier)\n\
      \x20   zestroku key <host> <KEY> [--confirm <token>]   keypress (Permissive)\n\
@@ -39,6 +42,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("devices") => devices::run(&args[1..]),
+        Some("apps") => apps::run(&args[1..]),
         Some("--transport-probe") => {
             // Test-only surface (transport.rs selector_follows_env): prints
             // whether the std fallback is selected. Not documented usage.
@@ -99,9 +103,62 @@ fn main() -> ExitCode {
                 }
                 if args[0] == "info" {
                     let info = parse_device_info(&response.body)?;
+                    // Tier observation (zestroku-tier-discovery-jt8 [b]):
+                    // probe query/apps through the same transport, classify,
+                    // record. A failed probe prints tier=unknown and does
+                    // not fail `info` — device-info itself already succeeded.
+                    let apps = send_selected(
+                        AsupersyncTransport,
+                        &device.host,
+                        device.port,
+                        &query("apps"),
+                    )
+                    .await;
+                    let (tier_line, tv_channel) = {
+                        let observed = match &apps {
+                            Ok(response) => {
+                                zestroku_core::tier::classify_tier_from_response(response)
+                            }
+                            Err(_) => zestroku_core::tier::ObservedTier::Unknown,
+                        };
+                        // tv-active-channel presence: 404 on the stick in
+                        // both tiers (wire doc §2 surface fingerprint).
+                        let tvch = send_selected(
+                            AsupersyncTransport,
+                            &device.host,
+                            device.port,
+                            &query("tv-active-channel"),
+                        )
+                        .await;
+                        let tvch = match tvch {
+                            Ok(response) => {
+                                parse_ecp_response(&response).gate != EcpGate::Absent404
+                            }
+                            Err(_) => false,
+                        };
+                        (format!("tier={}", observed.as_str()), tvch)
+                    };
+                    // Record (best-effort; the store is the action-log DB).
+                    if let Ok(response) = &apps {
+                        if let Ok(store) = store_db::open() {
+                            let observed =
+                                zestroku_core::tier::classify_tier_from_response(response);
+                            let _ = zestroku_core::tier::record_probe(
+                                &store,
+                                &device.host,
+                                observed,
+                                &format!("{}", parse_ecp_response(response).gate as i32),
+                            );
+                        }
+                    }
                     println!(
-                        "{} ({}) software={} tv={}",
-                        info.model_name, info.model_number, info.software_version, info.is_tv
+                        "{} ({}) software={} tv={} {} tv-active-channel={}",
+                        info.model_name,
+                        info.model_number,
+                        info.software_version,
+                        info.is_tv,
+                        tier_line,
+                        if tv_channel { "present" } else { "absent" }
                     );
                 } else {
                     let app = parse_active_app(&response.body)?;
