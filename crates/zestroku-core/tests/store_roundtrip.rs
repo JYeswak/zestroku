@@ -2,7 +2,7 @@
 //! synthetic placeholders, never real serials/UDNs/MACs.
 
 use zestroku_core::store::{
-    AccessTierRow, ActionRow, AppRow, DeviceRow, DiffRow, MIGRATIONS, SqliteStore, Store,
+    AccessTierRow, ActionRow, AliasRow, AppRow, DeviceRow, DiffRow, MIGRATIONS, SqliteStore, Store,
     is_contiguous,
 };
 
@@ -52,7 +52,7 @@ fn every_table_insert_query_update_delete_and_survives_reopen() {
     let path = dir.path().join("zestroku.db");
 
     let st = SqliteStore::open(&path).unwrap();
-    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4, 5]);
 
     // devices: insert, query, update (upsert), delete
     st.upsert_device(&device("dev-a", "open")).unwrap();
@@ -67,6 +67,13 @@ fn every_table_insert_query_update_delete_and_survives_reopen() {
         "permissive"
     );
     assert_eq!(st.list_devices().unwrap().len(), 2);
+    let alias = |device_id: &str| AliasRow {
+        alias: "living-room".into(),
+        device_id: device_id.into(),
+    };
+    st.set_alias(&alias("dev-a")).unwrap();
+    st.set_alias(&alias("dev-b")).unwrap();
+    assert_eq!(st.list_aliases().unwrap(), vec![alias("dev-b")]);
 
     // apps
     let app = |v: &str| AppRow {
@@ -123,13 +130,16 @@ fn every_table_insert_query_update_delete_and_survives_reopen() {
 
     // reopen: rows survive, migrations are not re-applied
     let st = SqliteStore::open(&path).unwrap();
-    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4, 5]);
     assert_eq!(st.list_devices().unwrap().len(), 2);
     assert_eq!(st.list_apps("dev-a").unwrap(), vec![app("2.0")]);
     assert_eq!(st.list_capabilities("dev-a").unwrap(), vec!["launch"]);
     assert!(st.get_access_tier("dev-a").unwrap().is_some());
     assert_eq!(st.list_actions().unwrap().len(), 2);
     assert_eq!(st.list_diffs().unwrap().len(), 1);
+    assert_eq!(st.list_aliases().unwrap(), vec![alias("dev-b")]);
+    st.delete_alias("living-room").unwrap();
+    assert!(st.list_aliases().unwrap().is_empty());
 
     // deletes
     st.delete_app("dev-a", "12").unwrap();
@@ -145,12 +155,14 @@ fn every_table_insert_query_update_delete_and_survives_reopen() {
     // delete_device cascades to dependents, leaves other devices alone
     st.upsert_app(&app("3.0")).unwrap();
     st.upsert_access_tier(&tier("open")).unwrap();
+    st.set_alias(&alias("dev-a")).unwrap();
     st.delete_device("dev-a").unwrap();
     assert!(st.get_device("dev-a").unwrap().is_none());
     assert!(st.list_apps("dev-a").unwrap().is_empty());
     assert!(st.list_capabilities("dev-a").unwrap().is_empty());
     assert!(st.get_access_tier("dev-a").unwrap().is_none());
     assert!(st.get_device("dev-b").unwrap().is_some());
+    assert!(st.list_aliases().unwrap().is_empty());
     st.close().unwrap();
 }
 
@@ -172,7 +184,7 @@ fn migrations_are_append_only_and_upgrade_in_place() {
 
     // The newer binary appends the remaining migrations and keeps existing data.
     let st = SqliteStore::open(&path).unwrap();
-    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4, 5]);
     assert!(st.get_device("dev-a").unwrap().is_some());
     st.insert_action(&action("x")).unwrap();
     st.close().unwrap();

@@ -8,11 +8,13 @@
 use std::process::ExitCode;
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
+use zestroku_core::store::Store;
 use zestroku_proto::{
     Command, EcpGate, parse_active_app, parse_device_info, parse_ecp_response, query,
 };
 use zestroku_types::{AccessTier, Device, Error};
 
+mod aliases;
 mod apps;
 mod devices;
 mod mutate;
@@ -27,6 +29,7 @@ fn usage() -> &'static str {
      \n\
      USAGE:\n\
      \x20   zestroku devices                     list discovered devices\n\
+     \x20   zestroku alias <set|rm|ls> ...         manage local device names\n\
      \x20   zestroku apps <host> [--json]        list installed apps (Permissive)\n\
      \x20   zestroku info <host>                 device-info (Open tier)\n\
      \x20   zestroku active-app <host>           focused app (Open tier)\n\
@@ -41,10 +44,111 @@ fn usage() -> &'static str {
      when the device's observed tier is Limited — no round-trip, no 403."
 }
 
+pub(crate) fn split_host_port(target: &str) -> (String, u16) {
+    match target.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() => match port.parse::<u16>() {
+            Ok(port) => (host.to_owned(), port),
+            Err(_) => (target.to_owned(), 8060),
+        },
+        _ => (target.to_owned(), 8060),
+    }
+}
+
+fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
+    let Some(verb) = args.first().map(String::as_str) else {
+        return Ok(());
+    };
+    let (target_index, strict, mutation) = match verb {
+        "info" | "active-app" if args.len() == 2 => (1, false, false),
+        "apps" if args.len() >= 2 => {
+            let Some((index, _)) = args
+                .iter()
+                .enumerate()
+                .skip(1)
+                .find(|(_, value)| !value.starts_with('-'))
+            else {
+                return Ok(());
+            };
+            (index, false, false)
+        }
+        "key" | "launch" if args.len() >= 3 => (1, false, true),
+        "approve" if args.len() >= 4 => {
+            let mutation = matches!(args[1].as_str(), "key" | "launch");
+            (2, false, mutation)
+        }
+        "alias" if args.get(1).is_some_and(|subcommand| subcommand == "set") && args.len() >= 4 => {
+            (3, true, false)
+        }
+        _ => return Ok(()),
+    };
+
+    let store = store_db::open().map_err(|error| {
+        (
+            ExitCode::FAILURE,
+            format!("target store unavailable: {error}"),
+        )
+    })?;
+    let devices = store
+        .list_devices()
+        .map_err(|error| (ExitCode::FAILURE, format!("cannot list devices: {error}")))?;
+    let aliases = store
+        .list_aliases()
+        .map_err(|error| (ExitCode::FAILURE, format!("cannot list aliases: {error}")))?;
+    let smart_class = args[target_index].eq_ignore_ascii_case("tv")
+        || args[target_index].eq_ignore_ascii_case("stick");
+    match zestroku_core::targets::resolve_target(&args[target_index], &devices, &aliases) {
+        Ok(device) => args[target_index] = device.id,
+        Err(zestroku_core::targets::TargetResolutionError::NotFound { .. })
+            if !strict && !smart_class => {}
+        Err(error @ zestroku_core::targets::TargetResolutionError::AmbiguousName { .. }) => {
+            if mutation {
+                let surface = if verb == "approve" {
+                    &args[1]
+                } else {
+                    &args[0]
+                };
+                let at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+                    .min(i64::MAX as u64) as i64;
+                let action = zestroku_core::store::ActionRow {
+                    id: 0,
+                    at,
+                    client: "cli".into(),
+                    surface: surface.to_owned(),
+                    intent: args.join(" "),
+                    decision: "denied".into(),
+                    result: "AMBIGUOUS_NAME".into(),
+                    before_state: "not queried: ambiguous target".into(),
+                };
+                store.insert_action(&action).map_err(|store_error| {
+                    (
+                        ExitCode::FAILURE,
+                        format!("cannot audit ambiguous mutation: {store_error}"),
+                    )
+                })?;
+                return Err((ExitCode::from(4), error.to_string()));
+            }
+            return Err((ExitCode::from(2), error.to_string()));
+        }
+        Err(error) if strict || smart_class => {
+            return Err((ExitCode::from(2), error.to_string()));
+        }
+        Err(_) => {}
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if let Err((code, error)) = resolve_cli_target(&mut args) {
+        eprintln!("zestroku: {error}");
+        return code;
+    }
     match args.first().map(String::as_str) {
         Some("devices") => devices::run(&args[1..]),
+        Some("alias") => aliases::run(&args[1..]),
         Some("apps") => apps::run(&args[1..]),
         Some("serve") => serve::run(&args[1..]),
         Some("mcp") => match zestroku_mcp::run_stdio() {
@@ -72,14 +176,7 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         Some("info") | Some("active-app") if args.len() == 2 => {
-            // `host` or `host:port` (the device id form `devices` prints);
-            // a bare host means the ECP default port.
-            let (host, port) = match args[1].rsplit_once(':') {
-                Some((h, p)) if !h.is_empty() && p.parse::<u16>().is_ok() => {
-                    (h.to_string(), p.parse::<u16>().unwrap_or(8060))
-                }
-                _ => (args[1].clone(), 8060),
-            };
+            let (host, port) = split_host_port(&args[1]);
             let device = Device {
                 host: host.clone(),
                 port,

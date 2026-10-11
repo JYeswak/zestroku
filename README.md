@@ -97,6 +97,10 @@ requires a recorded Permissive tier from `info`, or an explicit
 locally before `/query/apps` is sent (exit 3). `--json` emits an `apps` array
 with `id`, `name`, `type`, `subtype`, and `version`.
 App names and versions are not stable across firmware.
+`zestroku alias set <alias> <device>`, `zestroku alias rm <alias>`, and
+`zestroku alias ls` manage local device labels. Host arguments accept exact
+aliases, a unique `tv` or `stick` class target, or a unique device-name prefix.
+Ambiguous matches list candidates; mutations never select one implicitly.
 `zestroku approve <launch|key> <host> <target>` requires an interactive owner TTY and
 a typed action phrase. It prints a random, five-minute, single-use token bound
 to the exact device and ECP command. Supply it as `--confirm <token>` to the

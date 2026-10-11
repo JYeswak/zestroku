@@ -32,7 +32,7 @@ enum TierLookupError {
     NotObserved,
 }
 
-fn access_tier_for(host: &str) -> std::result::Result<AccessTier, TierLookupError> {
+fn access_tier_for(host: &str, port: u16) -> std::result::Result<AccessTier, TierLookupError> {
     match std::env::var("ZESTROKU_TIER").as_deref() {
         Ok("permissive") | Ok("Permissive") => return Ok(AccessTier::Permissive),
         Ok(other) if !other.trim().is_empty() && !other.eq_ignore_ascii_case("open") => {
@@ -43,7 +43,7 @@ fn access_tier_for(host: &str) -> std::result::Result<AccessTier, TierLookupErro
 
     let store =
         crate::store_db::open().map_err(|error| TierLookupError::Store(error.to_string()))?;
-    let recorded = zestroku_core::tier::recorded_tier_for(&store, host, 8060)
+    let recorded = zestroku_core::tier::recorded_tier_for(&store, host, port)
         .map_err(|error| TierLookupError::Store(error.to_string()))?;
     recorded
         .map(|tier| tier.access_tier())
@@ -58,7 +58,8 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let access_tier = match access_tier_for(&opts.host) {
+    let (host, port) = crate::split_host_port(&opts.host);
+    let access_tier = match access_tier_for(&host, port) {
         Ok(access_tier) => access_tier,
         Err(TierLookupError::Store(error)) => {
             eprintln!("zestroku: cannot read recorded tier: {error}");
@@ -67,12 +68,12 @@ pub fn run(args: &[String]) -> ExitCode {
         Err(TierLookupError::NotObserved) => {
             eprintln!(
                 "zestroku: no recorded tier for {} — run `zestroku info {}` first (or set ZESTROKU_TIER=permissive explicitly)",
-                opts.host, opts.host
+                host, host
             );
             return ExitCode::from(3);
         }
     };
-    execute(&opts.host, 8060, access_tier, opts.json)
+    execute(&host, port, access_tier, opts.json)
 }
 
 fn execute(host: &str, port: u16, access_tier: AccessTier, json: bool) -> ExitCode {

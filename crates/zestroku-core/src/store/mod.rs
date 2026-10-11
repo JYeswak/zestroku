@@ -87,6 +87,11 @@ pub struct ConfirmationTokenRow {
     pub expires_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AliasRow {
+    pub alias: String,
+    pub device_id: String,
+}
 pub trait Store {
     fn schema_versions(&self) -> Result<Vec<i64>, StoreError>;
 
@@ -103,6 +108,9 @@ pub trait Store {
     fn add_capability(&self, device_id: &str, cap: &str) -> Result<(), StoreError>;
     fn list_capabilities(&self, device_id: &str) -> Result<Vec<String>, StoreError>;
     fn remove_capability(&self, device_id: &str, cap: &str) -> Result<(), StoreError>;
+    fn set_alias(&self, alias: &AliasRow) -> Result<(), StoreError>;
+    fn list_aliases(&self) -> Result<Vec<AliasRow>, StoreError>;
+    fn delete_alias(&self, alias: &str) -> Result<(), StoreError>;
     fn insert_confirmation_token(&self, token: &ConfirmationTokenRow) -> Result<(), StoreError>;
     fn consume_confirmation_token(
         &self,
@@ -299,6 +307,29 @@ impl Store for SqliteStore {
         .collect()
     }
 
+    fn set_alias(&self, alias: &AliasRow) -> Result<(), StoreError> {
+        self.exec(
+            "INSERT OR REPLACE INTO aliases (alias, device_id) VALUES (?1, ?2)",
+            &[s(&alias.alias), s(&alias.device_id)],
+        )
+    }
+
+    fn list_aliases(&self) -> Result<Vec<AliasRow>, StoreError> {
+        self.query("SELECT alias, device_id FROM aliases ORDER BY alias", &[])?
+            .iter()
+            .map(|row| {
+                Ok(AliasRow {
+                    alias: text(row, 0)?,
+                    device_id: text(row, 1)?,
+                })
+            })
+            .collect()
+    }
+
+    fn delete_alias(&self, alias: &str) -> Result<(), StoreError> {
+        self.exec("DELETE FROM aliases WHERE alias = ?1", &[s(alias)])
+    }
+
     fn insert_confirmation_token(&self, token: &ConfirmationTokenRow) -> Result<(), StoreError> {
         self.exec(
             "INSERT INTO confirmation_tokens (token_hash, device_id, action, expires_at, consumed_at) VALUES (?1, ?2, ?3, ?4, NULL)",
@@ -372,6 +403,7 @@ impl Store for SqliteStore {
                 "DELETE FROM apps WHERE device_id = ?1",
                 "DELETE FROM capabilities WHERE device_id = ?1",
                 "DELETE FROM access_tier WHERE device_id = ?1",
+                "DELETE FROM aliases WHERE device_id = ?1",
                 "DELETE FROM devices WHERE id = ?1",
             ] {
                 c.execute_with_params_sync(sql, &[s(id)])?;

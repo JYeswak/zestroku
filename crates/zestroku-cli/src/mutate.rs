@@ -93,6 +93,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let (host, port) = crate::split_host_port(&opts.host);
     let command = match build_command(kind, &opts.target) {
         Ok(c) => c,
         Err(e) => {
@@ -112,7 +113,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let recorded = match zestroku_core::tier::recorded_tier_for(&store, &opts.host, 8060) {
+    let recorded = match zestroku_core::tier::recorded_tier_for(&store, &host, port) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("zestroku: cannot read recorded tier: {e}");
@@ -133,15 +134,15 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             None => {
                 eprintln!(
                     "zestroku: no recorded tier for {} — run `zestroku info {}` first (or set ZESTROKU_TIER=permissive explicitly)",
-                    opts.host, opts.host
+                    host, host
                 );
                 return ExitCode::from(3);
             }
         },
     };
     let device = Device {
-        host: opts.host.clone(),
-        port: 8060,
+        host: host.clone(),
+        port,
         model_name: String::new(),
         model_number: String::new(),
         software_version: String::new(),
@@ -251,7 +252,8 @@ pub fn approve(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     let verb = &args[0];
-    let host = &args[1];
+    let host_label = &args[1];
+    let (host, port) = crate::split_host_port(host_label);
     let target = &args[2];
     let command = match build_command(verb, target) {
         Ok(command) => command,
@@ -260,7 +262,7 @@ pub fn approve(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let phrase = format!("approve {verb} {host} {target}");
+    let phrase = format!("approve {verb} {host_label} {target}");
     eprint!("Type exactly '{phrase}' to authorize this action: ");
     let _ = io::stderr().flush();
     let mut typed = String::new();
@@ -277,8 +279,8 @@ pub fn approve(args: &[String]) -> ExitCode {
         }
     };
     let device = Device {
-        host: host.clone(),
-        port: 8060,
+        host,
+        port,
         model_name: String::new(),
         model_number: String::new(),
         software_version: String::new(),
