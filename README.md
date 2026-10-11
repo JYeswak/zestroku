@@ -92,8 +92,10 @@ App names and versions are not stable across firmware.
 `zestroku approve <launch|key> <host> <target>` requires an interactive owner TTY and
 a typed action phrase. It prints a random, five-minute, single-use token bound
 to the exact device and ECP command. Supply it as `--confirm <token>` to the
-matching `key` or `launch` invocation. Blank, arbitrary, mismatched, expired,
-and reused tokens are refused locally (exit 4) and audited; MCP mutations take
+Use `zestroku key <host> <KEY> --confirm <token>` or
+`zestroku launch <host> <app-id> --confirm <token>` to consume the token. Blank,
+arbitrary, mismatched, expired, and reused tokens are refused locally (exit 4)
+and audited; MCP mutations take
 the same opaque token string and cannot mint approvals.
 `zestroku serve [--bind <ip:port>]` runs the read-only HTTP API (`/health`,
 `/v1/devices`, `/v1/devices/{host}/info`, `/v1/devices/{host}/active-app`)
