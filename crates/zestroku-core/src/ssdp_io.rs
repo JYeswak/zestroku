@@ -75,9 +75,9 @@ pub async fn sweep_to(target: &str, mx_secs: u8) -> Result<SweepResult> {
     // async wrapper awaits its join handle.
     let target = target.to_owned();
     let handle = std::thread::spawn(move || collect_replies(&request, target, window));
-    Ok(handle
+    handle
         .join()
-        .map_err(|_| Error::Unreachable("ssdp collector panicked".into()))?)
+        .map_err(|_| Error::Unreachable("ssdp collector panicked".into()))
 }
 
 /// Blocking collector: send the M-SEARCH from a dedicated std socket to
