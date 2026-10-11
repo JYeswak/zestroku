@@ -49,10 +49,34 @@ pub fn seeds_text(open: &[Ipv4Addr], port: u16) -> String {
         .collect()
 }
 
+/// The /24 around this host's private IPv4 address, for the no-argument
+/// fallback sweep. `connect` on a UDP socket only selects a route (nothing
+/// is sent), so this names the interface address the OS would use toward
+/// the LAN. `None` when there is no private IPv4 route.
+pub fn local_cidr() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("192.0.2.1:9").ok()?;
+    match sock.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(v4) if v4.is_private() => {
+            let o = v4.octets();
+            Some(format!("{}.{}.{}.0/24", o[0], o[1], o[2]))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn local_cidr_is_a_scannable_private_range_when_present() {
+        if let Some(cidr) = local_cidr() {
+            let hosts = zestroku_core::discovery::expand_cidr(&cidr).expect("scannable");
+            assert_eq!(hosts.len(), 254, "{cidr}");
+        }
+    }
 
     #[test]
     fn finds_only_the_listening_host() {

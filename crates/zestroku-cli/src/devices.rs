@@ -174,6 +174,36 @@ pub fn run(args: &[String]) -> ExitCode {
             discover(&AsupersyncTransport, seeds.as_deref(), opts.mx).await
         }
     });
+    // macOS gates UDP multicast per executable, so a fresh binary can find
+    // nothing by SSDP while TCP to the ECP port works. When SSDP (plus any
+    // seeds) found nothing and the caller named no scan, sweep this host's
+    // own private /24 once, so a bare `zestroku devices` still works.
+    let result = match result {
+        Ok((devices, mut notes)) if devices.is_empty() && !opts.no_ssdp && opts.scan.is_none() => {
+            match scan::local_cidr().and_then(|c| {
+                zestroku_core::discovery::expand_cidr(&c)
+                    .ok()
+                    .map(|hosts| (c, hosts))
+            }) {
+                Some((cidr, hosts)) => {
+                    let open = scan::open_hosts(&hosts, opts.scan_port, scan::CONNECT_TIMEOUT);
+                    eprintln!(
+                        "zestroku devices: SSDP found nothing; scanned {cidr} ({} hosts, {} answered on port {})",
+                        hosts.len(),
+                        open.len(),
+                        opts.scan_port
+                    );
+                    let text = scan::seeds_text(&open, opts.scan_port);
+                    runtime.block_on(seeds_only(&text)).map(|(d, n)| {
+                        notes.extend(n);
+                        (d, notes)
+                    })
+                }
+                None => Ok((devices, notes)),
+            }
+        }
+        other => other,
+    };
     match result {
         Ok((devices, notes)) => {
             // Persist inventory (zestroku-tier-discovery-jt8 [d]): one
