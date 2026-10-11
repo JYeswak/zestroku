@@ -11,6 +11,7 @@ use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
 fn info(db: &std::path::Path, target: &str) -> (i32, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
         .env("ZESTROKU_DB", db)
+        .env("ZESTROKU_DIRECT", "1")
         .args(["info", target])
         .output()
         .expect("run zestroku info");
@@ -23,7 +24,10 @@ fn info(db: &std::path::Path, target: &str) -> (i32, String, String) {
 
 fn run_cli(db: &std::path::Path, args: &[&str], permissive: bool) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_zestroku"));
-    command.env("ZESTROKU_DB", db).args(args);
+    command
+        .env("ZESTROKU_DB", db)
+        .env("ZESTROKU_DIRECT", "1")
+        .args(args);
     if permissive {
         command.env("ZESTROKU_TIER", "permissive");
     }

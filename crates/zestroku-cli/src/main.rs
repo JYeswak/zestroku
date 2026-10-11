@@ -1,28 +1,25 @@
-//! zestroku-cli — the `zestroku` binary: CLI now, `serve` daemon later.
+//! zestroku-cli — the `zestroku` binary: CLI and on-demand daemon.
 //!
-//! Subcommands mirror the ECP surface; the tier gate in zestroku-core runs
-//! before any dispatch, so a Limited-mode device gets a clean local refusal
-//! (never a 403 round-trip) for Permissive-tier commands.
+//! Subcommands mirror the ECP surface. The core tier gate prevents
+//! Permissive-tier commands from reaching a Limited-mode device; `info` and
+//! `active-app` use the daemon by default.
 #![forbid(unsafe_code)]
 
 use std::{io::IsTerminal, process::ExitCode};
 
-use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::store::Store;
 use zestroku_proto::{
-    Command, EcpGate, parse_active_app, parse_device_info, parse_ecp_response, query,
+    EcpGate, EcpResponse, parse_active_app, parse_device_info, parse_ecp_response, query,
 };
-use zestroku_types::{AccessTier, Device, Error};
 
 mod aliases;
 mod apps;
+mod daemon_client;
 mod devices;
 mod mutate;
 mod serve;
 mod store_db;
 mod transport;
-
-use transport::{AsupersyncTransport, send_selected};
 
 fn usage() -> &'static str {
     "zestroku — owner-interop control for Roku devices\n\
@@ -38,6 +35,10 @@ fn usage() -> &'static str {
      \x20   zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)\n\
      \x20   zestroku mcp                         MCP server on stdio (agent tools)\n\
      \x20   zestroku serve [--bind <ip:port>]    read-only HTTP API daemon (loopback default)\n\
+     \n\
+     Read mode: info/active-app use ZESTROKU_DAEMON_URL (default\n\
+     http://127.0.0.1:8070); set ZESTROKU_DIRECT=1 for direct ECP.\n\
+     A down daemon returns DAEMON_UNAVAILABLE; it never falls back to LAN.\n\
      \n\
      Mutations require a single-use token minted by `approve` in an interactive owner terminal.\n\
      Tier behavior: Permissive-tier commands are refused locally (exit 3)\n\
@@ -142,6 +143,149 @@ fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
     }
     Ok(())
 }
+fn report_read_error(error: daemon_client::ReadError) -> ExitCode {
+    eprintln!("zestroku: [{}] {error}", error.code());
+    ExitCode::FAILURE
+}
+
+fn print_info(
+    model_name: &str,
+    model_number: &str,
+    software_version: &str,
+    is_tv: bool,
+    access_tier: &str,
+    tv_active_channel: Option<bool>,
+) {
+    let channel = match tv_active_channel {
+        Some(true) => "present",
+        Some(false) => "absent",
+        None => "unknown",
+    };
+    println!(
+        "{} ({}) software={} tv={} tier={} tv-active-channel={}",
+        model_name, model_number, software_version, is_tv, access_tier, channel
+    );
+}
+
+fn tv_channel_presence(response: &EcpResponse) -> Option<bool> {
+    match parse_ecp_response(response).gate {
+        EcpGate::Open | EcpGate::Limited403 => Some(true),
+        EcpGate::Absent404 => Some(false),
+        _ => None,
+    }
+}
+
+fn run_direct_read(verb: &str, target: &str) -> ExitCode {
+    let (host, port) = split_host_port(target);
+    let command = match verb {
+        "info" => query("device-info"),
+        "active-app" => query("active-app"),
+        _ => unreachable!("direct read dispatch only accepts info and active-app"),
+    };
+    let response = match daemon_client::direct_ecp_get(&host, port, &command) {
+        Ok(response) => response,
+        Err(error) => return report_read_error(error),
+    };
+    let classification = parse_ecp_response(&response);
+    if classification.gate == EcpGate::Limited403 {
+        eprintln!("zestroku: device returned the verified Limited-mode 403 gate");
+        return ExitCode::from(3);
+    }
+    if classification.gate != EcpGate::Open {
+        eprintln!(
+            "zestroku: {} {} returned an unclassified response: {:?}",
+            command.method, command.path, classification
+        );
+        return ExitCode::FAILURE;
+    }
+
+    if verb == "info" {
+        let info = match parse_device_info(&response.body) {
+            Ok(info) => info,
+            Err(error) => {
+                eprintln!("zestroku: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let apps = daemon_client::direct_ecp_get(&host, port, &query("apps"));
+        let access_tier = match &apps {
+            Ok(response) => zestroku_core::tier::classify_tier_from_response(response)
+                .as_str()
+                .to_owned(),
+            Err(_) => "unknown".to_owned(),
+        };
+        if let Ok(response) = &apps {
+            if let Ok(store) = store_db::open() {
+                let observed = zestroku_core::tier::classify_tier_from_response(response);
+                let _ = zestroku_core::tier::record_probe(
+                    &store,
+                    &zestroku_core::tier::device_id(&host, port),
+                    observed,
+                    &format!("{}", parse_ecp_response(response).gate as i32),
+                );
+            }
+        }
+        let tv_active_channel =
+            match daemon_client::direct_ecp_get(&host, port, &query("tv-active-channel")) {
+                Ok(response) => tv_channel_presence(&response),
+                Err(_) => None,
+            };
+        print_info(
+            &info.model_name,
+            &info.model_number,
+            &info.software_version,
+            info.is_tv,
+            &access_tier,
+            tv_active_channel,
+        );
+    } else {
+        let app = match parse_active_app(&response.body) {
+            Ok(app) => app,
+            Err(error) => {
+                eprintln!("zestroku: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        match app.app_id {
+            Some(id) => println!("{} ({id})", app.name),
+            None => println!("{}", app.name),
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_read_command(verb: &str, target: &str) -> ExitCode {
+    if std::env::var("ZESTROKU_DIRECT").is_ok_and(|value| value == "1") {
+        return run_direct_read(verb, target);
+    }
+    match verb {
+        "info" => match daemon_client::info(target) {
+            Ok(info) => {
+                print_info(
+                    &info.model_name,
+                    &info.model_number,
+                    &info.software_version,
+                    info.is_tv,
+                    &info.access_tier,
+                    info.tv_active_channel,
+                );
+                ExitCode::SUCCESS
+            }
+            Err(error) => report_read_error(error),
+        },
+        "active-app" => match daemon_client::active_app(target) {
+            Ok(app) => {
+                match app.app_id {
+                    Some(id) => println!("{} ({id})", app.name),
+                    None => println!("{}", app.name),
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => report_read_error(error),
+        },
+        _ => unreachable!("read dispatch only accepts info and active-app"),
+    }
+}
 
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -179,126 +323,7 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         Some("info") | Some("active-app") if args.len() == 2 => {
-            let (host, port) = split_host_port(&args[1]);
-            let device = Device {
-                host: host.clone(),
-                port,
-                model_name: String::new(),
-                model_number: String::new(),
-                software_version: String::new(),
-                is_tv: false,
-                access_tier: AccessTier::Open,
-            };
-            let cmd: Command = if args[0] == "info" {
-                query("device-info")
-            } else {
-                query("active-app")
-            };
-            if let Err(error) = zestroku_core::check_tier(&cmd, &device) {
-                eprintln!("zestroku: {error}");
-                return ExitCode::from(3);
-            }
-            let runtime = match create_reactor()
-                .map_err(|error| error.to_string())
-                .and_then(|reactor| {
-                    RuntimeBuilder::current_thread()
-                        .with_reactor(reactor)
-                        .build()
-                        .map_err(|error| error.to_string())
-                }) {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    eprintln!("zestroku: could not start asupersync runtime: {error}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            match runtime.block_on(async {
-                let response =
-                    send_selected(AsupersyncTransport, &device.host, device.port, &cmd).await?;
-                let classification = parse_ecp_response(&response);
-                if classification.gate == EcpGate::Limited403 {
-                    eprintln!("zestroku: device returned the verified Limited-mode 403 gate");
-                    return Ok(ExitCode::from(3));
-                }
-                if classification.gate != EcpGate::Open {
-                    return Err(Error::Unreachable(format!(
-                        "{} {} returned an unclassified response: {:?}",
-                        cmd.method, cmd.path, classification
-                    )));
-                }
-                if args[0] == "info" {
-                    let info = parse_device_info(&response.body)?;
-                    // Tier observation (zestroku-tier-discovery-jt8 [b]):
-                    // probe query/apps through the same transport, classify,
-                    // record. A failed probe prints tier=unknown and does
-                    // not fail `info` — device-info itself already succeeded.
-                    let apps = send_selected(
-                        AsupersyncTransport,
-                        &device.host,
-                        device.port,
-                        &query("apps"),
-                    )
-                    .await;
-                    let (tier_line, tv_channel) = {
-                        let observed = match &apps {
-                            Ok(response) => {
-                                zestroku_core::tier::classify_tier_from_response(response)
-                            }
-                            Err(_) => zestroku_core::tier::ObservedTier::Unknown,
-                        };
-                        // tv-active-channel presence: 404 on the stick in
-                        // both tiers (wire doc §2 surface fingerprint).
-                        let tvch = send_selected(
-                            AsupersyncTransport,
-                            &device.host,
-                            device.port,
-                            &query("tv-active-channel"),
-                        )
-                        .await;
-                        let tvch = match tvch {
-                            Ok(response) => {
-                                parse_ecp_response(&response).gate != EcpGate::Absent404
-                            }
-                            Err(_) => false,
-                        };
-                        (format!("tier={}", observed.as_str()), tvch)
-                    };
-                    // Record (best-effort; the store is the action-log DB).
-                    if let Ok(response) = &apps
-                        && let Ok(store) = store_db::open()
-                    {
-                        let observed = zestroku_core::tier::classify_tier_from_response(response);
-                        let _ = zestroku_core::tier::record_probe(
-                            &store,
-                            &zestroku_core::tier::device_id(&device.host, device.port),
-                            observed,
-                            &format!("{}", parse_ecp_response(response).gate as i32),
-                        );
-                    }
-                    println!(
-                        "{} ({}) software={} tv={} {} tv-active-channel={}",
-                        info.model_name,
-                        info.model_number,
-                        info.software_version,
-                        info.is_tv,
-                        tier_line,
-                        if tv_channel { "present" } else { "absent" }
-                    );
-                } else {
-                    let app = parse_active_app(&response.body)?;
-                    match app.app_id {
-                        Some(id) => println!("{} ({id})", app.name),
-                        None => println!("{}", app.name),
-                    }
-                }
-                Ok::<ExitCode, Error>(ExitCode::SUCCESS)
-            }) {
-                Ok(code) => code,
-                Err(error) => {
-                    eprintln!("zestroku: {error}");
-                    ExitCode::FAILURE
-                }
-            }
+            run_read_command(&args[0], &args[1])
         }
         Some("approve") => mutate::approve(&args[1..]),
         Some("launch") if args.len() >= 3 => mutate::run("launch", &args[1..]),

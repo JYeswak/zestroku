@@ -53,7 +53,7 @@ fn devices_persists_one_row_per_discovered_device() {
     let targets = write_targets(dir.path(), &[express.port(), tv.port()]);
 
     // First run: discovery + persist.
-    let (code, _stdout, stderr) = run_devices(&db, &targets);
+    let (code, stdout, stderr) = run_devices(&db, &targets);
     assert_eq!(code, 0, "first run failed: {stderr}");
 
     let store = SqliteStore::open(&db).expect("open store");

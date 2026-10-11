@@ -118,3 +118,89 @@ fn serve_refuses_wildcard_and_public_binds() {
         assert!(err.contains("--bind"), "{bind}: {err}");
     }
 }
+fn seed_sim_device(db: &std::path::Path, target: &str) {
+    let host = target.rsplit_once(':').map_or(target, |(host, _)| host);
+    SqliteStore::open(db)
+        .expect("open sim inventory")
+        .upsert_device(&DeviceRow {
+            id: target.into(),
+            name: "Sim Roku".into(),
+            ip: host.into(),
+            model: "Roku Express".into(),
+            model_num: "SIM-1234X".into(),
+            firmware: "15.2.4".into(),
+            wifi_driver: "fixture".into(),
+            access_tier: "permissive".into(),
+            last_seen: 1,
+        })
+        .expect("seed sim device");
+}
+
+fn run_daemon_cli(db: &std::path::Path, daemon_url: &str, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", db)
+        .env("ZESTROKU_DAEMON_URL", daemon_url)
+        .env_remove("ZESTROKU_DIRECT")
+        .args(args)
+        .output()
+        .expect("run zestroku daemon client")
+}
+
+#[test]
+fn info_and_active_app_use_the_running_daemon_for_simulator_reads() {
+    let sim = zestroku_sim::SimDevice::start(zestroku_sim::SimConfig {
+        kind: zestroku_sim::DeviceKind::Express,
+        tier: zestroku_sim::SimTier::Permissive,
+    });
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let target = format!("127.0.0.1:{}", sim.port());
+    seed_sim_device(&db, &target);
+
+    let daemon_port = free_port();
+    let _daemon = start(&db, daemon_port);
+    let daemon_url = format!("http://127.0.0.1:{daemon_port}");
+
+    let info = run_daemon_cli(&db, &daemon_url, &["info", &target]);
+    let stdout = String::from_utf8_lossy(&info.stdout);
+    let stderr = String::from_utf8_lossy(&info.stderr);
+    assert_eq!(
+        info.status.code(),
+        Some(0),
+        "stdout={stdout} stderr={stderr}"
+    );
+    assert!(stdout.contains("tier=permissive"), "{stdout}");
+    assert!(stdout.contains("tv-active-channel=absent"), "{stdout}");
+
+    let active_app = run_daemon_cli(&db, &daemon_url, &["active-app", &target]);
+    let stdout = String::from_utf8_lossy(&active_app.stdout);
+    let stderr = String::from_utf8_lossy(&active_app.stderr);
+    assert_eq!(
+        active_app.status.code(),
+        Some(0),
+        "stdout={stdout} stderr={stderr}"
+    );
+    assert!(stdout.contains("Roku"), "{stdout}");
+}
+
+#[test]
+fn missing_daemon_fails_fast_without_falling_back_to_the_live_simulator() {
+    let sim = zestroku_sim::SimDevice::start(zestroku_sim::SimConfig {
+        kind: zestroku_sim::DeviceKind::Express,
+        tier: zestroku_sim::SimTier::Permissive,
+    });
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let target = format!("127.0.0.1:{}", sim.port());
+    seed_sim_device(&db, &target);
+
+    let daemon_url = format!("http://127.0.0.1:{}", free_port());
+    let started = Instant::now();
+    let output = run_daemon_cli(&db, &daemon_url, &["info", &target]);
+    let elapsed = started.elapsed();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(output.status.code(), Some(0), "{output:?}");
+    assert!(stderr.contains("DAEMON_UNAVAILABLE"), "{stderr}");
+    assert!(elapsed < Duration::from_secs(2), "elapsed={elapsed:?}");
+    assert_eq!(sim.received_requests(), 0);
+}

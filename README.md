@@ -4,12 +4,16 @@ A single Cargo workspace, one binary (`zestroku`) that is both CLI and daemon,
 mirroring the frankensonos architecture (its muse and method template), applied
 to the Roku ECP surface.
 
-**Status:** CLI live on the owner LAN — `devices`, `apps`, `info`, `active-app`,
-`key`, `launch` are implemented; `key` and `launch` have driven a real device
-with audit rows (mutations are human-led, confirmed per op). The protocol
+**Status:** The on-demand `serve` daemon and read-only HTTP API are implemented.
+`info` and `active-app` use the daemon over loopback by default; direct ECP
+requires `ZESTROKU_DIRECT=1`. `devices`, `apps`, `key`, and `launch` are CLI
+surfaces; `key` and `launch` have driven a real device with audit rows and
+require owner-issued, single-use confirmation tokens. The MCP daemon-client,
+resident service, and remaining CLI-to-daemon paths are still open. Protocol
 ground truth lives in `skill-library-growth/candidates/edge-library/roku/`
-(COMPREHENSIVE_PLAN, AGENTS.md lane doctrine, FIRMWARE_UPDATE_PATH.md). Read
-those before coding. The `serve` daemon and MCP/API lanes are not started.
+(`COMPREHENSIVE_PLAN_FOR_ZESTROKU.md`, `AGENTS.md`, `ECP-WIRE-DOC.md`,
+`CROSS_DEVICE_DIFF.md`, and `firmware/FIRMWARE_UPDATE_PATH.md`). Read those
+before coding.
 
 ## Build and run on the owner's Mac
 
@@ -51,13 +55,18 @@ shared store; it does not open LAN sockets itself.
 
 ### Running from agent panes
 
-Until the resident daemon lands, agent panes run the binary over loopback
-ssh, never in-pane:
+`info` and `active-app` can run from an agent pane: they call the daemon over
+loopback and never fall back to ECP. Keep the daemon running in a process tree
+that has LAN permission; for example, leave this SSH session attached:
 
 ```
 ssh -o BatchMode=yes localhost \
-  ZESTROKU_TRANSPORT=std ./target/aarch64-apple-darwin/release/zestroku info 192.168.1.182
+  'exec ./target/aarch64-apple-darwin/release/zestroku serve --bind 127.0.0.1:8070'
 ```
+
+The default endpoint is `http://127.0.0.1:8070`; override it with
+`ZESTROKU_DAEMON_URL`. `ZESTROKU_DIRECT=1` explicitly selects direct ECP and
+requires LAN permission in the CLI's own process tree.
 
 ## Architecture (frankensonos §3 pattern)
 
@@ -89,8 +98,12 @@ binary can find zero devices by SSDP while TCP to the ECP port works
 (measured 2026-10-11, byte-identical copies behaved differently). Use
 `--scan <cidr>` (private ranges, at most a /22, e.g. `--scan 192.168.1.0/24`)
 or `--targets <file>` for discovery that needs no multicast grant.
-`zestroku info <host>` fetches device-info and records the device's observed
-tier; `zestroku active-app <host>` reads the focused app.
+`zestroku info <host>` and `zestroku active-app <host>` use
+`ZESTROKU_DAEMON_URL` (default `http://127.0.0.1:8070`) and fail with
+`DAEMON_UNAVAILABLE` within 2 s if the daemon is down; they do not fall back to
+direct ECP. `info` includes the live tier and channel-surface result (`unknown`
+when an optional probe fails). `ZESTROKU_DIRECT=1` explicitly selects direct
+ECP; errno 65 is reported as `LAN_BLOCKED_BY_OS_POLICY`.
 `zestroku apps <host> [--json]` lists installed apps in name order. It
 requires a recorded Permissive tier from `info`, or an explicit
 `ZESTROKU_TIER=permissive` override. Limited or unknown tier is refused
@@ -103,17 +116,18 @@ aliases, a unique `tv` or `stick` class target, or a unique device-name prefix.
 Ambiguous matches list candidates; mutations never select one implicitly.
 `zestroku approve <launch|key> <host> <target>` requires an interactive owner TTY and
 a typed action phrase. It prints a random, five-minute, single-use token bound
-to the exact device and ECP command. Supply it as `--confirm <token>` to the
-Use `zestroku key <host> <KEY> --confirm <token>` or
-`zestroku launch <host> <app-id> --confirm <token>` to consume the token. Blank,
-arbitrary, mismatched, expired, and reused tokens are refused locally (exit 4)
-and audited; MCP mutations take
-the same opaque token string and cannot mint approvals.
+to the exact device and ECP command. Use `zestroku key <host> <KEY> --confirm <token>` or
+`zestroku launch <host> <app-id> --confirm <token>` to consume it.
+Blank, arbitrary, mismatched, expired, and reused tokens are refused locally
+(exit 4) and audited; MCP mutations take the same opaque token string and
+cannot mint approvals.
 `zestroku serve [--bind <ip:port>]` runs the read-only HTTP API (`/health`,
 `/v1/devices`, `/v1/devices/{host}/info`, `/v1/devices/{host}/active-app`)
 over the shared store on loopback by default (`127.0.0.1:8070`). It binds
 loopback or private-LAN addresses only; a wildcard needs
-`--allow-unsafe-bind`, and the Host header must match the bind address.
+`--allow-unsafe-bind`, and the Host header must match the bind address. The
+info response includes live `access_tier` and `tv_active_channel`; the channel
+field is `null` when the optional ECP probe fails.
 `zestroku --version` prints `zestroku <semver> <git-sha7>[-dirty]`.
 
 ## Ground truth (verified live 2026-10-09)
