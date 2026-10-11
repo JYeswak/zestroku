@@ -112,7 +112,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let recorded = match zestroku_core::tier::recorded_tier(&store, &opts.host) {
+    let recorded = match zestroku_core::tier::recorded_tier_for(&store, &opts.host, 8060) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("zestroku: cannot read recorded tier: {e}");

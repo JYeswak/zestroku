@@ -160,7 +160,7 @@ fn main() -> ExitCode {
                                 zestroku_core::tier::classify_tier_from_response(response);
                             let _ = zestroku_core::tier::record_probe(
                                 &store,
-                                &device.host,
+                                &zestroku_core::tier::device_id(&device.host, device.port),
                                 observed,
                                 &format!("{}", parse_ecp_response(response).gate as i32),
                             );

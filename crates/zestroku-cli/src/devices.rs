@@ -194,9 +194,9 @@ pub fn run(args: &[String]) -> ExitCode {
             };
             let mut rows = Vec::with_capacity(devices.len());
             for d in &devices {
-                let id = format!("{}:{}", d.host, d.port);
+                let id = zestroku_core::tier::device_id(&d.host, d.port);
                 let access_tier = match store {
-                    Some(s) => match zestroku_core::tier::recorded_tier(s, &id) {
+                    Some(s) => match zestroku_core::tier::recorded_tier_for(s, &d.host, d.port) {
                         Ok(Some(t)) => t.as_str().to_string(),
                         Ok(None) => "unknown".to_string(),
                         Err(e) => {
