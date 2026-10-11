@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_proto::{
-    Command, EcpGate, Transport, parse_active_app, parse_device_info, parse_ecp_response, query,
+    Command, EcpGate, parse_active_app, parse_device_info, parse_ecp_response, query,
 };
 use zestroku_types::{AccessTier, Device, Error};
 
@@ -154,17 +154,17 @@ fn main() -> ExitCode {
                         (format!("tier={}", observed.as_str()), tvch)
                     };
                     // Record (best-effort; the store is the action-log DB).
-                    if let Ok(response) = &apps {
-                        if let Ok(store) = store_db::open() {
-                            let observed =
-                                zestroku_core::tier::classify_tier_from_response(response);
-                            let _ = zestroku_core::tier::record_probe(
-                                &store,
-                                &zestroku_core::tier::device_id(&device.host, device.port),
-                                observed,
-                                &format!("{}", parse_ecp_response(response).gate as i32),
-                            );
-                        }
+                    if let Ok(response) = &apps
+                        && let Ok(store) = store_db::open()
+                    {
+                        let observed =
+                            zestroku_core::tier::classify_tier_from_response(response);
+                        let _ = zestroku_core::tier::record_probe(
+                            &store,
+                            &zestroku_core::tier::device_id(&device.host, device.port),
+                            observed,
+                            &format!("{}", parse_ecp_response(response).gate as i32),
+                        );
                     }
                     println!(
                         "{} ({}) software={} tv={} {} tv-active-channel={}",
