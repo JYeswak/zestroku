@@ -5,7 +5,7 @@
 //! (never a 403 round-trip) for Permissive-tier commands.
 #![forbid(unsafe_code)]
 
-use std::process::ExitCode;
+use std::{io::IsTerminal, process::ExitCode};
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::store::Store;
@@ -82,6 +82,9 @@ fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
         _ => return Ok(()),
     };
 
+    if verb == "approve" && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal()) {
+        return Ok(());
+    }
     let store = store_db::open().map_err(|error| {
         (
             ExitCode::FAILURE,
