@@ -43,6 +43,10 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("devices") => devices::run(&args[1..]),
         Some("apps") => apps::run(&args[1..]),
+        Some("--version") | Some("version") => {
+            println!("{}", zestroku_core::version::version_string(env!("CARGO_PKG_VERSION")));
+            ExitCode::SUCCESS
+        }
         Some("--transport-probe") => {
             // Test-only surface (transport.rs selector_follows_env): prints
             // whether the std fallback is selected. Not documented usage.
