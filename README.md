@@ -13,6 +13,14 @@ those before coding. The `serve` daemon and MCP/API lanes are not started.
 
 ## Build and run on the owner's Mac
 
+Preferred route (no rch worker needed): `gh workflow run darwin.yml --ref main`
+builds a native Mach-O arm64 binary on a GitHub macOS runner, prints its
+`file`, `shasum -a 256` and `--version` in the run log, uploads it as the
+`zestroku-aarch64-apple-darwin` artifact (`gh run download <run-id> -n
+zestroku-aarch64-apple-darwin`) and runs the offline tests natively. Clear the
+download quarantine with `xattr -d com.apple.quarantine zestroku`. The Contabo
+cross-build below is the fallback.
+
 `zestroku` is a Mach-O arm64 binary cross-built on the Contabo workers (plain
 `--target` trips rch's os gate; `--config build.target` produces the identical
 binary). `ring` compiles C, so the build links through
