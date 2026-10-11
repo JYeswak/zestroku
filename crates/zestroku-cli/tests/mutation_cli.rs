@@ -66,19 +66,114 @@ fn unconfirmed_keypress_refuses_with_audit_exit4() {
 }
 
 #[test]
-fn confirmed_keypress_on_blackholed_host_dispatches_and_audits_failure() {
-    // TEST-NET-3 unroutable: gate approves (token present), dispatch fails
-    // on the 5s transport timeout, outcome recorded in the action row,
-    // exit 5 with the transport's own error text (no "dispatch failed"
-    // prefix — the CLI surfaces the underlying unreachable error verbatim).
-    let (code, _stdout, stderr, _db) =
+fn free_text_confirm_is_rejected_and_audited_without_dispatch() {
+    let (code, stdout, stderr, dir) =
         run_key_with_recorded_tier("permissive", &[], &["--confirm", "yes"]);
-    assert_eq!(code, 5, "stderr={stderr}");
-    assert!(
-        stderr.contains("device unreachable") || stderr.contains("budget deadline"),
-        "stderr={stderr}"
+    assert_eq!(code, 4, "stderr={stderr}");
+    assert!(stderr.contains("CONFIRMATION_REQUIRED"), "{stderr}");
+    assert!(stdout.is_empty(), "no mutation dispatched: {stdout}");
+    let store = zestroku_core::store::SqliteStore::open(&dir.path().join("actions.db")).unwrap();
+    let rows = store.list_actions().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].decision, "denied");
+    assert_eq!(
+        rows[0].result,
+        zestroku_core::mutation::CONFIRMATION_INVALID
     );
-    assert!(!stderr.contains("CONFIRMATION_REQUIRED"), "{stderr}");
+}
+
+#[test]
+fn minted_cli_token_authorizes_once_then_replay_is_denied() {
+    use zestroku_types::{AccessTier, Device};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("actions.db");
+    let device = Device {
+        host: "192.0.2.99".into(),
+        port: 8060,
+        model_name: String::new(),
+        model_number: String::new(),
+        software_version: String::new(),
+        is_tv: false,
+        access_tier: AccessTier::Permissive,
+    };
+    let token = {
+        let store = zestroku_core::store::SqliteStore::open(&db).unwrap();
+        store
+            .upsert_device(&zestroku_core::store::DeviceRow {
+                id: "192.0.2.99".into(),
+                name: "test".into(),
+                ip: "192.0.2.99".into(),
+                model: "test".into(),
+                model_num: "test".into(),
+                firmware: "15".into(),
+                wifi_driver: "test".into(),
+                access_tier: "permissive".into(),
+                last_seen: 1,
+            })
+            .unwrap();
+        store
+            .upsert_access_tier(&zestroku_core::store::AccessTierRow {
+                device_id: "192.0.2.99".into(),
+                tier: "permissive".into(),
+                probe_at: 1,
+                probe_map: r#"{"query/apps":"open"}"#.into(),
+            })
+            .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        zestroku_core::mutation::issue_approval(
+            &store,
+            &device,
+            &zestroku_proto::keypress_raw("HOME"),
+            now,
+        )
+        .unwrap()
+    };
+    let invoke = || {
+        Command::new(env!("CARGO_BIN_EXE_zestroku"))
+            .env("ZESTROKU_DB", &db)
+            .env("ZESTROKU_TIER", "permissive")
+            .args(["key", "192.0.2.99", "Home", "--confirm", &token])
+            .output()
+            .unwrap()
+    };
+    let first = invoke();
+    assert_eq!(
+        first.status.code(),
+        Some(5),
+        "valid token passes gate; stderr={}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let replay = invoke();
+    assert_eq!(replay.status.code(), Some(4), "replay must be refused");
+    let store = zestroku_core::store::SqliteStore::open(&db).unwrap();
+    let rows = store.list_actions().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].decision, "approved");
+    assert_eq!(rows[1].decision, "denied");
+    assert_eq!(
+        rows[1].result,
+        zestroku_core::mutation::CONFIRMATION_INVALID
+    );
+}
+
+#[test]
+fn approve_without_terminal_refuses_before_opening_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("actions.db");
+    let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &db)
+        .args(["approve", "launch", "192.0.2.10", "12"])
+        .output()
+        .expect("run approve");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("interactive terminal"));
+    assert!(
+        !db.exists(),
+        "noninteractive approval must not create a token store"
+    );
 }
 
 #[test]
@@ -114,9 +209,8 @@ fn unknown_tier_mutation_exits_3_names_info_and_writes_no_actions_row() {
 
 #[test]
 fn unknown_tier_with_env_override_still_audited_and_marks_tier_source() {
-    // ZESTROKU_TIER=permissive on an unknown-tier device: allowed (explicit
-    // override), but the audit row MUST carry tier_source=env-override.
-    // Planted negative [c]: removing the tier_source marker from mutate.rs
+    // An explicit tier override does not turn arbitrary text into a token.
+    // The attempted mutation must be refused and audited.
     // makes this assertion red.
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("actions.db");
@@ -127,13 +221,15 @@ fn unknown_tier_with_env_override_still_audited_and_marks_tier_source() {
         .output()
         .expect("run zestroku key");
     let code = out.status.code().unwrap_or(-1);
-    // Dispatch to a black-holed host still runs (override granted); the
-    // audit row is what this test is about.
-    assert_eq!(code, 5, "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(code, 4, "stderr={}", String::from_utf8_lossy(&out.stderr));
     let store = zestroku_core::store::SqliteStore::open(&db).expect("reopen");
     let rows = store.list_actions().unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].decision, "approved");
+    assert_eq!(rows[0].decision, "denied");
+    assert_eq!(
+        rows[0].result,
+        zestroku_core::mutation::CONFIRMATION_INVALID
+    );
     assert!(
         rows[0]
             .before_state

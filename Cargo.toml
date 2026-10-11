@@ -38,6 +38,9 @@ roxmltree = "0.21"
 # Hand-edited data-dir config (targets.toml).
 toml = "1"
 tempfile = "3"
+sha2 = "0.11"
+getrandom = "0.4"
+
 
 # ── FRANKEN STACK (zestroku FND-DEPS; mirrors frankensonos bead FND-DEPS) ─
 # Every franken crate below resolves to the ONE registry asupersync 0.5.0

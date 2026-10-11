@@ -43,6 +43,13 @@ pub const MIGRATIONS: &[Migration] = &[
               surface TEXT NOT NULL, field TEXT NOT NULL, left_value TEXT NOT NULL, \
               right_value TEXT NOT NULL, ran_at INTEGER NOT NULL)",
     },
+    Migration {
+        version: 4,
+        name: "single_use_confirmation_tokens",
+        sql: "CREATE TABLE confirmation_tokens (\
+              token_hash TEXT PRIMARY KEY, device_id TEXT NOT NULL, action TEXT NOT NULL, \
+              expires_at INTEGER NOT NULL, consumed_at INTEGER)",
+    },
 ];
 
 /// A migration list is valid when versions are 1..=N with no gaps or repeats.

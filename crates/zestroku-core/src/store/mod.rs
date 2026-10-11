@@ -79,6 +79,13 @@ pub struct DiffRow {
     pub right_value: String,
     pub ran_at: i64,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmationTokenRow {
+    pub token_hash: String,
+    pub device_id: String,
+    pub action: String,
+    pub expires_at: i64,
+}
 
 pub trait Store {
     fn schema_versions(&self) -> Result<Vec<i64>, StoreError>;
@@ -96,6 +103,14 @@ pub trait Store {
     fn add_capability(&self, device_id: &str, cap: &str) -> Result<(), StoreError>;
     fn list_capabilities(&self, device_id: &str) -> Result<Vec<String>, StoreError>;
     fn remove_capability(&self, device_id: &str, cap: &str) -> Result<(), StoreError>;
+    fn insert_confirmation_token(&self, token: &ConfirmationTokenRow) -> Result<(), StoreError>;
+    fn consume_confirmation_token(
+        &self,
+        token_hash: &str,
+        device_id: &str,
+        action: &str,
+        now: i64,
+    ) -> Result<bool, StoreError>;
 
     fn upsert_access_tier(&self, t: &AccessTierRow) -> Result<(), StoreError>;
     fn get_access_tier(&self, device_id: &str) -> Result<Option<AccessTierRow>, StoreError>;
@@ -282,6 +297,34 @@ impl Store for SqliteStore {
         .iter()
         .map(|r| int(r, 0))
         .collect()
+    }
+
+    fn insert_confirmation_token(&self, token: &ConfirmationTokenRow) -> Result<(), StoreError> {
+        self.exec(
+            "INSERT INTO confirmation_tokens (token_hash, device_id, action, expires_at, consumed_at) VALUES (?1, ?2, ?3, ?4, NULL)",
+            &[s(&token.token_hash), s(&token.device_id), s(&token.action), i(token.expires_at)],
+        )
+    }
+
+    fn consume_confirmation_token(
+        &self,
+        token_hash: &str,
+        device_id: &str,
+        action: &str,
+        now: i64,
+    ) -> Result<bool, StoreError> {
+        self.in_transaction(|conn| {
+            let rows = conn.query_with_params_sync(
+                "SELECT token_hash FROM confirmation_tokens WHERE token_hash = ?1 AND device_id = ?2 AND action = ?3 AND expires_at > ?4 AND consumed_at IS NULL",
+                &[s(token_hash), s(device_id), s(action), i(now)],
+            )?;
+            if rows.is_empty() { return Ok(false); }
+            conn.execute_with_params_sync(
+                "UPDATE confirmation_tokens SET consumed_at = ?4 WHERE token_hash = ?1 AND device_id = ?2 AND action = ?3 AND expires_at > ?4 AND consumed_at IS NULL",
+                &[s(token_hash), s(device_id), s(action), i(now)],
+            ).map(drop)?;
+            Ok(true)
+        })
     }
 
     fn upsert_device(&self, d: &DeviceRow) -> Result<(), StoreError> {

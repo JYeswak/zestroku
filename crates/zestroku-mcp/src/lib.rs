@@ -40,14 +40,9 @@ fn store_path() -> std::path::PathBuf {
         })
 }
 
-/// Confirm mapping: bool `true`, or a non-blank string token (operator
-/// initials, ticket ref). Absent/other/blank => not confirmed.
-pub fn confirmed_from(args: &serde_json::Value) -> Option<bool> {
-    match args.get("confirm") {
-        Some(serde_json::Value::Bool(b)) => Some(*b),
-        Some(serde_json::Value::String(s)) => Some(!s.trim().is_empty()),
-        _ => None,
-    }
+/// Extract the opaque approval token; booleans and arbitrary values never authorize.
+pub fn confirmation_token_from(args: &serde_json::Value) -> Option<&str> {
+    args.get("confirm").and_then(serde_json::Value::as_str)
 }
 
 fn mcp_error(code: McpErrorCode, message: impl Into<String>) -> McpError {
@@ -98,7 +93,7 @@ pub fn decide<S: Store + ?Sized>(
     host: &str,
     target: &str,
     tier: AccessTier,
-    confirmed: bool,
+    confirmation: Option<&str>,
     before_state: &str,
 ) -> Result<Result<String, ArgError>, MutationError> {
     let command = build_command(kind, target).map_err(|e| ArgError(e.to_string()));
@@ -112,7 +107,13 @@ pub fn decide<S: Store + ?Sized>(
         intent: &format!("{kind} {target}"),
         before_state,
     };
-    match authorize_mutation(store, &device_for(host, tier), &command, context, confirmed) {
+    match authorize_mutation(
+        store,
+        &device_for(host, tier),
+        &command,
+        context,
+        confirmation,
+    ) {
         Ok(action_id) => Ok(Ok(format!(
             "approved: audit id {action_id}; dispatch happens in serve (m7c)"
         ))),
@@ -131,7 +132,7 @@ impl ToolHandler for MutationTool {
             name: self.kind.to_string(),
             description: Some(format!(
                 "{} mutation through the per-op confirmation gate (m7e). \
-                 Requires explicit `confirm` (bool or non-blank token). \
+                 Requires a single-use approval token minted by the owner CLI. \
                  Unconfirmed calls are refused with {CONFIRMATION_REQUIRED} \
                  and logged as denied.",
                 self.kind
@@ -145,8 +146,8 @@ impl ToolHandler for MutationTool {
                         "description": if self.kind == "launch" { "app id" } else { "ECP key name" }
                     },
                     "confirm": {
-                        "description": "explicit per-op human confirmation",
-                        "oneOf": [{"type": "boolean"}, {"type": "string"}]
+                        "type": "string",
+                        "description": "opaque single-use token from `zestroku approve`"
                     }
                 },
                 "required": ["host", "target", "confirm"]
@@ -179,7 +180,7 @@ impl ToolHandler for MutationTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| mcp_error(McpErrorCode::InvalidParams, "missing `target`"))?
             .to_string();
-        let confirmed = confirmed_from(&arguments).unwrap_or(false);
+        let confirmation = confirmation_token_from(&arguments);
         // Tier mirrors the CLI's ZESTROKU_TIER operator override (the live
         // Express is Permissive since the M3 flip); Open stays the fail-safe
         // default until discovery populates tier in m7c.
@@ -199,7 +200,7 @@ impl ToolHandler for MutationTool {
             &host,
             &target,
             tier,
-            confirmed,
+            confirmation,
             "unavailable (m7c wires the probe)",
         ) {
             Ok(Ok(text)) => Ok(vec![Content::Text { text }]),
@@ -216,9 +217,9 @@ impl ToolHandler for MutationTool {
                 McpErrorCode::InternalError,
                 "internal: non-POST reached the gate",
             )),
-            Err(e @ MutationError::Store(_)) => Err(mcp_error(
+            Err(e) => Err(mcp_error(
                 McpErrorCode::InternalError,
-                format!("action log: {e}"),
+                format!("mutation gate: {e}"),
             )),
         }
     }
@@ -441,12 +442,18 @@ mod tests {
     }
 
     #[test]
-    fn confirm_mapping_accepts_bool_and_token_refuses_blank_or_other() {
-        assert_eq!(confirmed_from(&json!({"confirm": true})), Some(true));
-        assert_eq!(confirmed_from(&json!({"confirm": "jr"})), Some(true));
-        assert_eq!(confirmed_from(&json!({"confirm": "   "})), Some(false));
-        assert_eq!(confirmed_from(&json!({})), None);
-        assert_eq!(confirmed_from(&json!({"confirm": 1})), None);
+    fn confirm_mapping_accepts_only_string_tokens() {
+        assert_eq!(confirmation_token_from(&json!({"confirm": true})), None);
+        assert_eq!(
+            confirmation_token_from(&json!({"confirm": "opaque"})),
+            Some("opaque")
+        );
+        assert_eq!(
+            confirmation_token_from(&json!({"confirm": "   "})),
+            Some("   ")
+        );
+        assert_eq!(confirmation_token_from(&json!({})), None);
+        assert_eq!(confirmation_token_from(&json!({"confirm": 1})), None);
     }
 
     #[test]
@@ -458,10 +465,10 @@ mod tests {
             "192.0.2.10",
             "12",
             AccessTier::Permissive,
-            false,
+            None,
             "{}",
         )
-        .expect_err("unconfirmed refuses");
+        .unwrap_err();
         let MutationError::ConfirmationRequired { action_id, .. } = &err else {
             panic!("wrong error: {err:?}");
         };
@@ -476,25 +483,48 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_launch_audits_approved_pending_and_honest_dispatch_note() {
+    fn minted_token_approves_exact_launch_once() {
         let (_dir, store) = store_in_tmp();
+        let host = "192.0.2.10";
+        let device = device_for(host, AccessTier::Permissive);
+        let command = zestroku_proto::launch(12);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let token =
+            zestroku_core::mutation::issue_approval(&store, &device, &command, now).unwrap();
         let text = decide(
             &store,
             "launch",
-            "192.0.2.10",
+            host,
             "12",
             AccessTier::Permissive,
-            true,
+            Some(&token),
             r#"{"app":"home"}"#,
         )
         .expect("gate error impossible here")
-        .expect("confirmed authorizes");
+        .expect("token authorizes");
         assert!(text.contains("approved: audit id"), "{text}");
-        assert!(text.contains("m7c"), "must not claim it dispatched: {text}");
+        let err = decide(
+            &store,
+            "launch",
+            host,
+            "12",
+            AccessTier::Permissive,
+            Some(&token),
+            "{}",
+        )
+        .expect_err("replay refused");
+        assert!(matches!(err, MutationError::ConfirmationRequired { .. }));
         let rows = store.list_actions().unwrap();
         assert_eq!(rows[0].decision, "approved");
         assert_eq!(rows[0].result, "pending");
         assert_eq!(rows[0].before_state, r#"{"app":"home"}"#);
+        assert_eq!(
+            rows[1].result,
+            zestroku_core::mutation::CONFIRMATION_INVALID
+        );
     }
 
     #[test]
@@ -506,7 +536,7 @@ mod tests {
             "192.0.2.10",
             "netflix",
             AccessTier::Permissive,
-            true,
+            None,
             "{}",
         )
         .expect("no gate error")
@@ -529,7 +559,7 @@ mod tests {
             "192.0.2.10",
             "home",
             AccessTier::Open,
-            true,
+            None,
             "{}",
         )
         .expect_err("open tier refuses mutations");
