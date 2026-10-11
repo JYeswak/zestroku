@@ -3889,9 +3889,11 @@ name = "zestroku-cli"
 version = "0.1.0"
 dependencies = [
  "asupersync",
+ "fastapi-rust",
  "serde",
  "serde_json",
  "tempfile",
+ "zestroku-api",
  "zestroku-core",
  "zestroku-mcp",
  "zestroku-proto",
