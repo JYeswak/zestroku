@@ -14,11 +14,14 @@
 //! Josh-gated per the dispatch queue.
 #![forbid(unsafe_code)]
 
-use std::process::ExitCode;
+use std::{
+    io::{self, IsTerminal, Write},
+    process::ExitCode,
+};
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::mutation::{
-    MutationContext, MutationError, authorize_mutation, finish_mutation,
+    MutationContext, MutationError, authorize_mutation, finish_mutation, issue_approval,
 };
 use zestroku_proto::{Command, EcpGate, parse_active_app, parse_ecp_response, query};
 use zestroku_types::{AccessTier, Device};
@@ -32,7 +35,6 @@ struct MutationOpts {
     target: String,
     confirm: Option<String>,
 }
-
 /// Arg shapes: `launch <host> <app-id> [--confirm <token>]` and
 /// `key <host> <KEY> [--confirm <token>]`.
 fn parse_opts(kind: &str, args: &[String]) -> std::result::Result<MutationOpts, String> {
@@ -48,9 +50,7 @@ fn parse_opts(kind: &str, args: &[String]) -> std::result::Result<MutationOpts, 
     let mut confirm = None;
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--confirm" => {
-                confirm = Some(it.next().ok_or("--confirm needs a token")?.clone());
-            }
+            "--confirm" => confirm = Some(it.next().ok_or("--confirm needs a token")?.clone()),
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -183,12 +183,8 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         // the snapshot; removing this marker turns the audit-row test red.
         before_state: &zestroku_core::tier::marked_before_state(tier_source, &before),
     };
-    let confirmed = opts
-        .confirm
-        .as_deref()
-        .is_some_and(|t| !t.trim().is_empty());
-
-    let action_id = match authorize_mutation(&store, &device, &command, context, confirmed) {
+    let token = opts.confirm.as_deref();
+    let action_id = match authorize_mutation(&store, &device, &command, context, token) {
         Ok(id) => id,
         Err(MutationError::ConfirmationRequired { action_id, .. }) => {
             eprintln!(
@@ -205,8 +201,8 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             eprintln!("zestroku: internal: non-POST command reached the mutation gate");
             return ExitCode::FAILURE;
         }
-        Err(e @ MutationError::Store(_)) => {
-            eprintln!("zestroku: action log write failed: {e}");
+        Err(e) => {
+            eprintln!("zestroku: mutation gate failed: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -240,6 +236,68 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         Err(e) => {
             eprintln!("zestroku: {e}");
             ExitCode::from(5)
+        }
+    }
+}
+
+/// Mint a one-use approval only from an interactive owner terminal.
+pub fn approve(args: &[String]) -> ExitCode {
+    if args.len() != 3 {
+        eprintln!("usage: zestroku approve <launch|key> <host> <target>");
+        return ExitCode::from(2);
+    }
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        eprintln!("zestroku approve requires an interactive terminal");
+        return ExitCode::from(2);
+    }
+    let verb = &args[0];
+    let host = &args[1];
+    let target = &args[2];
+    let command = match build_command(verb, target) {
+        Ok(command) => command,
+        Err(error) => {
+            eprintln!("zestroku: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let phrase = format!("approve {verb} {host} {target}");
+    eprint!("Type exactly '{phrase}' to authorize this action: ");
+    let _ = io::stderr().flush();
+    let mut typed = String::new();
+    if io::stdin().read_line(&mut typed).is_err() || typed.trim_end_matches(['\r', '\n']) != phrase
+    {
+        eprintln!("approval phrase did not match");
+        return ExitCode::from(2);
+    }
+    let store = match store_db::open() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("zestroku: action log unavailable: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let device = Device {
+        host: host.clone(),
+        port: 8060,
+        model_name: String::new(),
+        model_number: String::new(),
+        software_version: String::new(),
+        is_tv: false,
+        access_tier: AccessTier::Permissive,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .min(i64::MAX as u64) as i64;
+    match issue_approval(&store, &device, &command, now) {
+        Ok(token) => {
+            println!("{token}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("zestroku: {error}");
+            ExitCode::FAILURE
         }
     }
 }

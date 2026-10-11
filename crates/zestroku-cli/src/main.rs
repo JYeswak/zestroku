@@ -31,12 +31,12 @@ fn usage() -> &'static str {
      \x20   zestroku info <host>                 device-info (Open tier)\n\
      \x20   zestroku active-app <host>           focused app (Open tier)\n\
      \x20   zestroku key <host> <KEY> [--confirm <token>]   keypress (Permissive)\n\
+     \x20   zestroku approve <verb> <host> <target>   owner TTY approval, 5-minute token\n\
      \x20   zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)\n\
      \x20   zestroku mcp                         MCP server on stdio (agent tools)\n\
      \x20   zestroku serve [--bind <ip:port>]    read-only HTTP API daemon (loopback default)\n\
      \n\
-     Mutations are human-led: without --confirm they are refused locally\n\
-     (exit 4), logged to the action log as denied, and nothing is sent.\n\
+     Mutations require a single-use token minted by `approve` in an interactive owner terminal.\n\
      Tier behavior: Permissive-tier commands are refused locally (exit 3)\n\
      when the device's observed tier is Limited — no round-trip, no 403."
 }
@@ -200,6 +200,7 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("approve") => mutate::approve(&args[1..]),
         Some("launch") if args.len() >= 3 => mutate::run("launch", &args[1..]),
         Some("key") if args.len() >= 3 => mutate::run("key", &args[1..]),
         _ => {

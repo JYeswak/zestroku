@@ -11,6 +11,8 @@ thiserror = { workspace = true }
 asupersync = { workspace = true }
 fsqlite = { workspace = true }
 toml = { workspace = true }
+sha2 = { workspace = true }
+getrandom = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

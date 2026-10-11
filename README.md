@@ -89,10 +89,12 @@ requires a recorded Permissive tier from `info`, or an explicit
 locally before `/query/apps` is sent (exit 3). `--json` emits an `apps` array
 with `id`, `name`, `type`, `subtype`, and `version`.
 App names and versions are not stable across firmware.
-`zestroku key <host> <KEY> [--confirm <token>]` and
-`zestroku launch <host> <app-id> [--confirm <token>]` require per-operation
-confirmation and a Permissive tier; without `--confirm` they are refused
-locally (exit 4) and logged to the action log as denied.
+`zestroku approve <launch|key> <host> <target>` requires an interactive owner TTY and
+a typed action phrase. It prints a random, five-minute, single-use token bound
+to the exact device and ECP command. Supply it as `--confirm <token>` to the
+matching `key` or `launch` invocation. Blank, arbitrary, mismatched, expired,
+and reused tokens are refused locally (exit 4) and audited; MCP mutations take
+the same opaque token string and cannot mint approvals.
 `zestroku serve [--bind <ip:port>]` runs the read-only HTTP API (`/health`,
 `/v1/devices`, `/v1/devices/{host}/info`, `/v1/devices/{host}/active-app`)
 over the shared store on loopback by default (`127.0.0.1:8070`). It binds

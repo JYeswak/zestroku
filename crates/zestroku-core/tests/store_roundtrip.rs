@@ -52,7 +52,7 @@ fn every_table_insert_query_update_delete_and_survives_reopen() {
     let path = dir.path().join("zestroku.db");
 
     let st = SqliteStore::open(&path).unwrap();
-    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3]);
+    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4]);
 
     // devices: insert, query, update (upsert), delete
     st.upsert_device(&device("dev-a", "open")).unwrap();
@@ -123,7 +123,7 @@ fn every_table_insert_query_update_delete_and_survives_reopen() {
 
     // reopen: rows survive, migrations are not re-applied
     let st = SqliteStore::open(&path).unwrap();
-    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3]);
+    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4]);
     assert_eq!(st.list_devices().unwrap().len(), 2);
     assert_eq!(st.list_apps("dev-a").unwrap(), vec![app("2.0")]);
     assert_eq!(st.list_capabilities("dev-a").unwrap(), vec!["launch"]);
@@ -170,9 +170,9 @@ fn migrations_are_append_only_and_upgrade_in_place() {
     );
     st.close().unwrap();
 
-    // The newer binary appends 2 and 3 and keeps existing data.
+    // The newer binary appends the remaining migrations and keeps existing data.
     let st = SqliteStore::open(&path).unwrap();
-    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3]);
+    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4]);
     assert!(st.get_device("dev-a").unwrap().is_some());
     st.insert_action(&action("x")).unwrap();
     st.close().unwrap();
