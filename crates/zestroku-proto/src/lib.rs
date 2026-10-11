@@ -114,6 +114,15 @@ pub fn query(resource: &str) -> Command {
         tier: AccessTier::Open,
     }
 }
+/// Build the installed-app query command (Permissive tier).
+#[must_use]
+pub fn query_apps() -> Command {
+    Command {
+        method: Method::Get,
+        path: "/query/apps".to_string(),
+        tier: AccessTier::Permissive,
+    }
+}
 
 /// Build a keypress command (Permissive tier).
 pub fn keypress(key: Key) -> Command {
@@ -193,6 +202,69 @@ pub fn parse_active_app(xml: &str) -> Result<ActiveApp> {
         block["<app>".len()..].trim().to_string()
     };
     Ok(ActiveApp { app_id, name })
+}
+/// One installed application returned by `GET /query/apps`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledApp {
+    pub id: String,
+    pub name: String,
+    pub app_type: String,
+    pub subtype: Option<String>,
+    pub version: Option<String>,
+}
+
+/// Parse the installed-app XML response. The exact Limited-mode denial body
+/// is a typed tier refusal, not an empty app list.
+#[must_use]
+pub fn parse_apps(xml: &str) -> Result<Vec<InstalledApp>> {
+    if xml == LIMITED_403_BODY {
+        return Err(Error::TierRefused {
+            cmd: "query/apps".to_string(),
+            mode: AccessTier::Open,
+        });
+    }
+
+    let document = roxmltree::Document::parse(xml)
+        .map_err(|error| Error::Malformed(format!("invalid query/apps XML: {error}")))?;
+    let root = document.root_element();
+    if root.tag_name().name() != "apps" {
+        return Err(Error::Malformed(
+            "expected <apps> root in query/apps".to_string(),
+        ));
+    }
+
+    root.children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "app")
+        .map(|node| {
+            let id = node
+                .attribute("id")
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| Error::Malformed("missing app id in query/apps".to_string()))?;
+            let app_type = node
+                .attribute("type")
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| Error::Malformed("missing app type in query/apps".to_string()))?;
+            let name = node.text().unwrap_or_default().trim();
+            if name.is_empty() {
+                return Err(Error::Malformed(
+                    "missing app name in query/apps".to_string(),
+                ));
+            }
+            Ok(InstalledApp {
+                id: id.to_string(),
+                name: name.to_string(),
+                app_type: app_type.to_string(),
+                subtype: node
+                    .attribute("subtype")
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned),
+                version: node
+                    .attribute("version")
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned),
+            })
+        })
+        .collect()
 }
 
 /// The subset of `<device-info>` fields the core models.
@@ -373,5 +445,86 @@ mod response_tests {
                 gate: EcpGate::Other,
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod apps_tests {
+    use super::*;
+
+    // Based on edge-library's scrubbed ecp_fixture_permissive_apps.xml
+    // (6bec640); the version attribute is synthetic to exercise that field.
+    const FIXTURE_APPS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<apps>
+<app id="1001" subtype="svod" type="appl" version="1.0">Streaming One</app>
+<app id="1002" subtype="svod" type="appl">Streaming Two</app>
+<app id="1003" type="appl">Example Channel</app>
+<app id="tvinput.hdmi1" type="tvin">HDMI Input One</app>
+<app id="tvinput.dtv" type="tvin">Live TV Input</app>
+</apps>"#;
+
+    #[test]
+    fn query_apps_requires_permissive_tier() {
+        let command = query_apps();
+        assert_eq!(command.method, Method::Get);
+        assert_eq!(command.path, "/query/apps");
+        assert_eq!(command.tier, AccessTier::Permissive);
+    }
+
+    #[test]
+    fn parse_apps_extracts_five_entries_including_tv_inputs() {
+        assert_eq!(
+            parse_apps(FIXTURE_APPS).unwrap(),
+            vec![
+                InstalledApp {
+                    id: "1001".to_string(),
+                    name: "Streaming One".to_string(),
+                    app_type: "appl".to_string(),
+                    subtype: Some("svod".to_string()),
+                    version: Some("1.0".to_string()),
+                },
+                InstalledApp {
+                    id: "1002".to_string(),
+                    name: "Streaming Two".to_string(),
+                    app_type: "appl".to_string(),
+                    subtype: Some("svod".to_string()),
+                    version: None,
+                },
+                InstalledApp {
+                    id: "1003".to_string(),
+                    name: "Example Channel".to_string(),
+                    app_type: "appl".to_string(),
+                    subtype: None,
+                    version: None,
+                },
+                InstalledApp {
+                    id: "tvinput.hdmi1".to_string(),
+                    name: "HDMI Input One".to_string(),
+                    app_type: "tvin".to_string(),
+                    subtype: None,
+                    version: None,
+                },
+                InstalledApp {
+                    id: "tvinput.dtv".to_string(),
+                    name: "Live TV Input".to_string(),
+                    app_type: "tvin".to_string(),
+                    subtype: None,
+                    version: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_apps_classifies_the_limited_body_as_typed_refusal() {
+        assert!(matches!(
+            parse_apps(LIMITED_403_BODY),
+            Err(Error::TierRefused { cmd, mode: AccessTier::Open }) if cmd == "query/apps"
+        ));
+    }
+
+    #[test]
+    fn parse_apps_rejects_malformed_xml() {
+        assert!(matches!(parse_apps("<apps><app"), Err(Error::Malformed(_))));
     }
 }
