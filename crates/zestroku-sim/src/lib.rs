@@ -68,11 +68,36 @@ struct App {
 
 /// Installed list, same shape as `ecp_fixture_permissive_apps.xml`.
 const APPS: &[App] = &[
-    App { id: "1001", kind: "appl", subtype: Some("svod"), name: "Streaming One" },
-    App { id: "1002", kind: "appl", subtype: Some("svod"), name: "Streaming Two" },
-    App { id: "1003", kind: "appl", subtype: None, name: "Example Channel" },
-    App { id: "tvinput.hdmi1", kind: "tvin", subtype: None, name: "HDMI Input One" },
-    App { id: "tvinput.dtv", kind: "tvin", subtype: None, name: "Live TV Input" },
+    App {
+        id: "1001",
+        kind: "appl",
+        subtype: Some("svod"),
+        name: "Streaming One",
+    },
+    App {
+        id: "1002",
+        kind: "appl",
+        subtype: Some("svod"),
+        name: "Streaming Two",
+    },
+    App {
+        id: "1003",
+        kind: "appl",
+        subtype: None,
+        name: "Example Channel",
+    },
+    App {
+        id: "tvinput.hdmi1",
+        kind: "tvin",
+        subtype: None,
+        name: "HDMI Input One",
+    },
+    App {
+        id: "tvinput.dtv",
+        kind: "tvin",
+        subtype: None,
+        name: "Live TV Input",
+    },
 ];
 
 struct DeviceState {
@@ -108,15 +133,30 @@ impl Reply {
     fn xml(body: String) -> Self {
         // FILL: the live Content-Type of non-403 ECP responses is not in the
         // wire doc; `text/xml; charset="utf-8"` is the conventional ECP value.
-        Self { status: 200, reason: "OK", content_type: "text/xml; charset=\"utf-8\"", body: body.into_bytes() }
+        Self {
+            status: 200,
+            reason: "OK",
+            content_type: "text/xml; charset=\"utf-8\"",
+            body: body.into_bytes(),
+        }
     }
 
     fn ok_empty() -> Self {
-        Self { status: 200, reason: "OK", content_type: "text/plain; charset=\"utf-8\"", body: Vec::new() }
+        Self {
+            status: 200,
+            reason: "OK",
+            content_type: "text/plain; charset=\"utf-8\"",
+            body: Vec::new(),
+        }
     }
 
     fn not_found() -> Self {
-        Self { status: 404, reason: "Not Found", content_type: "text/plain; charset=\"utf-8\"", body: Vec::new() }
+        Self {
+            status: 404,
+            reason: "Not Found",
+            content_type: "text/plain; charset=\"utf-8\"",
+            body: Vec::new(),
+        }
     }
 
     fn limited_403() -> Self {
@@ -175,8 +215,14 @@ fn active_app_xml(active: Option<&App>) -> String {
 fn apps_xml() -> String {
     let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<apps>\n");
     for app in APPS {
-        let subtype = app.subtype.map(|s| format!(" subtype=\"{s}\"")).unwrap_or_default();
-        out.push_str(&format!("<app id=\"{}\"{subtype} type=\"{}\">{}</app>\n", app.id, app.kind, app.name));
+        let subtype = app
+            .subtype
+            .map(|s| format!(" subtype=\"{s}\""))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "<app id=\"{}\"{subtype} type=\"{}\">{}</app>\n",
+            app.id, app.kind, app.name
+        ));
     }
     out.push_str("</apps>\n");
     out
@@ -191,7 +237,11 @@ fn route(state: &mut DeviceState, method: &Method, uri: &str) -> Reply {
         (Method::Get, "/query/device-info") => Reply::xml(device_info_xml(state.kind)),
         (Method::Get, "/query/active-app") => Reply::xml(active_app_xml(state.active)),
         (Method::Get, "/query/apps") => {
-            if limited { Reply::limited_403() } else { Reply::xml(apps_xml()) }
+            if limited {
+                Reply::limited_403()
+            } else {
+                Reply::xml(apps_xml())
+            }
         }
         (Method::Get, "/query/media-player") => {
             if limited {
@@ -213,9 +263,17 @@ fn route(state: &mut DeviceState, method: &Method, uri: &str) -> Reply {
             // Limited must not leak installed-vs-absent: 403 for every id.
             if limited {
                 Reply::limited_403()
-            } else if APPS.iter().any(|app| Some(app.id) == p.strip_prefix("/query/icon/")) {
+            } else if APPS
+                .iter()
+                .any(|app| Some(app.id) == p.strip_prefix("/query/icon/"))
+            {
                 // FILL: real icon bytes/content-type unsampled; placeholder body.
-                Reply { status: 200, reason: "OK", content_type: "image/png", body: b"FILL-icon-placeholder".to_vec() }
+                Reply {
+                    status: 200,
+                    reason: "OK",
+                    content_type: "image/png",
+                    body: b"FILL-icon-placeholder".to_vec(),
+                }
             } else {
                 Reply::not_found()
             }
@@ -302,7 +360,9 @@ impl Server {
                     async move {
                         let reply = {
                             let mut state = shared.lock();
-                            state.requests.push((request.method.to_string(), request.uri.clone()));
+                            state
+                                .requests
+                                .push((request.method.to_string(), request.uri.clone()));
                             route(&mut state, &request.method, &request.uri)
                         };
                         reply.into_response()
@@ -373,7 +433,11 @@ impl SimDevice {
             }),
         });
         let (server, addr) = Server::spawn(Arc::clone(&shared), "127.0.0.1:0".to_string())?;
-        Ok(SimDevice { shared, port: addr.port(), server: Some(server) })
+        Ok(SimDevice {
+            shared,
+            port: addr.port(),
+            server: Some(server),
+        })
     }
 
     /// The bound loopback port (stable across suspend/resume).

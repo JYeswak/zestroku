@@ -6,7 +6,9 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-use zestroku_proto::{EcpGate, EcpResponse, parse_active_app, parse_device_info, parse_ecp_response};
+use zestroku_proto::{
+    EcpGate, EcpResponse, parse_active_app, parse_device_info, parse_ecp_response,
+};
 use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
 
 struct Raw {
@@ -25,14 +27,22 @@ impl Raw {
     }
 
     fn ecp(&self) -> EcpResponse {
-        EcpResponse { status: self.status, headers: self.headers.clone(), body: self.body.clone() }
+        EcpResponse {
+            status: self.status,
+            headers: self.headers.clone(),
+            body: self.body.clone(),
+        }
     }
 }
 
 fn request(port: u16, method: &str, path: &str) -> Raw {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect sim");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).expect("read timeout");
-    stream.set_write_timeout(Some(Duration::from_secs(5))).expect("write timeout");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout");
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .expect("write timeout");
     let wire = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nAccept: */*\r\n\r\n"
     );
@@ -51,7 +61,12 @@ fn request(port: u16, method: &str, path: &str) -> Raw {
         .filter_map(|line| line.split_once(": "))
         .map(|(n, v)| (n.to_string(), v.to_string()))
         .collect();
-    Raw { status, head: format!("{head}\r\n\r\n"), headers, body: body.to_string() }
+    Raw {
+        status,
+        head: format!("{head}\r\n\r\n"),
+        headers,
+        body: body.to_string(),
+    }
 }
 
 fn get(dev: &SimDevice, path: &str) -> Raw {
@@ -84,10 +99,16 @@ fn limited_403_is_byte_exact() {
     ] {
         let r = request(dev.port(), method, path);
         assert_eq!(r.status, 403, "{method} {path}");
-        assert_eq!(r.body, "ECP command not allowed in Limited mode.", "{method} {path}");
+        assert_eq!(
+            r.body, "ECP command not allowed in Limited mode.",
+            "{method} {path}"
+        );
         assert_eq!(r.body.len(), 40);
         assert_eq!(r.header("Content-Length"), Some("40"));
-        assert_eq!(r.header("Content-Type"), Some("text/plain; charset=\"utf-8\""));
+        assert_eq!(
+            r.header("Content-Type"),
+            Some("text/plain; charset=\"utf-8\"")
+        );
         assert_eq!(r.header("Cache-Control"), Some("no-cache"));
         assert_eq!(r.header("Server"), Some("Roku/15.2.4 UPnP/1.0 Roku/15.2.4"));
         // The captured fixture (ecp_fixture_limited_response.txt) pins header
@@ -149,15 +170,23 @@ fn table() -> Vec<(&'static str, &'static str)> {
 
 fn walk(kind: DeviceKind) -> Vec<Row> {
     let dev = sim(kind, SimTier::Limited);
-    let limited: Vec<u16> =
-        table().iter().map(|(m, p)| request(dev.port(), m, p).status).collect();
+    let limited: Vec<u16> = table()
+        .iter()
+        .map(|(m, p)| request(dev.port(), m, p).status)
+        .collect();
     dev.set_tier(SimTier::Permissive);
-    let permissive: Vec<u16> =
-        table().iter().map(|(m, p)| request(dev.port(), m, p).status).collect();
+    let permissive: Vec<u16> = table()
+        .iter()
+        .map(|(m, p)| request(dev.port(), m, p).status)
+        .collect();
     table()
         .iter()
         .zip(limited.into_iter().zip(permissive))
-        .map(|((m, p), (limited, permissive))| Row { route: format!("{m} {p}"), limited, permissive })
+        .map(|((m, p), (limited, permissive))| Row {
+            route: format!("{m} {p}"),
+            limited,
+            permissive,
+        })
         .collect()
 }
 
@@ -169,8 +198,15 @@ fn wrapper_not_filter_over_the_whole_table() {
         // Non-vacuous: the gate really closes some routes under Limited, and
         // every one of them opens (200) or disappears (404) under Permissive.
         let gated: Vec<_> = rows.iter().filter(|r| r.limited == 403).collect();
-        assert!(gated.len() >= 5, "{kind:?}: only {} gated rows", gated.len());
-        assert!(rows.iter().all(|r| r.permissive != 403), "{kind:?}: a Permissive 403 exists");
+        assert!(
+            gated.len() >= 5,
+            "{kind:?}: only {} gated rows",
+            gated.len()
+        );
+        assert!(
+            rows.iter().all(|r| r.permissive != 403),
+            "{kind:?}: a Permissive 403 exists"
+        );
     }
 }
 
@@ -181,8 +217,16 @@ fn wrapper_not_filter_over_the_whole_table() {
 #[should_panic(expected = "wrapper-not-filter violated")]
 fn planted_negative_permissive_403_is_caught() {
     let rows = [
-        Row { route: "GET /query/apps".into(), limited: 403, permissive: 200 },
-        Row { route: "GET /query/media-player".into(), limited: 403, permissive: 403 },
+        Row {
+            route: "GET /query/apps".into(),
+            limited: 403,
+            permissive: 200,
+        },
+        Row {
+            route: "GET /query/media-player".into(),
+            limited: 403,
+            permissive: 403,
+        },
     ];
     assert_wrapper_not_filter(&rows);
 }
@@ -198,7 +242,10 @@ fn tier_flip_opens_apps_on_the_same_server() {
     assert_eq!(dev.port(), port);
     let r = get(&dev, "/query/apps");
     assert_eq!(r.status, 200);
-    assert!(r.body.contains("<app id=\"1001\" subtype=\"svod\" type=\"appl\">Streaming One</app>"));
+    assert!(
+        r.body
+            .contains("<app id=\"1001\" subtype=\"svod\" type=\"appl\">Streaming One</app>")
+    );
     dev.set_tier(SimTier::Limited);
     assert_eq!(get(&dev, "/query/apps").status, 403);
 }
@@ -282,7 +329,10 @@ fn proto_parsers_accept_sim_responses() {
         let dev = sim(kind, SimTier::Limited);
         let info = get(&dev, "/query/device-info");
         assert_eq!(info.status, 200);
-        assert_eq!(info.header("Server"), Some("Roku/15.2.4 UPnP/1.0 Roku/15.2.4"));
+        assert_eq!(
+            info.header("Server"),
+            Some("Roku/15.2.4 UPnP/1.0 Roku/15.2.4")
+        );
         let parsed = parse_device_info(&info.body).expect("parse device-info");
         assert_eq!(parsed.model_number, model);
         assert_eq!(parsed.software_version, "15.2.4");
@@ -301,7 +351,10 @@ fn proto_parsers_accept_sim_responses() {
         );
 
         dev.set_tier(SimTier::Permissive);
-        assert_eq!(parse_ecp_response(&get(&dev, "/query/apps").ecp()).gate, EcpGate::Open);
+        assert_eq!(
+            parse_ecp_response(&get(&dev, "/query/apps").ecp()).gate,
+            EcpGate::Open
+        );
         assert_eq!(
             parse_ecp_response(&get(&dev, "/query/rid").ecp()).gate,
             EcpGate::Absent404
