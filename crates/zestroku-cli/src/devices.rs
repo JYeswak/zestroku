@@ -2,6 +2,8 @@
 //!
 //! SSDP sweep ∪ targets.toml seeds, each endpoint probed for `device-info`.
 //! `--no-ssdp` is the seeds-only run (flaky or black-holed multicast).
+//! `--scan <cidr>` adds hosts that answer on the ECP port (private ranges
+//! only, at most a /22): discovery that needs no multicast grant.
 //! `--json` emits a machine-checkable object instead of the tab-separated
 //! lines (schema in `tests/devices_json.rs` / docs/LIVE-VERIFY.md).
 
@@ -18,11 +20,16 @@ use zestroku_types::{Device, Error, Result};
 use crate::store_db;
 use crate::transport::{AsupersyncTransport, send_selected};
 
+#[path = "scan.rs"]
+mod scan;
+
 struct Opts {
     no_ssdp: bool,
     targets: Option<PathBuf>,
     mx: u8,
     json: bool,
+    scan: Option<String>,
+    scan_port: u16,
 }
 
 fn parse_opts(args: &[String]) -> std::result::Result<Opts, String> {
@@ -31,6 +38,8 @@ fn parse_opts(args: &[String]) -> std::result::Result<Opts, String> {
         targets: std::env::var_os("ZESTROKU_TARGETS").map(PathBuf::from),
         mx: 3,
         json: false,
+        scan: None,
+        scan_port: zestroku_core::discovery::ECP_DEFAULT_PORT,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -46,6 +55,16 @@ fn parse_opts(args: &[String]) -> std::result::Result<Opts, String> {
                     .and_then(|v| v.parse().ok())
                     .filter(|v| (1..=5).contains(v))
                     .ok_or("--mx needs 1..=5")?;
+            }
+            "--scan" => {
+                o.scan = Some(it.next().ok_or("--scan needs a CIDR (a.b.c.d/n)")?.clone());
+            }
+            "--scan-port" => {
+                o.scan_port = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|p| *p != 0)
+                    .ok_or("--scan-port needs 1..=65535")?;
             }
             other => return Err(format!("unknown option {other}")),
         }
@@ -105,6 +124,29 @@ pub fn run(args: &[String]) -> ExitCode {
         Err(e) => {
             eprintln!("zestroku devices: {e}");
             return ExitCode::FAILURE;
+        }
+    };
+    let seeds = match &opts.scan {
+        None => seeds,
+        Some(cidr) => {
+            let hosts = match zestroku_core::discovery::expand_cidr(cidr) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("zestroku devices: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let open = scan::open_hosts(&hosts, opts.scan_port, scan::CONNECT_TIMEOUT);
+            eprintln!(
+                "zestroku devices: scanned {} hosts, {} answered on port {}",
+                hosts.len(),
+                open.len(),
+                opts.scan_port
+            );
+            let mut text = seeds.unwrap_or_default();
+            text.push('\n');
+            text.push_str(&scan::seeds_text(&open, opts.scan_port));
+            Some(text)
         }
     };
     if opts.no_ssdp && seeds.is_none() {

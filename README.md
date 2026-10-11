@@ -75,7 +75,12 @@ Design principles (inherited):
 
 ## Current CLI surface
 
-`zestroku devices` lists discovered devices from the store.
+`zestroku devices` discovers devices (SSDP plus optional seeds) and records
+them in the store. macOS gates UDP multicast per executable: a freshly built
+binary can find zero devices by SSDP while TCP to the ECP port works
+(measured 2026-10-11, byte-identical copies behaved differently). Use
+`--scan <cidr>` (private ranges, at most a /22, e.g. `--scan 192.168.1.0/24`)
+or `--targets <file>` for discovery that needs no multicast grant.
 `zestroku info <host>` fetches device-info and records the device's observed
 tier; `zestroku active-app <host>` reads the focused app.
 `zestroku apps <host> [--json]` lists installed apps in name order. It
