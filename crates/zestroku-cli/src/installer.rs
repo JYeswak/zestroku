@@ -11,9 +11,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RESPONSE_BYTES: u64 = 1_048_576;
 
 #[derive(Debug)]
-pub struct InstallResponse {
-    pub status: u16,
-    pub body: String,
+struct HttpResponse {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: String,
 }
 
 fn md5_hex(input: &[u8]) -> String {
@@ -117,7 +118,7 @@ fn digest_authorization(challenge: &str, username: &str, password: &str) -> Resu
     ))
 }
 
-fn response_parts(response: &[u8]) -> Result<(u16, Vec<(String, String)>, String), String> {
+fn response_parts(response: &[u8]) -> Result<HttpResponse, String> {
     let split = response
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -135,7 +136,11 @@ fn response_parts(response: &[u8]) -> Result<(u16, Vec<(String, String)>, String
         .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
         .collect();
     let body = String::from_utf8_lossy(&response[split + 4..]).into_owned();
-    Ok((status, headers, body))
+    Ok(HttpResponse {
+        status,
+        headers,
+        body,
+    })
 }
 
 fn send_request(
@@ -144,7 +149,7 @@ fn send_request(
     body: &[u8],
     boundary: &str,
     authorization: Option<&str>,
-) -> Result<(u16, Vec<(String, String)>, String), String> {
+) -> Result<HttpResponse, String> {
     if host
         .bytes()
         .any(|byte| byte.is_ascii_control() || matches!(byte, b' ' | b'/' | b'\\'))
@@ -225,7 +230,7 @@ pub fn install(
     filename: &str,
     username: &str,
     password: &str,
-) -> Result<InstallResponse, String> {
+) -> Result<(), String> {
     let mut nonce = [0_u8; 16];
     getrandom::fill(&mut nonce)
         .map_err(|error| format!("multipart boundary generation: {error}"))?;
@@ -236,31 +241,29 @@ pub fn install(
         let _ = write!(boundary, "{byte:02x}");
     }
     let body = multipart(zip, filename, &boundary)?;
-    let (status, headers, _) = send_request(host, port, &body, &boundary, None)?;
-    if status != 401 {
+    let challenge_response = send_request(host, port, &body, &boundary, None)?;
+    if challenge_response.status != 401 {
         return Err(format!(
-            "installer expected Digest challenge, received HTTP {status}"
+            "installer expected Digest challenge, received HTTP {}",
+            challenge_response.status
         ));
     }
-    let challenge = headers
+    let challenge = challenge_response
+        .headers
         .iter()
         .find(|(name, value)| name == "www-authenticate" && value.starts_with("Digest "))
         .map(|(_, value)| value.as_str())
         .ok_or_else(|| "installer returned 401 without Digest challenge".to_string())?;
     let authorization = digest_authorization(challenge, username, password)?;
-    let (status, _, response_body) =
-        send_request(host, port, &body, &boundary, Some(&authorization))?;
-    if status != 200 {
-        return Err(format!("installer returned HTTP {status}"));
+    let response = send_request(host, port, &body, &boundary, Some(&authorization))?;
+    if response.status != 200 {
+        return Err(format!("installer returned HTTP {}", response.status));
     }
-    let lower = response_body.to_ascii_lowercase();
+    let lower = response.body.to_ascii_lowercase();
     if lower.contains("<font color=\"red\">") || lower.contains("<font color='red'>") {
         return Err("installer reported a channel installation error".to_string());
     }
-    Ok(InstallResponse {
-        status,
-        body: response_body,
-    })
+    Ok(())
 }
 
 #[cfg(test)]

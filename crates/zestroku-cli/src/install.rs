@@ -240,7 +240,6 @@ pub fn run(args: &[String]) -> ExitCode {
             &options.username,
             &password,
         )
-        .map(|_| ())
     });
     let outcome = match &result {
         Ok(()) => "installer reported success".to_string(),
