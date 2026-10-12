@@ -322,6 +322,34 @@ fn route(state: &mut DeviceState, method: &Method, uri: &str) -> Reply {
         _ => Reply::not_found(),
     }
 }
+fn installer_route(method: &Method, headers: &[(String, String)], body: &[u8]) -> Option<Response> {
+    if method != &Method::Post {
+        return None;
+    }
+    let has_digest = headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("authorization") && value.starts_with("Digest ")
+    });
+    if !has_digest {
+        return Some(
+            Response::new(401, "Unauthorized", Vec::new())
+                .with_header("WWW-Authenticate", "Digest realm=\"zestroku-sim\", nonce=\"sim-nonce\", qop=\"auth\", algorithm=MD5")
+                .with_header("Content-Length", "0"),
+        );
+    }
+    let valid = [
+        b"name=\"mysubmit\"".as_slice(),
+        b"Install",
+        b"name=\"archive\"",
+        b"name=\"passwd\"",
+    ]
+    .iter()
+    .all(|needle| body.windows(needle.len()).any(|window| window == *needle));
+    if valid {
+        Some(Response::new(200, "OK", b"<html>Installed</html>".to_vec()))
+    } else {
+        Some(Response::new(400, "Bad Request", Vec::new()))
+    }
+}
 
 fn runtime() -> io::Result<Runtime> {
     let reactor = create_reactor()?;
@@ -358,14 +386,16 @@ impl Server {
                 let handler = move |request: Request| {
                     let shared = Arc::clone(&shared);
                     async move {
-                        let reply = {
-                            let mut state = shared.lock();
-                            state
-                                .requests
-                                .push((request.method.to_string(), request.uri.clone()));
-                            route(&mut state, &request.method, &request.uri)
-                        };
-                        reply.into_response()
+                        let mut state = shared.lock();
+                        state
+                            .requests
+                            .push((request.method.to_string(), request.uri.clone()));
+                        if request.uri.split('?').next() == Some("/plugin_install") {
+                            installer_route(&request.method, &request.headers, &request.body)
+                                .unwrap_or_else(|| Response::new(404, "Not Found", Vec::new()))
+                        } else {
+                            route(&mut state, &request.method, &request.uri).into_response()
+                        }
                     }
                 };
                 let listener = match Http1Listener::bind_with_config(bind, handler, config).await {
