@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
-use zestroku_core::discovery::{parse_targets, reconcile};
+use zestroku_core::discovery::{identity_key, parse_targets, reconcile};
 use zestroku_core::ssdp_io::discover;
 use zestroku_core::store::Store;
 use zestroku_proto::{parse_device_info, query};
@@ -86,7 +86,7 @@ fn read_seeds(explicit: Option<&PathBuf>) -> std::result::Result<Option<String>,
     Ok(std::fs::read_to_string(p).ok())
 }
 
-async fn seeds_only(seeds: &str) -> Result<(Vec<Device>, Vec<String>)> {
+async fn seeds_only(seeds: &str) -> Result<(Vec<(Device, String)>, Vec<String>)> {
     let (mut devices, mut notes) = (Vec::new(), Vec::new());
     for ep in parse_targets(seeds)? {
         let probed = async {
@@ -104,7 +104,7 @@ async fn seeds_only(seeds: &str) -> Result<(Vec<Device>, Vec<String>)> {
         }
         .await;
         match probed {
-            Ok(info) => devices.push(reconcile(&ep, &info)),
+            Ok(info) => devices.push((reconcile(&ep, &info), identity_key(&info))),
             Err(e) => notes.push(format!("{}:{}: {e}", ep.host, ep.port)),
         }
     }
@@ -167,11 +167,20 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let result = runtime.block_on(async {
+    let result: Result<(Vec<(Device, String)>, Vec<String>)> = runtime.block_on(async {
         if opts.no_ssdp {
             seeds_only(seeds.as_deref().unwrap_or_default()).await
         } else {
-            discover(&AsupersyncTransport, seeds.as_deref(), opts.mx).await
+            discover(&AsupersyncTransport, seeds.as_deref(), opts.mx)
+                .await
+                .map(|(found, notes)| {
+                    // SSDP-discovered devices carry no probed identity here;
+                    // unknown identity never merges (fail-safe old behavior).
+                    (
+                        found.into_iter().map(|d| (d, String::new())).collect(),
+                        notes,
+                    )
+                })
         }
     });
     // macOS gates UDP multicast per executable, so a fresh binary can find
@@ -223,7 +232,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 }
             };
             let mut rows = Vec::with_capacity(devices.len());
-            for d in &devices {
+            for (d, identity) in &devices {
                 let id = zestroku_core::tier::device_id(&d.host, d.port);
                 let access_tier = match store {
                     Some(s) => match zestroku_core::tier::recorded_tier_for(s, &d.host, d.port) {
@@ -238,28 +247,77 @@ pub fn run(args: &[String]) -> ExitCode {
                     },
                     None => "unknown".to_string(),
                 };
-                rows.push(zestroku_core::store::DeviceRow {
-                    id: id.clone(),
-                    name: d.model_name.clone(),
-                    ip: d.host.clone(),
-                    model: d.model_name.clone(),
-                    model_num: d.model_number.clone(),
-                    firmware: d.software_version.clone(),
-                    wifi_driver: String::new(),
-                    access_tier,
-                    last_seen: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|t| t.as_secs() as i64)
-                        .unwrap_or(0),
-                });
+                rows.push((
+                    zestroku_core::store::DeviceRow {
+                        id: id.clone(),
+                        name: d.model_name.clone(),
+                        ip: d.host.clone(),
+                        model: d.model_name.clone(),
+                        model_num: d.model_number.clone(),
+                        firmware: d.software_version.clone(),
+                        wifi_driver: String::new(),
+                        access_tier,
+                        last_seen: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|t| t.as_secs() as i64)
+                            .unwrap_or(0),
+                    },
+                    identity.clone(),
+                ));
             }
             if let Some(s) = store {
-                for row in &rows {
+                // Self-healing identity (zestroku-self-healing-identity-7ac):
+                // when a known identity key reappears at a new endpoint, the
+                // existing row moves (aliases follow it) instead of leaving
+                // a stale duplicate. Unknown/empty identity keeps the old
+                // per-endpoint behavior. Probe caches (apps, capabilities,
+                // tiers) stay endpoint-keyed and are re-observed on demand.
+                for (row, identity) in &rows {
+                    if !identity.is_empty() {
+                        match s.find_device_id_by_identity(identity) {
+                            Ok(Some(owner)) if owner != row.id => {
+                                if let Err(e) = s.rekey_aliases(&owner, &row.id) {
+                                    if store_err.is_none() {
+                                        store_err = Some(format!("rekey aliases {owner}: {e}"));
+                                    }
+                                    break;
+                                }
+                                if let Err(e) = s.delete_device(&owner) {
+                                    if store_err.is_none() {
+                                        store_err = Some(format!("retire moved row {owner}: {e}"));
+                                    }
+                                    break;
+                                }
+                                if let Err(e) = s.delete_device_identity(&owner) {
+                                    if store_err.is_none() {
+                                        store_err =
+                                            Some(format!("retire moved identity {owner}: {e}"));
+                                    }
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                if store_err.is_none() {
+                                    store_err = Some(format!("identity lookup {}: {e}", row.id));
+                                }
+                                break;
+                            }
+                            Ok(_) => {}
+                        }
+                    }
                     if let Err(e) = s.upsert_device(row) {
                         if store_err.is_none() {
                             store_err = Some(format!("upsert {}: {e}", row.id));
                         }
                         break;
+                    }
+                    if !identity.is_empty() {
+                        if let Err(e) = s.record_device_identity(&row.id, identity) {
+                            if store_err.is_none() {
+                                store_err = Some(format!("record identity {}: {e}", row.id));
+                            }
+                            break;
+                        }
                     }
                 }
             }
@@ -271,7 +329,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 // (docs/LIVE-VERIFY.md). Stable field order; notes carry
                 // host/port + reason so a dead seed is assertable in JSON.
                 let doc = serde_json::json!({
-                    "devices": devices.iter().map(|d| serde_json::json!({
+                    "devices": devices.iter().map(|(d, _)| serde_json::json!({
                         "host": d.host,
                         "port": d.port,
                         "model_name": d.model_name,
@@ -289,7 +347,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 });
                 println!("{doc:#}");
             } else {
-                for d in &devices {
+                for (d, _) in &devices {
                     println!(
                         "{}:{}\t{}\t{}\tsoftware={}\ttv={}",
                         d.host, d.port, d.model_name, d.model_number, d.software_version, d.is_tv

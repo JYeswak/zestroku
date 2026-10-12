@@ -151,6 +151,24 @@ pub fn expand_cidr(cidr: &str) -> Result<Vec<std::net::Ipv4Addr>> {
     Ok((first..=end).map(std::net::Ipv4Addr::from).collect())
 }
 
+/// Stable identity key for one physical device, derived from its
+/// serial-number/UDN identity fields. The output is a hex digest: raw
+/// serials never appear in CLI output, logs, fixtures or the alias table,
+/// so FIXTURESERIAL-class scrub gates keep passing. Empty identity fields
+/// yield empty identity (unknown: never merged, fail-safe for old rows).
+pub fn identity_key(info: &DeviceInfo) -> String {
+    if info.serial_number.is_empty() && info.udn.is_empty() {
+        return String::new();
+    }
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"roku-device-identity/v1\0");
+    hasher.update(info.serial_number.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(info.udn.as_bytes());
+    crate::mutation::hex(hasher.finalize().as_ref())
+}
+
 /// Reconcile an endpoint plus its `query/device-info` into a `Device`.
 /// Tier starts `Open` (the safe assumption) until a probe says otherwise.
 pub fn reconcile(ep: &Endpoint, info: &DeviceInfo) -> Device {
@@ -254,6 +272,8 @@ mod tests {
             model_number: "3941X".into(),
             software_version: "15.0.0".into(),
             is_tv: false,
+            serial_number: "FIXTURESERIAL".into(),
+            udn: "FIXTUREUDN".into(),
         };
         let d = reconcile(&ep("192.0.2.10"), &info);
         assert_eq!(
@@ -261,6 +281,43 @@ mod tests {
             ("192.0.2.10", 8060, false)
         );
         assert_eq!(d.model_number, "3941X");
+    }
+
+    fn identified(serial: &str, udn: &str) -> DeviceInfo {
+        DeviceInfo {
+            model_name: "Sim".into(),
+            model_number: "SIMX".into(),
+            software_version: "1".into(),
+            is_tv: false,
+            serial_number: serial.into(),
+            udn: udn.into(),
+        }
+    }
+
+    #[test]
+    fn identity_key_is_stable_and_hex() {
+        let a = identity_key(&identified("FIXTURESERIAL-A", "FIXTUREUDN-A"));
+        assert_eq!(
+            a,
+            identity_key(&identified("FIXTURESERIAL-A", "FIXTUREUDN-A"))
+        );
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(
+            !a.contains("FIXTURE"),
+            "raw serial must not leak into the key"
+        );
+    }
+
+    #[test]
+    fn identity_key_separates_devices_and_is_empty_when_unknown() {
+        // Planted negative: same model, different serials must not merge.
+        // Dropping the serial from the digest turns this red.
+        assert_ne!(
+            identity_key(&identified("FIXTURESERIAL-A", "U")),
+            identity_key(&identified("FIXTURESERIAL-B", "U"))
+        );
+        assert_eq!(identity_key(&identified("", "")), "");
     }
 
     #[test]

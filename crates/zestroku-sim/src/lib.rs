@@ -103,6 +103,9 @@ const APPS: &[App] = &[
 struct DeviceState {
     kind: DeviceKind,
     tier: SimTier,
+    /// Per-device serial placeholder (FIXTURESERIAL-class, never a live
+    /// value). Lets tests give two same-model sims different identities.
+    serial: String,
     active: Option<&'static App>,
     focus: Focus,
     launch_count: usize,
@@ -183,7 +186,7 @@ impl Reply {
     }
 }
 
-fn device_info_xml(kind: DeviceKind) -> String {
+fn device_info_xml(kind: DeviceKind, serial: &str) -> String {
     let (name, number, is_tv) = match kind {
         DeviceKind::Express => ("Sim Express", "SIMX1", "false"),
         DeviceKind::Tv => ("Sim TV", "SIMT1", "true"),
@@ -191,7 +194,7 @@ fn device_info_xml(kind: DeviceKind) -> String {
     // Identifier fields are FIXTURESERIAL-class placeholders, never live values.
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<device-info>\n\
-<udn>FIXTUREUDN</udn>\n<serial-number>FIXTURESERIAL</serial-number>\n\
+<udn>FIXTUREUDN</udn>\n<serial-number>{serial}</serial-number>\n\
 <device-id>FIXTUREDEVICEID</device-id>\n<model-name>{name}</model-name>\n\
 <model-number>{number}</model-number>\n<software-version>{FIRMWARE}</software-version>\n\
 <is-tv>{is_tv}</is-tv>\n</device-info>\n"
@@ -234,7 +237,9 @@ fn route(state: &mut DeviceState, method: &Method, uri: &str) -> Reply {
     let path = uri.split('?').next().unwrap_or(uri);
     let limited = state.tier == SimTier::Limited;
     match (method, path) {
-        (Method::Get, "/query/device-info") => Reply::xml(device_info_xml(state.kind)),
+        (Method::Get, "/query/device-info") => {
+            Reply::xml(device_info_xml(state.kind, &state.serial))
+        }
         (Method::Get, "/query/active-app") => Reply::xml(active_app_xml(state.active)),
         (Method::Get, "/query/apps") => {
             if limited {
@@ -452,10 +457,22 @@ impl SimDevice {
 
     /// Fallible form of [`SimDevice::start`].
     pub fn try_start(config: SimConfig) -> io::Result<SimDevice> {
+        Self::try_start_with_serial(config, "FIXTURESERIAL")
+    }
+
+    /// Start serving with an explicit serial placeholder (FIXTURESERIAL-class,
+    /// never a live value). Lets tests distinguish same-model devices.
+    pub fn start_with_serial(config: SimConfig, serial: &str) -> SimDevice {
+        Self::try_start_with_serial(config, serial).expect("bind loopback sim device")
+    }
+
+    /// Fallible form of [`SimDevice::start_with_serial`].
+    pub fn try_start_with_serial(config: SimConfig, serial: &str) -> io::Result<SimDevice> {
         let shared = Arc::new(Shared {
             state: Mutex::new(DeviceState {
                 kind: config.kind,
                 tier: config.tier,
+                serial: serial.to_owned(),
                 active: None,
                 focus: Focus::Home,
                 launch_count: 0,

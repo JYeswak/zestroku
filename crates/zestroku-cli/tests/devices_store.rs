@@ -40,14 +40,23 @@ fn run_devices(db: &std::path::Path, targets: &std::path::Path) -> (i32, String,
 
 #[test]
 fn devices_persists_one_row_per_discovered_device() {
-    let express = SimDevice::start(SimConfig {
-        kind: DeviceKind::Express,
-        tier: SimTier::Permissive,
-    });
-    let tv = SimDevice::start(SimConfig {
-        kind: DeviceKind::Tv,
-        tier: SimTier::Permissive,
-    });
+    // Distinct serial placeholders: same FIXTURE class, different identities,
+    // so the two devices must never merge into one row (see the no-merge
+    // coverage below and identity_key_separates_devices in core).
+    let express = SimDevice::start_with_serial(
+        SimConfig {
+            kind: DeviceKind::Express,
+            tier: SimTier::Permissive,
+        },
+        "FIXTURESERIAL-A",
+    );
+    let tv = SimDevice::start_with_serial(
+        SimConfig {
+            kind: DeviceKind::Tv,
+            tier: SimTier::Permissive,
+        },
+        "FIXTURESERIAL-B",
+    );
     let dir = tempfile::tempdir().expect("tempdir");
     let db = dir.path().join("actions.db");
     let targets = write_targets(dir.path(), &[express.port(), tv.port()]);
@@ -109,4 +118,139 @@ fn devices_persists_one_row_per_discovered_device() {
             .all(|r| r.last_seen >= rows.iter().map(|x| x.last_seen).min().unwrap()),
         "last_seen refreshed"
     );
+}
+
+fn run_alias(db: &std::path::Path, args: &[&str]) -> (i32, String, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_zestroku"));
+    cmd.env("ZESTROKU_DB", db).arg("alias");
+    for a in args {
+        cmd.arg(a);
+    }
+    let out = cmd.output().expect("run zestroku alias");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8(out.stdout).expect("stdout UTF-8"),
+        String::from_utf8(out.stderr).expect("stderr UTF-8"),
+    )
+}
+
+#[test]
+fn moved_device_keeps_one_row_and_aliases_follow() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+
+    // Same physical device (same serial placeholder) at its old endpoint.
+    let first = SimDevice::start_with_serial(
+        SimConfig {
+            kind: DeviceKind::Express,
+            tier: SimTier::Permissive,
+        },
+        "FIXTURESERIAL-MOVE",
+    );
+    let old_id = format!("127.0.0.1:{}", first.port());
+    let targets = write_targets(dir.path(), &[first.port()]);
+    let (code, _stdout, stderr) = run_devices(&db, &targets);
+    assert_eq!(code, 0, "first run failed: {stderr}");
+    let (code, _stdout, stderr) = run_alias(&db, &["set", "living-room", &old_id]);
+    assert_eq!(code, 0, "alias set failed: {stderr}");
+
+    // DHCP move: the same serial reappears at a new endpoint.
+    drop(first);
+    let second = SimDevice::start_with_serial(
+        SimConfig {
+            kind: DeviceKind::Express,
+            tier: SimTier::Permissive,
+        },
+        "FIXTURESERIAL-MOVE",
+    );
+    let new_id = format!("127.0.0.1:{}", second.port());
+    assert_ne!(old_id, new_id, "move needs a new endpoint");
+    let targets = write_targets(dir.path(), &[second.port()]);
+    let (code, _stdout, stderr) = run_devices(&db, &targets);
+    assert_eq!(code, 0, "rerun after move failed: {stderr}");
+
+    let store = SqliteStore::open(&db).expect("open store");
+    let rows = store.list_devices().expect("list devices");
+    assert_eq!(rows.len(), 1, "move must not duplicate rows: {rows:?}");
+    assert_eq!(rows[0].id, new_id, "row follows the new endpoint");
+    let aliases = store.list_aliases().expect("list aliases");
+    assert_eq!(aliases.len(), 1);
+    assert_eq!(aliases[0].alias, "living-room");
+    assert_eq!(
+        aliases[0].device_id, new_id,
+        "alias follows the moved device"
+    );
+    drop(second);
+}
+
+#[test]
+fn same_model_different_identities_never_merge() {
+    // Planted negative: two same-model sims with different serials must stay
+    // two rows. Merging on model (or dropping identity from the lookup)
+    // turns this red.
+    let first = SimDevice::start_with_serial(
+        SimConfig {
+            kind: DeviceKind::Express,
+            tier: SimTier::Permissive,
+        },
+        "FIXTURESERIAL-NOMERGE-A",
+    );
+    let second = SimDevice::start_with_serial(
+        SimConfig {
+            kind: DeviceKind::Express,
+            tier: SimTier::Permissive,
+        },
+        "FIXTURESERIAL-NOMERGE-B",
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let targets = write_targets(dir.path(), &[first.port(), second.port()]);
+    let (code, _stdout, stderr) = run_devices(&db, &targets);
+    assert_eq!(code, 0, "run failed: {stderr}");
+    let store = SqliteStore::open(&db).expect("open store");
+    let rows = store.list_devices().expect("list devices");
+    assert_eq!(
+        rows.len(),
+        2,
+        "distinct identities must not merge: {rows:?}"
+    );
+    drop(first);
+    drop(second);
+}
+
+#[test]
+fn cli_output_never_emits_fixture_identifiers() {
+    // Acceptance [c]: every CLI/JSON/log surface must be free of the sim's
+    // FIXTURESERIAL-class tokens. The identity key is a digest by
+    // construction; this test pins the observable surfaces.
+    let sim = SimDevice::start_with_serial(
+        SimConfig {
+            kind: DeviceKind::Express,
+            tier: SimTier::Permissive,
+        },
+        "FIXTURESERIAL-SCRUB",
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let targets = write_targets(dir.path(), &[sim.port()]);
+    let (code, stdout, stderr) = run_devices(&db, &targets);
+    assert_eq!(code, 0, "run failed: {stderr}");
+    let json_out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &db)
+        .args(["devices", "--no-ssdp", "--targets"])
+        .arg(&targets)
+        .arg("--json")
+        .output()
+        .expect("run zestroku devices --json");
+    let json_stdout = String::from_utf8(json_out.stdout).expect("json UTF-8");
+    assert_eq!(json_out.status.code(), Some(0));
+    for surface in [&stdout, &stderr, &json_stdout] {
+        for bad in ["FIXTURESERIAL", "FIXTUREUDN", "FIXTUREDEVICEID"] {
+            assert!(
+                !surface.contains(bad),
+                "CLI surface leaked fixture token {bad}"
+            );
+        }
+    }
+    drop(sim);
 }
