@@ -1,0 +1,73 @@
+{
+ "authority": "selftest",
+ "confidence": "observed",
+ "evidence_id": "ev_2eb58fe1b7b5515fe38f5eb4b0b975b87ecebf2a4852c7ef30292524b5afd623",
+ "limitations": [
+  "Queue discovery only: neither bead was independently graded or closed.",
+  "Gate5 remains NEEDS-REVIEW; no admittedPASS claim.",
+  "Canonical source helper was exercised, not the installed watcher delivery loop; zestroku nudge recovery is unverified.",
+  "Main CI and strict final-SHA workspace/Clippy/sideload acceptance remain pending."
+ ],
+ "operation": "zestroku.native-admission-grade-discovery",
+ "parameters": {
+  "beads": "zestroku-admit-wire-protocol-skill-fyq,zestroku-admit-secure-update-skill-0mx",
+  "native_api": "defaultPullProbes.readIssues+gradingQueue",
+  "subject_sha256": "f45f839bbd4b55e35034ee6d5d30cdb485d41cee6db7cb69d696b3cbfdf7c9a2"
+ },
+ "producer": "PeachKnoll",
+ "result_ref": {
+  "author_comments": {
+   "fyq": 94,
+   "secure_update": 95
+  },
+  "corroborating_messages": [
+   50937,
+   50939,
+   50944
+  ],
+  "decisive_output": {
+   "exit_code": 0,
+   "stdout": "{\"trackerRows\":34,\"pendingDoneGradeItems\":[{\"id\":\"zestroku-admit-secure-update-skill-0mx\",\"status\":\"in_progress\",\"author\":\"OrangeOx\",\"via\":\"DONE callback\",\"labels\":[\"admissions\",\"firmware\",\"skill-library\"]},{\"id\":\"zestroku-admit-wire-protocol-skill-fyq\",\"status\":\"in_progress\",\"author\":\"CoralDuck\",\"via\":\"DONE callback\",\"labels\":[\"admissions\",\"skill-library\"]}]}\nBOTH_ADMISSIONS_NATIVE_NONAUTHOR_GRADE_VISIBLE\n"
+  },
+  "fleet_health": {
+   "error": 0,
+   "healthy": 6,
+   "tmux_tmpdir": "/Users/josh/.tmux-sockets",
+   "warning": 0
+  },
+  "independent_review": {
+   "agent": "ReclaimAdvisor",
+   "scope": "Q22 author attribution and pending-DONE visibility, not acceptance",
+   "verdict": "APPROVE"
+  },
+  "native_implementation_sha256": "34576051170e226302ad028198f0849e34970442bec0d31fd7e9e478321b48d6",
+  "native_zestroku_recovery": "UNVERIFIED",
+  "original_unknown_cause": "UNOBSERVABLE: existing ompkit-fp72.31 discards capture diagnostics",
+  "read_only_ready_probes": [
+   {
+    "elapsed_ms": 21,
+    "exit_code": 0,
+    "stderr": "",
+    "stdout": "[]\n"
+   },
+   {
+    "elapsed_ms": 19,
+    "exit_code": 0,
+    "service_path_and_socket_context": true,
+    "stderr": "",
+    "stdout": "[]\n",
+    "timeout_ms": 15000
+   }
+  ],
+  "source_publication": {
+   "origin_ancestor_exit_code": 0,
+   "owning_repo": "skill-library-growth",
+   "sha": "1fbc6106b75f4befe02881b74578b06b6e4fc9e4"
+  },
+  "subject": {
+   "bytes": 188222,
+   "kind": "zestroku-tracker-jsonl",
+   "sha256": "f45f839bbd4b55e35034ee6d5d30cdb485d41cee6db7cb69d696b3cbfdf7c9a2"
+  }
+ }
+}
