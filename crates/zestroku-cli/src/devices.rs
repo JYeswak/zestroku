@@ -32,6 +32,17 @@ struct Opts {
     scan_port: u16,
 }
 
+/// A discovered device plus its stable identity key (`identity_key`; empty
+/// when unknown, which never merges). Named alias keeps signatures under
+/// Clippy's type-complexity threshold.
+type FoundDevice = (Device, String);
+
+/// Record the first store failure only; later errors must not hide it.
+fn note_first_error(store_err: &mut Option<String>, message: String) {
+    if store_err.is_none() {
+        *store_err = Some(message);
+    }
+}
 fn parse_opts(args: &[String]) -> std::result::Result<Opts, String> {
     let mut o = Opts {
         no_ssdp: false,
@@ -86,7 +97,7 @@ fn read_seeds(explicit: Option<&PathBuf>) -> std::result::Result<Option<String>,
     Ok(std::fs::read_to_string(p).ok())
 }
 
-async fn seeds_only(seeds: &str) -> Result<(Vec<(Device, String)>, Vec<String>)> {
+async fn seeds_only(seeds: &str) -> Result<(Vec<FoundDevice>, Vec<String>)> {
     let (mut devices, mut notes) = (Vec::new(), Vec::new());
     for ep in parse_targets(seeds)? {
         let probed = async {
@@ -167,7 +178,7 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let result: Result<(Vec<(Device, String)>, Vec<String>)> = runtime.block_on(async {
+    let result: Result<(Vec<FoundDevice>, Vec<String>)> = runtime.block_on(async {
         if opts.no_ssdp {
             seeds_only(seeds.as_deref().unwrap_or_default()).await
         } else {
@@ -277,47 +288,49 @@ pub fn run(args: &[String]) -> ExitCode {
                         match s.find_device_id_by_identity(identity) {
                             Ok(Some(owner)) if owner != row.id => {
                                 if let Err(e) = s.rekey_aliases(&owner, &row.id) {
-                                    if store_err.is_none() {
-                                        store_err = Some(format!("rekey aliases {owner}: {e}"));
-                                    }
+                                    note_first_error(
+                                        &mut store_err,
+                                        format!("rekey aliases {owner}: {e}"),
+                                    );
                                     break;
                                 }
                                 if let Err(e) = s.delete_device(&owner) {
-                                    if store_err.is_none() {
-                                        store_err = Some(format!("retire moved row {owner}: {e}"));
-                                    }
+                                    note_first_error(
+                                        &mut store_err,
+                                        format!("retire moved row {owner}: {e}"),
+                                    );
                                     break;
                                 }
                                 if let Err(e) = s.delete_device_identity(&owner) {
-                                    if store_err.is_none() {
-                                        store_err =
-                                            Some(format!("retire moved identity {owner}: {e}"));
-                                    }
+                                    note_first_error(
+                                        &mut store_err,
+                                        format!("retire moved identity {owner}: {e}"),
+                                    );
                                     break;
                                 }
                             }
                             Err(e) => {
-                                if store_err.is_none() {
-                                    store_err = Some(format!("identity lookup {}: {e}", row.id));
-                                }
+                                note_first_error(
+                                    &mut store_err,
+                                    format!("identity lookup {}: {e}", row.id),
+                                );
                                 break;
                             }
                             Ok(_) => {}
                         }
                     }
                     if let Err(e) = s.upsert_device(row) {
-                        if store_err.is_none() {
-                            store_err = Some(format!("upsert {}: {e}", row.id));
-                        }
+                        note_first_error(&mut store_err, format!("upsert {}: {e}", row.id));
                         break;
                     }
-                    if !identity.is_empty() {
-                        if let Err(e) = s.record_device_identity(&row.id, identity) {
-                            if store_err.is_none() {
-                                store_err = Some(format!("record identity {}: {e}", row.id));
-                            }
-                            break;
-                        }
+                    if identity.is_empty() {
+                        // Nothing to record; unknown identity never merges.
+                    } else if let Err(e) = s.record_device_identity(&row.id, identity) {
+                        note_first_error(
+                            &mut store_err,
+                            format!("record identity {}: {e}", row.id),
+                        );
+                        break;
                     }
                 }
             }
