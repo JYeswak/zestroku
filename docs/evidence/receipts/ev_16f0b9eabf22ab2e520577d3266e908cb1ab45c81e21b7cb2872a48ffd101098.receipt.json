@@ -1,0 +1,18 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_16f0b9eabf22ab2e520577d3266e908cb1ab45c81e21b7cb2872a48ffd101098",
+ "limitations": [
+  "Live-device legs opt-in only (ZESTROKU_E2E_LIVE), never CI; sim reproduces wire doc, not firmware."
+ ],
+ "operation": "zestroku.m7f-acceptance",
+ "parameters": {
+  "base": "4c5b0c17499d354fef16aba1920f57dd5368fc63",
+  "bead": "zestroku-m7f-sim-9bt"
+ },
+ "producer": "PeachStork",
+ "result_ref": {
+  "bytes": 512,
+  "sha256": "f89d391ef8d5181ea573c544f5678df45c587ab56fe9baf73e5ec2354786c144"
+ }
+}
