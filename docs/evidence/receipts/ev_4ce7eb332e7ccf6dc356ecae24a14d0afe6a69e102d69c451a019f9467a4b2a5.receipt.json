@@ -1,0 +1,20 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_4ce7eb332e7ccf6dc356ecae24a14d0afe6a69e102d69c451a019f9467a4b2a5",
+ "limitations": [
+  "Read-only source replay; no builds, no runtime verification",
+  "grep-based registry counterclaim, not ripwire tool execution"
+ ],
+ "operation": "research/zestroku-zestroku-doctrine-a0h.10.4",
+ "parameters": {
+  "bead": "zestroku-zestroku-doctrine-a0h.10.4",
+  "rerun": "read-producers-table-registry",
+  "subject": "source-tree-readonly"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 539,
+  "sha256": "00ad5de731fdeefe1ed19b14befc9f35870154deecacb5cceb6fb64abc2f958b"
+ }
+}
