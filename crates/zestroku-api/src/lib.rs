@@ -1,9 +1,11 @@
 //! zestroku-api — read-only HTTP routes over the shared inventory and ECP transport.
 #![forbid(unsafe_code)]
 
+mod routes;
+
 use std::sync::{Arc, Mutex};
 
-use fastapi::core::{App, PathParams, Request, RequestContext, Response, ResponseBody, StatusCode};
+use fastapi::core::{App, PathParams, Request, Response, ResponseBody, StatusCode};
 use serde::Serialize;
 use zestroku_core::store::{DeviceRow, Store};
 use zestroku_core::{check_tier, discovery::ECP_DEFAULT_PORT};
@@ -21,68 +23,21 @@ struct ApiState<S, T> {
 
 /// Build the read-only v1 HTTP API over a shared store and ECP transport.
 ///
-/// It registers `GET /v1/devices`, `GET /v1/devices/{host}/info`, and
-/// `GET /v1/devices/{host}/active-app`; `{host}` accepts a host or host:port
-/// inventory id. Host-specific reads return 404 unless that exact device id
-/// is present in the store. Required info/active-app reads map non-open ECP
-/// responses to 502; info treats the apps tier probe and channel 404 as data
-/// and refreshes the stored tier. The store mutex is held only for synchronous
-/// store calls and is released before each transport await.
+/// Registers health, inventory, info, active-app, installed-app, and generated
+/// OpenAPI endpoints. The host parameter accepts a host or host:port inventory
+/// id. Host-specific reads return 404 unless that exact device id exists in
+/// the store. Info refreshes the stored access-tier observation; the apps route
+/// uses the Permissive query gate. The store mutex is held only for synchronous
+/// calls and is released before each transport await.
 pub fn build_app<S, T>(store: Arc<Mutex<S>>, transport: Arc<T>) -> App
 where
     S: Store + Send + 'static,
     T: Transport + 'static,
 {
-    let state = Arc::new(ApiState { store, transport });
-
-    let devices_state = Arc::clone(&state);
-    let info_state = Arc::clone(&state);
-    let active_app_state = Arc::clone(&state);
-
-    App::builder()
-        .get(
-            "/health",
-            |_ctx: &RequestContext, _req: &mut Request| async {
-                json_response(StatusCode::OK, &HealthView { status: "ok" })
-            },
-        )
-        .get(
-            "/v1/devices",
-            move |_ctx: &RequestContext, _req: &mut Request| {
-                let state = Arc::clone(&devices_state);
-                async move { list_devices(&state) }
-            },
-        )
-        .get(
-            "/v1/devices/{host}/info",
-            move |_ctx: &RequestContext, req: &mut Request| {
-                let target = path_target(req);
-                let state = Arc::clone(&info_state);
-                async move {
-                    match target {
-                        Some(target) => device_info(&state, &target).await,
-                        None => error_response(StatusCode::BAD_REQUEST, "missing_host"),
-                    }
-                }
-            },
-        )
-        .get(
-            "/v1/devices/{host}/active-app",
-            move |_ctx: &RequestContext, req: &mut Request| {
-                let target = path_target(req);
-                let state = Arc::clone(&active_app_state);
-                async move {
-                    match target {
-                        Some(target) => active_app(&state, &target).await,
-                        None => error_response(StatusCode::BAD_REQUEST, "missing_host"),
-                    }
-                }
-            },
-        )
-        .build()
+    routes::build_app(store, transport)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, fastapi::JsonSchema)]
 struct HealthView {
     status: &'static str,
 }
@@ -117,7 +72,7 @@ pub fn check_bind(bind: &str, allow_wildcard: bool) -> Result<std::net::SocketAd
     Ok(addr)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, fastapi::JsonSchema)]
 struct DeviceSummary {
     name: String,
     host: String,
@@ -128,7 +83,7 @@ struct DeviceSummary {
     last_seen: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, fastapi::JsonSchema)]
 struct DeviceInfoView {
     host: String,
     model_name: String,
@@ -139,14 +94,14 @@ struct DeviceInfoView {
     tv_active_channel: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, fastapi::JsonSchema)]
 struct ActiveAppView {
     host: String,
     app_id: Option<u32>,
     name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, fastapi::JsonSchema)]
 struct ErrorView {
     error: &'static str,
 }
