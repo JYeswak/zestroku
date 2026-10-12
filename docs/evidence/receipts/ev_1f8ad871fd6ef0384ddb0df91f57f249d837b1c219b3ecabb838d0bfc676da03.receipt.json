@@ -1,0 +1,21 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_1f8ad871fd6ef0384ddb0df91f57f249d837b1c219b3ecabb838d0bfc676da03",
+ "limitations": [
+  "Implementer DONE only; uncommitted worktree; needs commit + non-author grade to close",
+  "Fresh-target full builds OOM on c4 (env); pooled-target suites green",
+  "Probe caches stay endpoint-keyed; tier re-observed after move (documented)"
+ ],
+ "operation": "implementer-done/zestroku-self-healing-identity-7ac",
+ "parameters": {
+  "bead": "zestroku-self-healing-identity-7ac",
+  "rerun": "proto+core+sim+cli-c4-overlay",
+  "subject": "worktree-overlay-9-files"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 441,
+  "sha256": "8169744caf92ae3e555c5f467eab778d212b703b85529a73486dfefb25804933"
+ }
+}
