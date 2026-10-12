@@ -1,0 +1,20 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_10d67c7b481f033ccd63dd8a8cdace995a5d69344378203d3e245de70112c3a8",
+ "limitations": [
+  "Verification read-only; implementation by prior sessions; bead stays open for claim + non-author grade/close",
+  "Live install is per-op owner approval, not part of CI; loopback sim is the CI target"
+ ],
+ "operation": "verify/zestroku-zestroku-doctrine-a0h.2",
+ "parameters": {
+  "bead": "zestroku-zestroku-doctrine-a0h.2",
+  "rerun": "CI-log-read+test-body-read",
+  "subject": "zestroku@c92f989-tip-identical-installer-bytes"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 425,
+  "sha256": "e63e6b4dc499d94e8e6a67448aa6e5e8dc2f56fc4b9f63f59e848fbc419eb1fd"
+ }
+}
