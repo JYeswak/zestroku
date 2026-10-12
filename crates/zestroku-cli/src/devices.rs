@@ -14,7 +14,7 @@ use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::discovery::{parse_targets, reconcile};
 use zestroku_core::ssdp_io::discover;
 use zestroku_core::store::Store;
-use zestroku_proto::{Transport, parse_device_info, query};
+use zestroku_proto::{parse_device_info, query};
 use zestroku_types::{Device, Error, Result};
 
 use crate::store_db;

@@ -453,8 +453,7 @@ mod tests {
     use std::io;
 
     use super::{
-        ReadError, classify_direct_connect_error, normalize_direct_host, parse_daemon_url,
-        parse_http_response,
+        classify_direct_connect_error, normalize_direct_host, parse_daemon_url, parse_http_response,
     };
 
     #[test]

@@ -50,6 +50,11 @@ pub const MIGRATIONS: &[Migration] = &[
               token_hash TEXT PRIMARY KEY, device_id TEXT NOT NULL, action TEXT NOT NULL, \
               expires_at INTEGER NOT NULL, consumed_at INTEGER)",
     },
+    Migration {
+        version: 5,
+        name: "device_aliases",
+        sql: "CREATE TABLE aliases (alias TEXT PRIMARY KEY, device_id TEXT NOT NULL)",
+    },
 ];
 
 /// A migration list is valid when versions are 1..=N with no gaps or repeats.

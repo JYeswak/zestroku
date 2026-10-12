@@ -1,0 +1,8 @@
+# Darwin cross-build only (zestroku-build-darwin-l6d). These keys apply solely
+# when the build target is aarch64-apple-darwin, so Linux test runs on the rch
+# workers are unaffected. See README "Build and run on the owner's Mac".
+[env]
+CC_aarch64_apple_darwin = { value = "bin/zigcc-darwin-adapter.sh", relative = true, force = true }
+
+[target.aarch64-apple-darwin]
+linker = "bin/zigcc-darwin-adapter.sh"

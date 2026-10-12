@@ -29,14 +29,12 @@ fn usage_verbs() -> Vec<String> {
         if !in_usage {
             continue;
         }
-        if let Some(rest) = l.trim().strip_prefix("zestroku ") {
-            if let Some(v) = rest.split_whitespace().next() {
-                if v.chars().next().is_some_and(|c| c.is_ascii_lowercase())
-                    && v.chars().all(|c| c.is_ascii_lowercase() || c == '-')
-                {
-                    verbs.push(v.to_string());
-                }
-            }
+        if let Some(rest) = l.trim().strip_prefix("zestroku ")
+            && let Some(v) = rest.split_whitespace().next()
+            && v.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            && v.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+        {
+            verbs.push(v.to_string());
         }
     }
     verbs

@@ -27,7 +27,7 @@ impl Transport for StdFallbackTransport {
         // across other awaits — so blocking the executor thread is bounded.
         let cmd = cmd.clone();
         let host = host.to_string();
-        let result = std::thread::spawn(move || -> Result<EcpResponse> {
+        std::thread::spawn(move || -> Result<EcpResponse> {
             let mut stream = std::net::TcpStream::connect(&addr)
                 .map_err(|error| Error::Unreachable(format!("{addr}: {error}")))?;
             stream
@@ -71,8 +71,7 @@ impl Transport for StdFallbackTransport {
             })
         })
         .join()
-        .map_err(|_| Error::Unreachable("fallback transport thread panicked".into()))?;
-        result
+        .map_err(|_| Error::Unreachable("fallback transport thread panicked".into()))?
     }
 }
 
