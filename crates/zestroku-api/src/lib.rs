@@ -128,6 +128,7 @@ struct DeviceSummary {
     last_seen: i64,
 }
 
+#[derive(Debug, Serialize)]
 struct DeviceInfoView {
     host: String,
     model_name: String,
