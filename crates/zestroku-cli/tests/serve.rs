@@ -3,7 +3,7 @@
 //! start on a wildcard or public bind. No LAN: the store holds a seeded row.
 #![forbid(unsafe_code)]
 
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -207,4 +207,125 @@ fn missing_daemon_fails_fast_without_falling_back_to_the_live_simulator() {
         "{:?}",
         sim.received_requests()
     );
+}
+
+fn probe_health_status(port: u16, host: &str) -> Option<u16> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .ok()?;
+    write!(
+        stream,
+        "GET /health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut reader = std::io::BufReader::new(stream);
+    let mut status_line = String::new();
+    if reader.read_line(&mut status_line).ok()? == 0 {
+        return None;
+    }
+    status_line.split_whitespace().nth(1)?.parse().ok()
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
+    let sim = zestroku_sim::SimDevice::start(zestroku_sim::SimConfig {
+        kind: zestroku_sim::DeviceKind::Express,
+        tier: zestroku_sim::SimTier::Permissive,
+    });
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let target = format!("127.0.0.1:{}", sim.port());
+    seed_sim_device(&db, &target);
+
+    let port = free_port();
+    let mut daemon = start(&db, port);
+    let host = format!("127.0.0.1:{port}");
+    let mut admitted = TcpStream::connect(("127.0.0.1", port)).expect("connect daemon");
+    admitted
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("set admitted-read timeout");
+    write!(
+        admitted,
+        "GET /v1/devices/{target}/info HTTP/1.1\r\nHost: {host}\r\nContent-Length: 4\r\nConnection: close\r\n\r\nab"
+    )
+    .expect("send partial info request");
+
+    // A second response proves the server accepted the earlier connection and
+    // continues serving concurrently while that valid GET awaits its body.
+    let (status, body) = get(port, "/health", &host);
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        sim.received_requests().is_empty(),
+        "the incomplete HTTP request must not dispatch to the simulator"
+    );
+
+    let pid = daemon.0.id().to_string();
+    let signal = Command::new("kill")
+        .args(["-TERM", pid.as_str()])
+        .status()
+        .expect("send SIGTERM to the child daemon");
+    assert!(signal.success(), "SIGTERM delivery failed: {signal}");
+
+    // Poll the real health route until admission stops; a fixed delay would
+    // only guess when the Asupersync signal and accept loop have converged.
+    let stop_deadline = Instant::now() + Duration::from_secs(5);
+    let mut stopped_probes = 0;
+    loop {
+        assert!(
+            daemon.0.try_wait().expect("poll daemon").is_none(),
+            "daemon exited before the admitted info read was completed"
+        );
+        match probe_health_status(port, &host) {
+            Some(200) => stopped_probes = 0,
+            _ => stopped_probes += 1,
+        }
+        if stopped_probes >= 2 {
+            break;
+        }
+        assert!(
+            Instant::now() < stop_deadline,
+            "serve continued accepting health requests after SIGTERM"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // Complete the already-admitted request after admission has stopped. The
+    // app-aware drain must finish its real ECP read before the child exits.
+    admitted
+        .write_all(b"cd")
+        .expect("complete info request body");
+    let mut raw = String::new();
+    admitted
+        .read_to_string(&mut raw)
+        .expect("read drained info response");
+    let status = raw
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or(0);
+    let body = raw.split("\r\n\r\n").nth(1).unwrap_or_default();
+    assert_eq!(status, 200, "{raw}");
+    assert!(body.contains("SIMX1"), "{body}");
+    assert!(
+        sim.received_requests()
+            .iter()
+            .any(|(method, path)| method == "GET" && path == "/query/device-info"),
+        "the admitted info read must reach the loopback simulator: {:?}",
+        sim.received_requests()
+    );
+
+    let exit_deadline = Instant::now() + Duration::from_secs(10);
+    let exit = loop {
+        if let Some(status) = daemon.0.try_wait().expect("wait for graceful exit") {
+            break status;
+        }
+        assert!(
+            Instant::now() < exit_deadline,
+            "serve did not finish draining"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(exit.code(), Some(0), "SIGTERM drain exit: {exit}");
 }

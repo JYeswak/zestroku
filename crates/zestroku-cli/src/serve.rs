@@ -9,9 +9,12 @@
 
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use asupersync::combinator::{Either, Select};
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
-use fastapi::{ServerConfig, serve_with_config};
+use asupersync::signal::{SignalKind, signal};
+use fastapi::{ServerConfig, TcpServer};
 
 use crate::store_db;
 use crate::transport::AsupersyncTransport;
@@ -37,6 +40,42 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         }
     }
     Ok(o)
+}
+
+async fn serve_until_sigterm(app: fastapi::App, config: ServerConfig) -> Result<(), String> {
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|error| format!("could not register SIGTERM handler: {error}"))?;
+    match app.run_startup_hooks().await {
+        fastapi::fastapi_core::StartupOutcome::Success => {}
+        fastapi::fastapi_core::StartupOutcome::PartialSuccess { warnings } => {
+            eprintln!("Warning: {warnings} startup hook(s) had non-fatal errors");
+        }
+        fastapi::fastapi_core::StartupOutcome::Aborted(error) => {
+            return Err(format!("startup failed: {error}"));
+        }
+    }
+
+    let app = Arc::new(app);
+    let cx = fastapi::Cx::current()
+        .ok_or_else(|| "fastapi App::serve must run inside an asupersync runtime".to_string())?;
+    let server = TcpServer::new(config);
+    let mut serving = std::pin::pin!(server.serve_app_concurrent(&cx, Arc::clone(&app)));
+    let mut receiving_signal = std::pin::pin!(sigterm.recv());
+
+    let result = match Select::new(serving.as_mut(), receiving_signal.as_mut()).await {
+        Ok(Either::Left(result)) => result.map_err(|error| format!("HTTP server failed: {error}")),
+        Ok(Either::Right(_)) => {
+            server.shutdown();
+            serving
+                .as_mut()
+                .await
+                .map_err(|error| format!("HTTP server drain failed: {error}"))
+        }
+        Err(error) => Err(format!("SIGTERM selection failed: {error:?}")),
+    };
+
+    app.run_shutdown_hooks().await;
+    result
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -79,7 +118,12 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     };
     eprintln!("zestroku serve: listening on http://{addr}/");
-    match runtime.block_on(serve_with_config(app, config)) {
+    let result = runtime.block_on(serve_until_sigterm(app, config));
+    if !runtime.shutdown_timeout(Duration::from_secs(30)) {
+        eprintln!("zestroku serve: asupersync runtime did not drain within 30s");
+        return ExitCode::FAILURE;
+    }
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("zestroku serve: {e}");
