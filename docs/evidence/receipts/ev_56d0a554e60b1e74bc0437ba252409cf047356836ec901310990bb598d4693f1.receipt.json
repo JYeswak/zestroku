@@ -1,0 +1,18 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_56d0a554e60b1e74bc0437ba252409cf047356836ec901310990bb598d4693f1",
+ "limitations": [
+  "fleet-pulse run by reporter; director owns round barriers."
+ ],
+ "operation": "zestroku.a0h7-verify",
+ "parameters": {
+  "base": "c5c1d5c2957bc4bcda5c1d131b63850f1f1f220a",
+  "bead": "zestroku-zestroku-doctrine-a0h.7"
+ },
+ "producer": "PeachStork",
+ "result_ref": {
+  "bytes": 397,
+  "sha256": "b285191b173ba105d81d1da1dfebd276a6608f67eb3a26d0a61b9a51200b0f65"
+ }
+}
