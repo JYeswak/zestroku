@@ -1,0 +1,18 @@
+{
+ "authority": "selftest",
+ "confidence": "observed",
+ "evidence_id": "ev_33c7c4a518e2344d066cf1e9000cc7c2eb545657ffaad7a945f0bd06cf22810f",
+ "limitations": [
+  "Static source replay only; runtime UNVERIFIED per bead scope."
+ ],
+ "operation": "zestroku.a0h104-grade-replay",
+ "parameters": {
+  "base": "ff77b962552bf7360af7c5fcdf3fc7dcee8a6536",
+  "bead": "zestroku-zestroku-doctrine-a0h.10.4"
+ },
+ "producer": "PeachStork",
+ "result_ref": {
+  "bytes": 624,
+  "sha256": "c7bcd3943d9aedb66e2fb11a8b7f21745dd3d1598119b2ac35bd8d96ccb952f6"
+ }
+}
