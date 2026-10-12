@@ -69,3 +69,51 @@ fn scan_refuses_public_and_too_wide_ranges() {
         assert!(stderr.contains("--scan"), "{cidr}: {stderr}");
     }
 }
+
+#[test]
+fn apps_lists_sim_installed_apps() {
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let target = format!("127.0.0.1:{}", sim.port());
+    let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &db)
+        .env("ZESTROKU_TIER", "permissive")
+        .args(["apps", target.as_str()])
+        .output()
+        .expect("run zestroku apps");
+    let stdout = String::from_utf8(out.stdout).expect("stdout UTF-8");
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(
+        stdout.contains("Streaming One") && stdout.contains("1001"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn scan_tolerates_suspended_sim_then_finds_it_after_resume() {
+    let mut sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let port = sim.port().to_string();
+    sim.suspend();
+    let (code, _, stderr) = run(
+        &["--scan", "127.0.0.1/32", "--scan-port", port.as_str()],
+        &db,
+    );
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("0 answered"), "{stderr}");
+    sim.resume();
+    let (code, stdout, stderr) = run(
+        &["--scan", "127.0.0.1/32", "--scan-port", port.as_str()],
+        &db,
+    );
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(stdout.contains("127.0.0.1:"), "{stdout}");
+}
