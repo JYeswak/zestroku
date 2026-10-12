@@ -23,19 +23,24 @@ use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::mutation::{
     MutationContext, MutationError, authorize_mutation, finish_mutation, issue_approval,
 };
-use zestroku_proto::{Command, EcpGate, parse_active_app, parse_ecp_response, query};
-use zestroku_types::{AccessTier, Device};
+use zestroku_proto::{
+    Command, EcpGate, parse_active_app, parse_apps, parse_ecp_response, query, query_apps,
+};
+use zestroku_types::{AccessTier, Device, Error};
 
 use crate::store_db;
 use crate::transport::{AsupersyncTransport, send_selected};
 
 struct MutationOpts {
     host: String,
-    /// `launch`: app id. `key`: raw ECP key name.
+    /// `launch`: app id. `key`: raw ECP key name. Empty when `--app` is used.
     target: String,
+    /// `launch --app "<name>"`: resolve against the installed-app list (a4b).
+    app: Option<String>,
     confirm: Option<String>,
 }
-/// Arg shapes: `launch <host> <app-id> [--confirm <token>]` and
+/// Arg shapes: `launch <host> <app-id> [--confirm <token>]`,
+/// `launch <host> --app "<name>" [--confirm <token>]` and
 /// `key <host> <KEY> [--confirm <token>]`.
 fn parse_opts(kind: &str, args: &[String]) -> std::result::Result<MutationOpts, String> {
     let mut it = args.iter();
@@ -43,20 +48,41 @@ fn parse_opts(kind: &str, args: &[String]) -> std::result::Result<MutationOpts, 
         .next()
         .ok_or_else(|| format!("{kind} needs <host>"))?
         .clone();
-    let target = it
-        .next()
-        .ok_or_else(|| format!("{kind} needs a target"))?
-        .clone();
+    let mut target = String::new();
+    let mut app = None;
     let mut confirm = None;
     while let Some(a) = it.next() {
         match a.as_str() {
             "--confirm" => confirm = Some(it.next().ok_or("--confirm needs a token")?.clone()),
-            other => return Err(format!("unknown option {other}")),
+            "--app" => {
+                if kind != "launch" {
+                    return Err("--app needs launch".to_string());
+                }
+                if app.is_some() {
+                    return Err("launch takes one --app".to_string());
+                }
+                app = Some(it.next().ok_or("--app needs a name")?.clone());
+            }
+            other if other.starts_with('-') => return Err(format!("unknown option {other}")),
+            other => {
+                if !target.is_empty() {
+                    return Err(format!("unexpected positional argument {other:?}"));
+                }
+                target = other.to_string();
+            }
         }
+    }
+    if app.is_some() {
+        if !target.is_empty() {
+            return Err("launch takes <app-id> or --app, not both".to_string());
+        }
+    } else if target.is_empty() {
+        return Err(format!("{kind} needs a target"));
     }
     Ok(MutationOpts {
         host,
         target,
+        app,
         confirm,
     })
 }
@@ -77,6 +103,40 @@ fn build_command(kind: &str, target: &str) -> std::result::Result<Command, Strin
         }),
         "install" => Err("install approval target must be sideload".to_string()),
         other => Err(format!("unknown mutation kind {other}")),
+    }
+}
+/// Resolve an installed-app display name to its opaque id (a4b): a
+/// case-insensitive exact match wins, else a unique case-insensitive prefix.
+/// Zero matches yield APP_NOT_INSTALLED; several yield AMBIGUOUS_APP with the
+/// candidate names. Matching touches display strings only, never ids.
+fn resolve_app_id(
+    apps: &[zestroku_proto::InstalledApp],
+    name: &str,
+) -> std::result::Result<String, String> {
+    let want = name.to_lowercase();
+    if let Some(app) = apps.iter().find(|app| app.name.to_lowercase() == want) {
+        return Ok(app.id.clone());
+    }
+    let candidates: Vec<&str> = apps
+        .iter()
+        .filter(|app| app.name.to_lowercase().starts_with(&want))
+        .map(|app| app.name.as_str())
+        .collect();
+    match candidates.as_slice() {
+        [] => Err(format!(
+            "APP_NOT_INSTALLED: no installed app matches {name:?}"
+        )),
+        [only] => Ok(apps
+            .iter()
+            .find(|app| app.name == *only)
+            .expect("prefix candidate comes from the installed list")
+            .id
+            .clone()),
+        many => Err(format!(
+            "AMBIGUOUS_APP: {name:?} matches {} installed apps: {}",
+            many.len(),
+            many.join(", ")
+        )),
     }
 }
 
@@ -100,13 +160,6 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         }
     };
     let (host, port) = crate::split_host_port(&opts.host);
-    let command = match build_command(kind, &opts.target) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("zestroku: {e}");
-            return ExitCode::from(2);
-        }
-    };
     // Tier resolution (zestroku-tier-discovery-jt8 [c]): recorded tier from
     // the store, refreshed by `zestroku info`; ZESTROKU_TIER is only an
     // explicit, AUDITED override. Unknown refuses before any POST — the
@@ -165,6 +218,60 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // `--app` name resolution (a4b): for the app arm the tier gate runs here
+    // on local data (mirrors the apps verb), so a Limited device is refused
+    // with no fetch. The installed list comes from one GET; absent/ambiguous
+    // names exit 2 with zero POSTs before the confirmation gate.
+    let (target, intent): (String, String) = match &opts.app {
+        None => {
+            let target = opts.target.clone();
+            (target.clone(), format!("{kind} {target}"))
+        }
+        Some(name) => {
+            let probe = query_apps();
+            if let Err(error) = zestroku_core::check_tier(&probe, &device) {
+                eprintln!("zestroku: {error}");
+                return ExitCode::from(3);
+            }
+            let response = match runtime.block_on(send_selected(
+                AsupersyncTransport,
+                &device.host,
+                device.port,
+                &probe,
+            )) {
+                Ok(response) => response,
+                Err(error) => {
+                    eprintln!("zestroku: cannot fetch installed apps: {error}");
+                    return ExitCode::from(5);
+                }
+            };
+            let apps = match parse_apps(&response.body) {
+                Ok(apps) => apps,
+                Err(error) => {
+                    eprintln!("zestroku: cannot parse installed apps: {error}");
+                    if matches!(error, Error::TierRefused { .. }) {
+                        return ExitCode::from(3);
+                    }
+                    return ExitCode::from(5);
+                }
+            };
+            let id = match resolve_app_id(&apps, name) {
+                Ok(id) => id,
+                Err(error) => {
+                    eprintln!("zestroku: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            (id.clone(), format!("{kind} {id} (app \"{name}\")"))
+        }
+    };
+    let command = match build_command(kind, &target) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("zestroku: {e}");
+            return ExitCode::from(2);
+        }
+    };
     let host = device.host.clone();
     let before = runtime.block_on(async {
         match send_selected(
@@ -185,7 +292,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
     let context = MutationContext {
         client: "cli",
         surface: kind,
-        intent: &format!("{kind} {}", opts.target),
+        intent: &intent,
         // Tier-source marker (zestroku-tier-discovery-jt8 [c]) prepended to
         // the snapshot; removing this marker turns the audit-row test red.
         before_state: &zestroku_core::tier::marked_before_state(tier_source, &before),
@@ -196,7 +303,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         Err(MutationError::ConfirmationRequired { action_id, .. }) => {
             eprintln!(
                 "zestroku: CONFIRMATION_REQUIRED — pass --confirm <token> to approve `{kind} {}` (audit id {action_id})",
-                opts.target
+                target
             );
             return ExitCode::from(4);
         }
@@ -237,7 +344,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
     }
     match dispatch {
         Ok(()) => {
-            println!("ok: {kind} {} (audit id {action_id})", opts.target);
+            println!("ok: {kind} {target} (audit id {action_id})");
             ExitCode::SUCCESS
         }
         Err(e) => {
