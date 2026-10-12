@@ -1,0 +1,21 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_a0fa70bf6aa6f2d7104e194ac907b828a2b45735b87dedb17714cf075d9f562e",
+ "limitations": [
+  "Suite totals partially observed (exit 0 + 25 named + tail suites); full 49-count from implementer run, corroborated",
+  "Negative via explanation path: c184-101 observed pre-fix; getrandom+md5 edges in base lock explain the difference",
+  "c2 pool-locked after run; no further reruns (pool contention, not results)"
+ ],
+ "operation": "grade/zestroku-doctrine-root-nr1.1",
+ "parameters": {
+  "bead": "zestroku-doctrine-root-nr1.1",
+  "rerun": "c2-clean-no-overlay-locked",
+  "subject": "zestroku@384cdd45368d1084b5d3d90ec41c4cdc2677cc1e"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 414,
+  "sha256": "c71578be9009525f767a75a372b86b89c16046af1edc86d598d29043f4a25d4f"
+ }
+}
