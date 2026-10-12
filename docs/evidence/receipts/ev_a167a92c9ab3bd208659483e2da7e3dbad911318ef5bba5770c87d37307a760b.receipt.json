@@ -1,0 +1,20 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_a167a92c9ab3bd208659483e2da7e3dbad911318ef5bba5770c87d37307a760b",
+ "limitations": [
+  "Non-author grade; fix author not grader; author never closes",
+  "f53 run failure (later cli defect) explicitly not relabeled; close rests on c92 descendant run"
+ ],
+ "operation": "grade/zestroku-qfl",
+ "parameters": {
+  "bead": "zestroku-qfl",
+  "rerun": "CI-log+derive-diff",
+  "subject": "zestroku@c92f989f4d1e1ee33d9842168ad630bdded36cfb"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 425,
+  "sha256": "7ebf2a1d30ed1fe21d43ba0995d14a2a66734f1b3eddedb3159c5054771e8690"
+ }
+}
