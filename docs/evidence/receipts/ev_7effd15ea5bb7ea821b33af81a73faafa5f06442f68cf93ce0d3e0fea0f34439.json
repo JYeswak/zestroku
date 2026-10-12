@@ -1,0 +1,22 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_7effd15ea5bb7ea821b33af81a73faafa5f06442f68cf93ce0d3e0fea0f34439",
+ "limitations": [
+  "TV apps=42 NOT reproduced by grader: 3 live attempts L7-unreachable/HTTP 000 (transient); 42 rests on recorded 2026-10-11 RokuExampleVerifier replay exit 0, not current-TV truth",
+  "Gate 5 NEEDS-REVIEW exit 1 (deterministic/independent-reader disagreement) preserved; not PASS; skill not admitted-PASS",
+  "Live Express outputs (apps=37, 2x404) fresh-observed by grader via ssh-localhost read-only GETs; offline blocks byte-identical to doc",
+  "No files added or changed in candidate by implementer or grader; grade valid at HEAD 1fbc6106 only"
+ ],
+ "operation": "grade-close/zestroku-admit-wire-protocol-skill-fyq",
+ "parameters": {
+  "bead": "zestroku-admit-wire-protocol-skill-fyq",
+  "rerun": "fixture-projection+parser-negatives+jsm-validate+live-Express-readonly",
+  "subject": "skill-library-growth@1fbc6106b75f4befe02881b74578b06b6e4fc9e4"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 259,
+  "sha256": "9ffe57338e9f383a06d2589eed43ec1bae7b32b70ebd1cdea1116f5a2def82ab"
+ }
+}
