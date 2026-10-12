@@ -63,6 +63,48 @@ fn get(port: u16, path: &str, host: &str) -> (u16, String) {
     (status, body)
 }
 
+fn read_response(reader: &mut std::io::BufReader<TcpStream>) -> (u16, String, String) {
+    let mut status_line = String::new();
+    reader
+        .read_line(&mut status_line)
+        .expect("read HTTP status line");
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or(0);
+
+    let mut content_length = None;
+    let mut connection = String::new();
+    loop {
+        let mut line = String::new();
+        let bytes = reader
+            .read_line(&mut line)
+            .expect("read HTTP response header");
+        assert_ne!(
+            bytes, 0,
+            "EOF before response header terminator: {status_line}"
+        );
+        if line == "\r\n" {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse::<usize>().ok();
+            } else if name.eq_ignore_ascii_case("connection") {
+                connection = value.trim().to_string();
+            }
+        }
+    }
+
+    let content_length = content_length.expect("HTTP response Content-Length");
+    let mut body = vec![0; content_length];
+    reader
+        .read_exact(&mut body)
+        .expect("read HTTP response body");
+    let body = String::from_utf8(body).expect("HTTP response body UTF-8");
+    (status, connection, body)
+}
 #[test]
 fn serve_answers_health_and_devices_and_checks_host() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -242,20 +284,34 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
     let port = free_port();
     let mut daemon = start(&db, port);
     let host = format!("127.0.0.1:{port}");
-    let mut admitted = TcpStream::connect(("127.0.0.1", port)).expect("connect daemon");
-    admitted
+    let stream = TcpStream::connect(("127.0.0.1", port)).expect("connect daemon");
+    stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("set admitted-read timeout");
+    let mut admitted = std::io::BufReader::new(stream);
+
+    // Complete a health request on this same socket first. Its response proves
+    // the server accepted the connection; keep-alive makes the next request
+    // an admitted in-flight read on that connection.
     write!(
-        admitted,
+        admitted.get_mut(),
+        "GET /health HTTP/1.1\r\nHost: {host}\r\nConnection: keep-alive\r\n\r\n"
+    )
+    .expect("write same-socket health request");
+    let (health_status, health_connection, health_body) = read_response(&mut admitted);
+    assert_eq!(health_status, 200, "{health_body}");
+    assert!(health_body.contains("\"ok\""), "{health_body}");
+    assert!(
+        !health_connection.eq_ignore_ascii_case("close"),
+        "health connection closed before the follow-up request: {health_connection:?}"
+    );
+
+    write!(
+        admitted.get_mut(),
         "GET /v1/devices/{target}/info HTTP/1.1\r\nHost: {host}\r\nContent-Length: 4\r\nConnection: close\r\n\r\nab"
     )
     .expect("send partial info request");
 
-    // A second response proves the server accepted the earlier connection and
-    // continues serving concurrently while that valid GET awaits its body.
-    let (health_status, health_body) = get(port, "/health", &host);
-    assert_eq!(health_status, 200, "{health_body}");
     assert!(
         sim.received_requests().is_empty(),
         "the incomplete HTTP request must not dispatch to the simulator"
@@ -294,21 +350,61 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
     // Complete the already-admitted request after admission has stopped. The
     // app-aware drain must finish its real ECP read before the child exits.
     admitted
+        .get_mut()
         .write_all(b"cd")
         .expect("complete info request body");
-    let mut raw = String::new();
-    admitted
-        .read_to_string(&mut raw)
-        .expect("read drained info response");
-    let status = raw
+    let source_sha =
+        std::env::var("ZESTROKU_SOURCE_SHA").unwrap_or_else(|_| "unavailable".to_string());
+    let mut raw = Vec::new();
+    let read_result = admitted.read_to_end(&mut raw);
+    let header_end = raw.windows(4).position(|window| window == b"\r\n\r\n");
+    let response_head = header_end.map_or_else(String::new, |end| {
+        String::from_utf8_lossy(&raw[..end]).into_owned()
+    });
+    let response_body_bytes = header_end.map_or(0, |end| raw.len() - end - 4);
+    let response_content_length = response_head.lines().skip(1).find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())
+            .flatten()
+    });
+    let response_connection = response_head.lines().skip(1).find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("connection")
+            .then_some(value.trim())
+    });
+    let simulator_requests = sim.received_requests();
+    let child_after_read = daemon
+        .0
+        .try_wait()
+        .expect("inspect daemon after response read");
+    let body_complete = response_content_length == Some(response_body_bytes);
+    eprintln!(
+        "m7c-admitted-frame pid={pid} source_sha={source_sha} request=GET /v1/devices/{target}/info HTTP/1.1; Content-Length: 4; Connection: close; body=abcd read={read_result:?} response_head={response_head:?} response_connection={response_connection:?} response_content_length={response_content_length:?} response_body_bytes={response_body_bytes} body_complete={body_complete} sim_requests={simulator_requests:?} child_after_read={child_after_read:?} response_bytes={raw:?}"
+    );
+    assert!(
+        read_result.is_ok(),
+        "admitted response did not reach EOF: {read_result:?}; head={response_head:?}; content_length={response_content_length:?}; body_bytes={response_body_bytes}"
+    );
+    assert_eq!(
+        response_content_length,
+        Some(response_body_bytes),
+        "response body framing mismatch: {response_head:?}"
+    );
+    assert!(
+        response_connection.is_some_and(|value| value.eq_ignore_ascii_case("close")),
+        "client requested close but response did not close: {response_head:?}"
+    );
+    let response_text = String::from_utf8_lossy(&raw);
+    let status = response_head
         .split_whitespace()
         .nth(1)
         .and_then(|code| code.parse::<u16>().ok())
         .unwrap_or(0);
-    let body = raw.split("\r\n\r\n").nth(1).unwrap_or_default();
-    assert_eq!(status, 200, "{raw}");
+    let body = response_text.split("\r\n\r\n").nth(1).unwrap_or_default();
+    assert_eq!(status, 200, "{response_text}");
     assert!(body.contains("SIMX1"), "{body}");
-    let simulator_requests = sim.received_requests();
+
     assert!(
         simulator_requests
             .iter()
@@ -334,10 +430,8 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
         listener_released,
         "serve listener remains bound after daemon exit"
     );
-    let source_sha =
-        std::env::var("ZESTROKU_SOURCE_SHA").unwrap_or_else(|_| "unavailable".to_string());
     eprintln!(
-        "m7c-sigterm pid={pid} source_sha={source_sha} health={health_status}:{health_body} info={status}:{body} sim={simulator_requests:?} exit={:?} listener_released={listener_released}",
+        "m7c-sigterm pid={pid} source_sha={source_sha} health={health_status}:{health_body} info={status}:{body} sim={simulator_requests:?} http_connection={response_connection:?} content_length={response_content_length:?} body_bytes={response_body_bytes} body_complete={body_complete} exit={:?} listener_released={listener_released}",
         exit.code()
     );
 }
