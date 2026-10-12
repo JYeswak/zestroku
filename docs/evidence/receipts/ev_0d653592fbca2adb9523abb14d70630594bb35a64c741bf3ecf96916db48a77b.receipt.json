@@ -1,0 +1,21 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_0d653592fbca2adb9523abb14d70630594bb35a64c741bf3ecf96916db48a77b",
+ "limitations": [
+  "Implementer DONE only; bead remains in_progress and requires non-author grade to close",
+  "Full unfiltered log retained in worker scratch only; result binds decisive summary lines",
+  "Migrations acceptance text says 1..=4; director ruling records v5 (9t9 took v4)"
+ ],
+ "operation": "implementer-done/zestroku-aliases-li0",
+ "parameters": {
+  "bead": "zestroku-aliases-li0",
+  "rerun": "core-full+cli-full-c1-no-overlay",
+  "subject": "zestroku@c92f989f4d1e1ee33d9842168ad630bdded36cfb"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 345,
+  "sha256": "14fa665e71fdab2fe4373283c331b025bda6d7658d7bf9c19ebb9c0465f7140a"
+ }
+}
