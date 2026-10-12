@@ -1,0 +1,106 @@
+{
+  "authority": "live",
+  "confidence": "observed",
+  "evidence_id": "ev_a10253ffc24b23f4ef644cd20e9f74119ec921a65f508ebec11c6d6d94756641",
+  "limitations": [
+    "Refs-only CAS leaves stale index entries; .7 remains rework until named-owner reconciliation and native inventory. No whole-checkout-clean claim.",
+    "97 source runtime, Clippy and final CI remain unverified; SBH red is not waived. Worker grading/implementation remain independent."
+  ],
+  "operation": "zestroku-native-reversible-ref-alignment-20261012",
+  "parameters": {
+    "bead": "zestroku-zestroku-doctrine-a0h.7",
+    "source": "97f29cc587b7abba6306d5de170b827392110059"
+  },
+  "producer": "PeachKnoll",
+  "result_ref": {
+    "alignedMain": "97f29cc587b7abba6306d5de170b827392110059",
+    "at": "2026-10-12T19:12:40Z",
+    "blobComparisons": [
+      {
+        "equal": true,
+        "local": "8f717ea",
+        "local_blob": "6fc0140cce5ca74b6a5412e2bb925f34633d2d7c",
+        "path": ".gitignore",
+        "published": "c5c1d5c",
+        "published_blob": "6fc0140cce5ca74b6a5412e2bb925f34633d2d7c"
+      },
+      {
+        "equal": true,
+        "local": "8f717ea",
+        "local_blob": "2b6de74016f5b712f62adae5e5c91d189a75d3e1",
+        "path": "README.md",
+        "published": "c5c1d5c",
+        "published_blob": "2b6de74016f5b712f62adae5e5c91d189a75d3e1"
+      },
+      {
+        "equal": true,
+        "local": "1ab9bf4",
+        "local_blob": "f4c858dc7f232eb76cd7b771dce08c2064cc7eb0",
+        "path": "docs/evidence/receipts/ev_16f0b9eabf22ab2e520577d3266e908cb1ab45c81e21b7cb2872a48ffd101098.receipt.json",
+        "published": "269195df",
+        "published_blob": "f4c858dc7f232eb76cd7b771dce08c2064cc7eb0"
+      },
+      {
+        "equal": true,
+        "local": "207721c5ea8889e56e0122a53d5bdcf5cb9c0088",
+        "path": "crates/zestroku-core/src/mutation.rs",
+        "upstream": "207721c5ea8889e56e0122a53d5bdcf5cb9c0088"
+      },
+      {
+        "equal": true,
+        "local": "a48a0d2c49ac6f606e922319928a9d438e38e3b9",
+        "path": "crates/zestroku-core/src/store/migrations.rs",
+        "upstream": "a48a0d2c49ac6f606e922319928a9d438e38e3b9"
+      },
+      {
+        "equal": true,
+        "local": "132fa28287c25687b995c42b12222240bbc2a73f",
+        "path": "crates/zestroku-core/src/store/mod.rs",
+        "upstream": "132fa28287c25687b995c42b12222240bbc2a73f"
+      },
+      {
+        "equal": true,
+        "local": "ec8655d08b24f67087939d27e07d25c14f7ae6e8",
+        "path": "crates/zestroku-core/tests/store_roundtrip.rs",
+        "upstream": "ec8655d08b24f67087939d27e07d25c14f7ae6e8"
+      },
+      {
+        "equal": true,
+        "local": "232295a82d955c72d2d494de0a2e45c17c58d174",
+        "path": "crates/zestroku-proto/src/lib.rs",
+        "upstream": "232295a82d955c72d2d494de0a2e45c17c58d174"
+      }
+    ],
+    "boundaries": [
+      "Refs-only operation; phantom old index entries remain a0h.7 rework",
+      "97f29cc source-only pending; no runtime/clippy/current-CI green claim",
+      "Guide27e9538 read; native .6 deferral preserves acceptance and blocks edge"
+    ],
+    "casOutput": "start: ok\nprepare: ok\ncommit: ok\n",
+    "decisive_bytes": 3024,
+    "decisive_sha256": "048e856fb4d672b51412e10c0842a90553720eb935e2f46e1822e90ad258090f",
+    "indexBackup": "refs/backups/zestroku-20261012-pre-align-index",
+    "indexBackupCommit": "e813757cc215ca55d8c9745f014f2e7b2233ad50",
+    "indexByteHash": "21687ed53769d47881467598c7f03c623137a3ca",
+    "indexBytesUnchanged": true,
+    "mainBackup": "refs/backups/zestroku-20261012-pre-align-main",
+    "oldMain": "457d7ff3efcb153fe9b70b22754f7b789a8caab5",
+    "pulse": {
+      "blocked": 1,
+      "closed_24h": 8,
+      "dirt": 55,
+      "in_progress": 3,
+      "no_fix": 0,
+      "old": 0,
+      "panes_busy": 4,
+      "panes_idle": 1,
+      "ready": 2
+    },
+    "sourceBytesUnchanged": true,
+    "sourcePathsChecked": 17,
+    "wakes": {
+      "OrangeShore": "kit-send-4f1b2ef43eaf",
+      "PeachStork": "kit-send-98c6c8b919bf"
+    }
+  }
+}
