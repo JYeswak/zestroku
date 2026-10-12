@@ -6,6 +6,7 @@ mod routes;
 use std::sync::{Arc, Mutex};
 
 use fastapi::core::{App, PathParams, Request, Response, ResponseBody, StatusCode};
+use fastapi::fastapi_openapi;
 use serde::Serialize;
 use zestroku_core::store::{DeviceRow, Store};
 use zestroku_core::{check_tier, discovery::ECP_DEFAULT_PORT};

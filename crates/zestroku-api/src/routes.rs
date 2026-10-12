@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use fastapi::OpenApiConfig;
 use fastapi::core::app::RouteEntry;
 use fastapi::core::{App, BoxFuture, Method, Request, RequestContext, Response, StatusCode};
+use fastapi::fastapi_openapi;
 use fastapi::router::Route;
 use serde::Serialize;
 use zestroku_core::store::Store;
