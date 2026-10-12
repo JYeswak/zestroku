@@ -1,0 +1,20 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_c58853dd6a6348a7325176ae29cdaaacc3b7760aa3208a756b5aaefd50bc7e60",
+ "limitations": [
+  "Read-only correction; no builds, runtime UNVERIFIED",
+  "Prior ev_85b1 covers only uncorrected research, not these fixes"
+ ],
+ "operation": "rework/zestroku-zestroku-doctrine-a0h.10.3",
+ "parameters": {
+  "bead": "zestroku-zestroku-doctrine-a0h.10.3",
+  "rerun": "consume-impl+caller-enumeration",
+  "subject": "source-tree-readonly"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 295,
+  "sha256": "e51a90f1cadc6ab11b8f80068b8013078ba2754d5affcdc074bb6efaecfabf8f"
+ }
+}
