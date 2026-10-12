@@ -1,0 +1,20 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_2dca26c436247d2cbb2d96440f9dede54b002d466d221fc48cfcdc647e07bd76",
+ "limitations": [
+  "Non-author grade; implementer PeachStork; author never closes",
+  "Validator copy provenance is skill scratch; d0ec0b1 README-only scope proves no local weakening"
+ ],
+ "operation": "grade/zestroku-zestroku-doctrine-a0h.8",
+ "parameters": {
+  "bead": "zestroku-zestroku-doctrine-a0h.8",
+  "rerun": "gate+negative+mapping",
+  "subject": "zestroku@d0ec0b13462d0788202af695eff7e44f8229591f"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 359,
+  "sha256": "503d0c407bffa2b2a64d0bae77a2bb4fb9ce50e2e3e51ccf4b07985ce586a004"
+ }
+}
