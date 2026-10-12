@@ -1,0 +1,22 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_06da90f4eee08f7729cb7338e1ee62c49ca675fee1345c63a4a3077fdebf014a",
+ "limitations": [
+  "Sideload loopback smoke ABSENT at accepted SHA: 8 key/launch tests only; named sideload test dirty-tree-only; no sideload result claimed",
+  "Locked proof is qualified composite (check --locked exit=0 + full CI tests at identical bytes); full test --locked OOM exit=137 disclosed, no single-invocation verdict, no rerun",
+  "Close reason cited no ev id at grade time; this receipt exists for the eventual close reason",
+  "CI/docs/deletion/3-negatives preserved as observed, not rerun"
+ ],
+ "operation": "grade-correction/zestroku-zestroku-doctrine-a0h.4",
+ "parameters": {
+  "bead": "zestroku-zestroku-doctrine-a0h.4",
+  "rerun": "test-inventory+CI-log+check-locked",
+  "subject": "zestroku@d2c8039d3758965742a3e036e3b2ce2fdf09b52c"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 390,
+  "sha256": "488bea65892b2f67b194884d5bff63972f3463df731d090395bd606c620840da"
+ }
+}
