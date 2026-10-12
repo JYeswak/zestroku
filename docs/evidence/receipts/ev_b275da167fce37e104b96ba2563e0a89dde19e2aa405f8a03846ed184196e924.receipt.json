@@ -1,0 +1,69 @@
+{
+ "authority": "selftest",
+ "confidence": "observed",
+ "evidence_id": "ev_b275da167fce37e104b96ba2563e0a89dde19e2aa405f8a03846ed184196e924",
+ "limitations": [
+  "Different live snapshots: each leaf observed ready; a0h.4 subsequently claimed byCoralDuck. Not a simultaneous ready2 claim. No closure, source acceptance, metadata resolution or CI-green proof."
+ ],
+ "operation": "zestroku.focus-frontier-transition",
+ "parameters": {
+  "beads": "zestroku-doctrine-root-nr1.2,zestroku-zestroku-doctrine-a0h.4",
+  "subject_sha256": "fc4b2aa9def2e97620bd3eb78a1ad6432844f4fbe03f15273ddf3b6b44eaa7d0"
+ },
+ "producer": "PeachKnoll",
+ "result_ref": {
+  "bytes": 1082,
+  "decisive_output": {
+   "dep_cycles": {
+    "active_count": 0,
+    "archived_closed_count": 0,
+    "blocking_only": false,
+    "count": 0,
+    "cycles": [],
+    "include_closed": false,
+    "scope": "active",
+    "total_count": 0
+   },
+   "limitation": "Different live snapshots: each leaf observed ready; a0h.4 subsequently claimed byCoralDuck. Not a simultaneous ready2 claim. No closure, source acceptance, metadata resolution or CI-green proof.",
+   "observations": [
+    {
+     "command": "br ready --json --no-auto-import --no-auto-flush",
+     "exit": 0,
+     "ready_ids": [
+      "zestroku-zestroku-doctrine-a0h.4"
+     ]
+    },
+    {
+     "command": "br ready --json --no-auto-import --no-auto-flush after false-parent repair",
+     "exit": 0,
+     "ready_ids": [
+      "zestroku-doctrine-root-nr1.2"
+     ]
+    },
+    {
+     "command": "br show new leaves --json --no-auto-import --no-auto-flush",
+     "exit": 0,
+     "rows": [
+      {
+       "assignee": null,
+       "id": "zestroku-doctrine-root-nr1.2",
+       "status": "open"
+      },
+      {
+       "assignee": "CoralDuck",
+       "id": "zestroku-zestroku-doctrine-a0h.4",
+       "status": "in_progress"
+      }
+     ]
+    }
+   ],
+   "original_published_rows_preserved": 34,
+   "owned_new_ids": [
+    "zestroku-doctrine-root-nr1.2",
+    "zestroku-zestroku-doctrine-a0h.4"
+   ],
+   "source_parent": "dcd5e35347bb62aa996bef5be9d1e185d7549e18"
+  },
+  "sha256": "6e15ee0cdfad9c511751572dc78145cd4dda6cd53cc6d673d36b44ebf965a488"
+ }
+}
