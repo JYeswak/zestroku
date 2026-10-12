@@ -4,16 +4,13 @@ A single Cargo workspace, one binary (`zestroku`) that is both CLI and daemon,
 mirroring the frankensonos architecture (its muse and method template), applied
 to the Roku ECP surface.
 
-**Status:** The on-demand `serve` daemon and read-only HTTP API are implemented.
-`info` and `active-app` use the daemon over loopback by default; direct ECP
-requires `ZESTROKU_DIRECT=1`. `devices`, `apps`, `key`, `launch`, and `install` are CLI
-surfaces. `key`, `launch`, and `install` require owner-issued, single-use confirmation tokens
-and record outcomes in the shared action log. The MCP daemon-client, resident service, and
-remaining CLI-to-daemon paths are still open. Protocol ground truth lives in
-`skill-library-growth/candidates/edge-library/roku/`
-(`COMPREHENSIVE_PLAN_FOR_ZESTROKU.md`, `AGENTS.md`, `ECP-WIRE-DOC.md`,
-`CROSS_DEVICE_DIFF.md`, and `firmware/FIRMWARE_UPDATE_PATH.md`). Read those
-before coding.
+## Overview
+
+Owner-interop control for Roku devices on the owner's LAN. Roku exposes an
+unauthenticated HTTP surface (ECP on port 8060); app ids are opaque numbers,
+so an agent that guesses launches the wrong app on the owner's TV. Every
+mutation here is human-led: one approval per operation, audited, with no
+standing blanket.
 
 ## Build and run on the owner's Mac
 
@@ -155,3 +152,33 @@ field is `null` when the optional ECP probe fails.
 M1 discovery ✅ · M2 wire-doc ✅ · M3 tier map ✅ · M4 keypress ✅ (launch
 gated per-op) · M5 firmware lane ✅ · M6 cross-device diff ✅ · M7 = this
 repo (in progress) · M8 parity features (beaded).
+
+## Limitations
+
+- macOS gates UDP multicast and LAN sockets per executable: an agent pane gets
+  errno 65 on LAN IPs while the same binary works under `ssh localhost`; run
+  LAN-touching commands through the resident daemon or an SSH session.
+- Live mutations need an interactive owner terminal approval per operation;
+  there is no standing blanket and no approval API for agents to call.
+- `zestroku-sim` reproduces the documented wire behavior, not device firmware;
+  media-player and icon bytes are placeholders until sampled read-only.
+- No live-device behavior runs in CI; live legs are owner-gated opt-in only.
+- Doctor checks, policy file, SSE state stream, and web remote are planned,
+  not implemented.
+
+## Status
+
+The on-demand `serve` daemon and read-only HTTP API are implemented.
+`info` and `active-app` use the daemon over loopback by default; direct ECP
+requires `ZESTROKU_DIRECT=1`. `devices`, `apps`, `key`, `launch`, and `install` are CLI
+surfaces. `key`, `launch`, and `install` require owner-issued, single-use confirmation tokens
+and record outcomes in the shared action log. The MCP daemon-client, resident service, and
+remaining CLI-to-daemon paths are still open. Protocol ground truth lives in
+`skill-library-growth/candidates/edge-library/roku/`
+(`COMPREHENSIVE_PLAN_FOR_ZESTROKU.md`, `AGENTS.md`, `ECP-WIRE-DOC.md`,
+`CROSS_DEVICE_DIFF.md`, and `firmware/FIRMWARE_UPDATE_PATH.md`). Read those
+before coding.
+
+## About Contributions
+
+*About Contributions:* Please don't take this the wrong way, but I do not accept outside contributions for any of my projects. I simply don't have the mental bandwidth to review anything, and it's my name on the thing, so I'm responsible for any problems it causes; thus, the risk-reward is highly asymmetric from my perspective. I'd also have to worry about other "stakeholders," which seems unwise for tools I mostly make for myself for free. Feel free to submit issues, and even PRs if you want to illustrate a proposed fix, but know I won't merge them directly. Instead, I'll have Claude or Codex review submissions via `gh` and independently decide whether and how to address them. Bug reports in particular are welcome. Sorry if this offends, but I want to avoid wasted time and hurt feelings. I understand this isn't in sync with the prevailing open-source ethos that seeks community contributions, but it's the only way I can move at this velocity and keep my sanity.
