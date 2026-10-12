@@ -1,0 +1,92 @@
+{
+ "authority": "live",
+ "confidence": "observed",
+ "evidence_id": "ev_ab137862c24ed1b8a03336863dbc0fedc304361523f982a6f5b15bddfee124fb",
+ "limitations": [
+  "Receipt proves native graph/queue/wake metadata only; no runtime capability or current-main green claim."
+ ],
+ "operation": "zestroku.director-m7-capability-frontier",
+ "parameters": {
+  "consumer": "zestroku"
+ },
+ "producer": "PeachKnoll",
+ "result_ref": {
+  "active": [
+   {
+    "assignee": "OrangeShore",
+    "id": "zestroku-m7c-serve-inq.1.1"
+   },
+   {
+    "assignee": "PeachStork",
+    "id": "zestroku-zestroku-doctrine-a0h.11.1"
+   },
+   {
+    "assignee": "OrangeOx",
+    "id": "zestroku-zestroku-doctrine-a0h.10.3"
+   }
+  ],
+  "cycles": 0,
+  "free_ready": 4,
+  "frontier_created": [
+   "zestroku-zestroku-doctrine-a0h.11.1",
+   "zestroku-zestroku-doctrine-a0h.11.2",
+   "zestroku-zestroku-doctrine-a0h.11.3",
+   "zestroku-zestroku-doctrine-a0h.11.4"
+  ],
+  "gate_limits": [
+   "Runtime feature behavior not exercised by director metadata smoke",
+   "Main seven gates not green",
+   "Startup honestly depends on shared producer",
+   "Global M7/cl4/resident gates unchanged",
+   "No shared main/index/source edits by director"
+  ],
+  "kind": "director-frontier",
+  "known_failure": {
+   "command": "cargo test --workspace",
+   "fix": "zestroku-m7c-serve-inq.1.1",
+   "output": "tests/serve.rs:302 read drained info response WouldBlock errno11 after11.13s",
+   "run": "38311076859",
+   "sha": "ff77b962552bf7360af7c5fcdf3fc7dcee8a6536",
+   "test": "sigterm_stops_admission_and_drains_an_admitted_info_read"
+  },
+  "new_rows": 52,
+  "old_rows": 46,
+  "projection_sha256": "bb55eefdf30aee98deb689edaeb6d32b76298fb54334d9d3e3443a5f784b44b7",
+  "publication_parent": "77e0568e95b863a3614387719d1227d4d7bf1899",
+  "ready": [
+   {
+    "assignee": null,
+    "id": "zestroku-zestroku-doctrine-a0h.3"
+   },
+   {
+    "assignee": null,
+    "id": "zestroku-zestroku-doctrine-a0h.7"
+   },
+   {
+    "assignee": null,
+    "id": "zestroku-zestroku-doctrine-a0h.11.3"
+   },
+   {
+    "assignee": null,
+    "id": "zestroku-zestroku-doctrine-a0h.11.4"
+   }
+  ],
+  "scope": [
+   "zestroku-m7c-serve-inq",
+   "zestroku-m7c-serve-inq.1",
+   "zestroku-m7c-serve-inq.2",
+   "zestroku-m7c-serve-inq.1.1",
+   "zestroku-zestroku-doctrine-a0h.9",
+   "zestroku-zestroku-doctrine-a0h.7",
+   "zestroku-zestroku-doctrine-a0h.3",
+   "zestroku-zestroku-doctrine-a0h.10.3",
+   "zestroku-zestroku-doctrine-a0h.11",
+   "zestroku-zestroku-doctrine-a0h.11.1",
+   "zestroku-zestroku-doctrine-a0h.11.2",
+   "zestroku-zestroku-doctrine-a0h.11.3",
+   "zestroku-zestroku-doctrine-a0h.11.4"
+  ],
+  "snapshot": "2026-10-12T23:50:54.443Z",
+  "unchanged_foreign_rows": 39
+ }
+}
