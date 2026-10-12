@@ -190,14 +190,7 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     };
     let before = runtime.block_on(async {
-        match send_selected(
-            AsupersyncTransport,
-            &dial_host,
-            8060,
-            &query("active-app"),
-        )
-        .await
-        {
+        match send_selected(AsupersyncTransport, &dial_host, 8060, &query("active-app")).await {
             Ok(response) => parse_active_app(&response.body)
                 .map(|app| app.name)
                 .unwrap_or_else(|_| "unparseable".to_string()),
