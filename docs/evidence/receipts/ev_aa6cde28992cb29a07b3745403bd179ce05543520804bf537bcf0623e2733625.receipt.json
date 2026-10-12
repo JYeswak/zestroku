@@ -1,0 +1,21 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_aa6cde28992cb29a07b3745403bd179ce05543520804bf537bcf0623e2733625",
+ "limitations": [
+  "Non-author grade; fix authors PeachStork/CoralDuck; author never closes",
+  "b54f846 CI fmt-red superseded by c92 fmt fix; close at c92",
+  "Strict locked workspace gate separately open per bead; qualified composite only"
+ ],
+ "operation": "grade/zestroku-zestroku-doctrine-a0h.4-final",
+ "parameters": {
+  "bead": "zestroku-zestroku-doctrine-a0h.4",
+  "rerun": "CI-log+shape+RCH-full",
+  "subject": "zestroku@c92f989f4d1e1ee33d9842168ad630bdded36cfb"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 388,
+  "sha256": "2bff282601cebec1d77c535a3cd4889be31bde416b260aa18e9a64ed75e565f0"
+ }
+}
