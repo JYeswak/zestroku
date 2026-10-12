@@ -1,0 +1,70 @@
+{
+ "authority": "selftest",
+ "confidence": "observed",
+ "evidence_id": "ev_c37322eea618900a4e631740f1db5abd696605949d58041c71bea1535a22b7c1",
+ "limitations": [
+  "Gap filing and actual local module/provenance witnesses only; neither native source fix nor fleet service adoption is claimed.",
+  "Exact installed br source commit and historical metadata application pathway remain UNKNOWN/UNRECEIPTED; correct published citations do not prove supported hash-bound apply.",
+  "a0h.4 existing CI is valid but does not contain the dirty sideload smoke test; single locked test invocation had no verdict.",
+  "The review collector probe names then-current canonical worktree module, not a pinned shipped watcher binary."
+ ],
+ "operation": "zestroku-director-native-gap-routing",
+ "parameters": {
+  "subject_sha256": "89b0fdb5f968d442d6917576513685ffa2cabc0f703159f8bd26ff58d65e702e"
+ },
+ "producer": "PeachKnoll",
+ "result_ref": {
+  "grading": {
+   "captured_log": "artifact473-1252lines",
+   "ci_run": "38239131814",
+   "close_reason_ev_ids": 0,
+   "mutation_tests": 8,
+   "non_author_rework_callback": "9ed704d2-smoke-gap-row-transition-deferred",
+   "proof_sha": "d2c8039d3758965742a3e036e3b2ce2fdf09b52c",
+   "sideload_test_at_proof_sha": false
+  },
+  "native_amendment": {
+   "binary_sha256": "fb55f62bd777ffe9c628cbb66779a55698e9d2cd31ba216dd2bb7dcad7ab456f",
+   "installed_source_sha": "UNKNOWN",
+   "installed_version": "0.7.4",
+   "preview_tokens": [
+    "1c8d06f1b8479a43c51013a6905d1bfef5993169d9e77530cc6886b20811b5e1",
+    "459934a6f563fd23a9cb73f6caca275fee5f2446c2c564e7524dd051f36129ed"
+   ],
+   "published_citations": "verified-content-only-8e8345d9",
+   "supported_apply": "UNPROVEN"
+  },
+  "native_creation": {
+   "kit": {
+    "exit": 0,
+    "id": "ompkit-fp72.37"
+   },
+   "zestroku": {
+    "exit": 0,
+    "id": "zestroku-zestroku-doctrine-a0h.5"
+   }
+  },
+  "publication": {
+   "kit_parent": "26a76d11cf24de4d8ae175c0e2247eab646eea03",
+   "scope": "owned initial creations only; existing source rows byte-preserved; worker claim metadata excluded",
+   "zestroku_parent": "9ed704d2d71439ca7f308ba64f94d247e10e10b7"
+  },
+  "subject_sha256": "89b0fdb5f968d442d6917576513685ffa2cabc0f703159f8bd26ff58d65e702e",
+  "watch_probe": {
+   "grade_count": 0,
+   "policy": {
+    "ready": [
+     "open"
+    ],
+    "statuses": [],
+    "transitions": {}
+   },
+   "review_ids": [
+    "zestroku-doctrine-root-nr1.2",
+    "zestroku-zestroku-doctrine-a0h.4"
+   ],
+   "review_statuses": [],
+   "status_row_count": 0
+  }
+ }
+}
