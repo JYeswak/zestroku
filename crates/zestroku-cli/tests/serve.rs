@@ -254,8 +254,8 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
 
     // A second response proves the server accepted the earlier connection and
     // continues serving concurrently while that valid GET awaits its body.
-    let (status, body) = get(port, "/health", &host);
-    assert_eq!(status, 200, "{body}");
+    let (health_status, health_body) = get(port, "/health", &host);
+    assert_eq!(health_status, 200, "{health_body}");
     assert!(
         sim.received_requests().is_empty(),
         "the incomplete HTTP request must not dispatch to the simulator"
@@ -308,12 +308,13 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
     let body = raw.split("\r\n\r\n").nth(1).unwrap_or_default();
     assert_eq!(status, 200, "{raw}");
     assert!(body.contains("SIMX1"), "{body}");
+    let simulator_requests = sim.received_requests();
     assert!(
-        sim.received_requests()
+        simulator_requests
             .iter()
             .any(|(method, path)| method == "GET" && path == "/query/device-info"),
         "the admitted info read must reach the loopback simulator: {:?}",
-        sim.received_requests()
+        simulator_requests
     );
 
     let exit_deadline = Instant::now() + Duration::from_secs(10);
@@ -328,4 +329,15 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
         std::thread::sleep(Duration::from_millis(10));
     };
     assert_eq!(exit.code(), Some(0), "SIGTERM drain exit: {exit}");
+    let listener_released = TcpStream::connect(("127.0.0.1", port)).is_err();
+    assert!(
+        listener_released,
+        "serve listener remains bound after daemon exit"
+    );
+    let source_sha =
+        std::env::var("ZESTROKU_SOURCE_SHA").unwrap_or_else(|_| "unavailable".to_string());
+    eprintln!(
+        "m7c-sigterm pid={pid} source_sha={source_sha} health={health_status}:{health_body} info={status}:{body} sim={simulator_requests:?} exit={:?} listener_released={listener_released}",
+        exit.code()
+    );
 }
