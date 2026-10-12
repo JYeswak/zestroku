@@ -1,0 +1,21 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_0af7f0f6d8bc51316dac88fae67dfecdeffc93c806582d73f8712c64e840aa5d",
+ "limitations": [
+  "Criterion 1 unproven: no plan sha, no apply output, previews conflicted; Git publication outcome is not supported-apply proof; no vacuous re-apply run",
+  "Preserved: 2-line scope, closed_at/status/assignee, both ev resolve+verify, ancestry, check_k 2/0, selftest ok, limitations, VERDICT+ev_1baf0078",
+  "Row reopened to open/rework/unassigned under tracker lease; acceptance unaltered"
+ ],
+ "operation": "grade-correction/zestroku-doctrine-root-nr1.2",
+ "parameters": {
+  "bead": "zestroku-doctrine-root-nr1.2",
+  "rerun": "receipt-content+row-reads+check_k-replication",
+  "subject": "zestroku-nr1.2-plan-apply-gap"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 397,
+  "sha256": "f1dd78dbcb43f0fb12d8a43647c3784e1d679fa4a40d527521b6f7fef11e4a30"
+ }
+}
