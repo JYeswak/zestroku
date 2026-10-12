@@ -1,0 +1,57 @@
+{
+ "authority": "live",
+ "confidence": "observed",
+ "evidence_id": "ev_79318a2abdfeb37e0aba4b3b21f05012185eb95ac43e9064c367694a0b478b8b",
+ "limitations": [
+  "Author384 locked137 proof is not independent nr1.1 acceptance; reviewer remains pending. CI observed seven-gates green at eedb, no latestc5 CI claim.",
+  "old0/nofix0 does not mean clean checkout: disclosed stray8f717ea and remaining accounted source/receipts routedSYNC1/LAND1; no reset or shared merge.",
+  "Contabo reclaim F6 succeeded earlier; currentc1 critical/c3 denied/c4 busy. No current all-worker health or pressure recovery claim."
+ ],
+ "operation": "zestroku-director-native-integration-20261012",
+ "parameters": {
+  "tracker_subject_sha256": "88b75d5a56b72a7da9f78d55734078c7eb16ec778fc027be8e8f7d28dc8adf5a"
+ },
+ "producer": "PeachKnoll",
+ "result_ref": {
+  "hygiene_receipt": "ev_56d0a554e60b1e74bc0437ba252409cf047356836ec901310990bb598d4693f1",
+  "hygiene_source": "c5c1d5c2957bc4bcda5c1d131b63850f1f1f220a",
+  "kit_source": "9398dac37020963b6129a99c962146d368aac8e3",
+  "native_pulse": {
+   "at": "2026-10-12T17:54:42Z",
+   "dirt": 32,
+   "in_progress": 5,
+   "no_fix": 0,
+   "old": 0,
+   "ready": 2
+  },
+  "pending_native_cas": {
+   "a0h6": "open/unassigned",
+   "a0h7": "in_review",
+   "nr1_1": "in_review",
+   "readme": "a0h.8 open"
+  },
+  "rch_locked_author_result": {
+   "exit": 0,
+   "failed": 0,
+   "ignored": 0,
+   "independent_grade": "PENDING, not self-certified",
+   "job": "30051220651509202",
+   "passed": 137,
+   "remote_exec_ms": 1326816,
+   "source": "384cdd45368d1084b5d3d90ec41c4cdc2677cc1e"
+  },
+  "skills": {
+   "adoption": "candidate-only/not-installed",
+   "guide": "ip-b46f3cf85bd0",
+   "rch": "ip-6006cb7502af"
+  },
+  "source_base": "4d76b88aa5fd1bdeb9b8cb28e757b4c55633f0cf",
+  "tracker_subject_sha256": "88b75d5a56b72a7da9f78d55734078c7eb16ec778fc027be8e8f7d28dc8adf5a",
+  "worker_wakes": {
+   "CoralDuck": "native deferred TASK landed, actual a0h.7 grading observed",
+   "OrangeOx": "kit-send-da092c05f1f3 actual m7c work observed",
+   "OrangeShore": "actualdevices_store remote bg11 active, not interrupted",
+   "PeachStork": "kit-send-ae4a7ad444da native grade readback observed"
+  }
+ }
+}
