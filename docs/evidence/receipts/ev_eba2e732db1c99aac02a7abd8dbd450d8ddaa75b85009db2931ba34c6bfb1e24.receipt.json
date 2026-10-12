@@ -1,0 +1,70 @@
+{
+  "authority": "live",
+  "confidence": "observed",
+  "evidence_id": "ev_eba2e732db1c99aac02a7abd8dbd450d8ddaa75b85009db2931ba34c6bfb1e24",
+  "limitations": [
+    "Native ref/source/index preservation and published DAG only; no API runtime or current-CI pass. Known2e79 drain failure remains open1; no whole-clean/.7/.9 closure."
+  ],
+  "operation": "zestroku-native-api-equivalence-ref-cas-and-published-dag-20261012",
+  "parameters": {
+    "code_sha": "9f2bc855afc379d6aa985c65d4b3c8178edd3f4a",
+    "subject_sha256": "ec5b101bf970b6117cbd1f32c7adcb6fcf3c64d680a718f86566e07796daf752"
+  },
+  "producer": "PeachKnoll",
+  "result_ref": {
+    "apiBlobProof": [
+      {
+        "newBlob": "8df088e60695cac37d401cb6d37bf1fc1c072c40",
+        "oldBlob": "8df088e60695cac37d401cb6d37bf1fc1c072c40",
+        "path": "crates/zestroku-api/src/lib.rs"
+      },
+      {
+        "newBlob": "f65162a266e312a102029096eb59eaae2a44c3c3",
+        "oldBlob": "f65162a266e312a102029096eb59eaae2a44c3c3",
+        "path": "crates/zestroku-api/src/routes.rs"
+      },
+      {
+        "newBlob": "802869c3ca8a2623de3e969a8089944100ba9e57",
+        "oldBlob": "802869c3ca8a2623de3e969a8089944100ba9e57",
+        "path": "crates/zestroku-api/tests/installed_apps_contract.rs"
+      },
+      {
+        "newBlob": "e451c41eacca3e793b01a412a877275365c4c3bb",
+        "oldBlob": "e451c41eacca3e793b01a412a877275365c4c3bb",
+        "path": "crates/zestroku-cli/tests/installed_apps_api.rs"
+      }
+    ],
+    "at": "2026-10-12T20:37:12.647Z",
+    "casOutput": "start: ok\nprepare: ok\ncommit: ok\n",
+    "indexAfter": "6714e26ec7857b71da05a0c033701f5d4dcbb46292406b715353be9b4380464b  /Users/josh/Developer/zestroku/.git/index\n",
+    "indexBackupCommit": "8f42be47301c6b88d59a8a6cfe1afce14e147ccd",
+    "indexBackupTree": "485ab77c078ca26062856f7c7225faed2a3aa8fc",
+    "indexBefore": "6714e26ec7857b71da05a0c033701f5d4dcbb46292406b715353be9b4380464b  /Users/josh/Developer/zestroku/.git/index\n",
+    "indexUnchanged": true,
+    "limitations": "Refs-only; canonical residual WIP/index remains accounted in a0h.7. API runtime/tests UNVERIFIED; known2e79 drain testFAIL unchanged, no CI-green claim.",
+    "new": "9f2bc855afc379d6aa985c65d4b3c8178edd3f4a",
+    "old": "bc334a7904058eadeb17f0695cc6382dae29a850",
+    "publishedDag": {
+      "afterRows": 41,
+      "beforeRows": 40,
+      "changedIds": [
+        "zestroku-m7c-serve-inq.1",
+        "zestroku-m7c-serve-inq.2",
+        "zestroku-zestroku-doctrine-a0h.9"
+      ],
+      "cycles": 0,
+      "noRemovedRows": true,
+      "otherOriginRowsIdentical": true,
+      "parent": "2e79ce4f928c70190983bbf342c27915574ce9a7",
+      "sha": "6ee1496e05248eadcd1477b01c70dedb4a83ddc4"
+    },
+    "remote": "9f2bc855afc379d6aa985c65d4b3c8178edd3f4a",
+    "sourceAfter": "1358fcea69fc29e1330547332b0ae937d9aeb480befd355537ab93ca352e963b  crates/zestroku-api/src/lib.rs\nf3ab77f4aff446e80d8be906e4925d5517891cc090d4fd679f284acf951b4c4e  crates/zestroku-api/src/routes.rs\n02cc4434364e0d7b665562e24869ac219d8478a18172c5f90bb6b4011cd8c35b  crates/zestroku-api/tests/installed_apps_contract.rs\ne13d17a675b8e9bf7eaae8e0678896df859a01e3505defdb2aa7be4876e83e24  crates/zestroku-cli/tests/installed_apps_api.rs\nc4975179b42847afed5293eb601222ad7c0023fa52c0623785f1f35f92427abb  crates/zestroku-cli/src/devices.rs\n7d27202116cdf71f4626cc933df4b850c2d8b60313979e1a3ceb4815b9b24aea  crates/zestroku-cli/tests/serve.rs\n",
+    "sourceBefore": "1358fcea69fc29e1330547332b0ae937d9aeb480befd355537ab93ca352e963b  crates/zestroku-api/src/lib.rs\nf3ab77f4aff446e80d8be906e4925d5517891cc090d4fd679f284acf951b4c4e  crates/zestroku-api/src/routes.rs\n02cc4434364e0d7b665562e24869ac219d8478a18172c5f90bb6b4011cd8c35b  crates/zestroku-api/tests/installed_apps_contract.rs\ne13d17a675b8e9bf7eaae8e0678896df859a01e3505defdb2aa7be4876e83e24  crates/zestroku-cli/tests/installed_apps_api.rs\nc4975179b42847afed5293eb601222ad7c0023fa52c0623785f1f35f92427abb  crates/zestroku-cli/src/devices.rs\n7d27202116cdf71f4626cc933df4b850c2d8b60313979e1a3ceb4815b9b24aea  crates/zestroku-cli/tests/serve.rs\n",
+    "sourcesUnchanged": true,
+    "treeDiff": [
+      ".beads/issues.jsonl",
+      "crates/zestroku-cli/src/devices.rs"
+    ]
+  }
+}
