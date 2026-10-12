@@ -214,16 +214,16 @@ fn run_direct_read(verb: &str, target: &str) -> ExitCode {
                 .to_owned(),
             Err(_) => "unknown".to_owned(),
         };
-        if let Ok(response) = &apps {
-            if let Ok(store) = store_db::open() {
-                let observed = zestroku_core::tier::classify_tier_from_response(response);
-                let _ = zestroku_core::tier::record_probe(
-                    &store,
-                    &zestroku_core::tier::device_id(&host, port),
-                    observed,
-                    &format!("{}", parse_ecp_response(response).gate as i32),
-                );
-            }
+        if let Ok(response) = &apps
+            && let Ok(store) = store_db::open()
+        {
+            let observed = zestroku_core::tier::classify_tier_from_response(response);
+            let _ = zestroku_core::tier::record_probe(
+                &store,
+                &zestroku_core::tier::device_id(&host, port),
+                observed,
+                &format!("{}", parse_ecp_response(response).gate as i32),
+            );
         }
         let tv_active_channel =
             match daemon_client::direct_ecp_get(&host, port, &query("tv-active-channel")) {
