@@ -1,0 +1,19 @@
+{
+ "authority": "selftest",
+ "confidence": "observed",
+ "evidence_id": "ev_7c91717ffe08407a815b1deaf6cc2621405702a04f7ca5f53df44c0bb77894be",
+ "limitations": [
+  "Bulk 780MB replay not re-run: local scratch artifacts reaped; relies on recorded SecureUpdateVerifier replay cross-checked for consistency.",
+  "Gate 5 remains NEEDS-REVIEW; no admitted PASS claimed."
+ ],
+ "operation": "zestroku.grade-close-0mx",
+ "parameters": {
+  "bead": "zestroku-admit-secure-update-skill-0mx",
+  "subject_head": "1fbc6106b75f4befe02881b74578b06b6e4fc9e4"
+ },
+ "producer": "PeachStork",
+ "result_ref": {
+  "bytes": 876,
+  "sha256": "35a9fdf1ececa646c1bb761137f81a051973cc3b66e70336c237dc1329ff7d7a"
+ }
+}
