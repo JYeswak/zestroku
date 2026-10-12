@@ -70,6 +70,12 @@ fn build_command(kind: &str, target: &str) -> std::result::Result<Command, Strin
             Ok(zestroku_proto::launch(app_id))
         }
         "key" => Ok(zestroku_proto::keypress_raw(&target.to_uppercase())),
+        "install" if target == "sideload" => Ok(Command {
+            method: zestroku_proto::Method::Post,
+            path: "/plugin_install".to_string(),
+            tier: AccessTier::Permissive,
+        }),
+        "install" => Err("install approval target must be sideload".to_string()),
         other => Err(format!("unknown mutation kind {other}")),
     }
 }
@@ -93,6 +99,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let (host, port) = crate::split_host_port(&opts.host);
     let command = match build_command(kind, &opts.target) {
         Ok(c) => c,
         Err(e) => {
@@ -112,7 +119,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let recorded = match zestroku_core::tier::recorded_tier_for(&store, &opts.host, 8060) {
+    let recorded = match zestroku_core::tier::recorded_tier_for(&store, &host, port) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("zestroku: cannot read recorded tier: {e}");
@@ -133,15 +140,15 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             None => {
                 eprintln!(
                     "zestroku: no recorded tier for {} — run `zestroku info {}` first (or set ZESTROKU_TIER=permissive explicitly)",
-                    opts.host, opts.host
+                    host, host
                 );
                 return ExitCode::from(3);
             }
         },
     };
     let device = Device {
-        host: opts.host.clone(),
-        port: 8060,
+        host: host.clone(),
+        port,
         model_name: String::new(),
         model_number: String::new(),
         software_version: String::new(),
@@ -242,17 +249,49 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
 
 /// Mint a one-use approval only from an interactive owner terminal.
 pub fn approve(args: &[String]) -> ExitCode {
-    if args.len() != 3 {
-        eprintln!("usage: zestroku approve <launch|key> <host> <target>");
+    let Some(verb) = args.first().map(String::as_str) else {
+        eprintln!(
+            "usage: zestroku approve <launch|key|install> <host> <target> [--installer-port <port>]"
+        );
+        return ExitCode::from(2);
+    };
+    let install = verb == "install";
+    if (!install && args.len() != 3) || (install && args.len() != 3 && args.len() != 5) {
+        eprintln!(
+            "usage: zestroku approve <launch|key> <host> <target> | approve install <host> sideload [--installer-port <port>]"
+        );
         return ExitCode::from(2);
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         eprintln!("zestroku approve requires an interactive terminal");
         return ExitCode::from(2);
     }
-    let verb = &args[0];
-    let host = &args[1];
+    let host_label = &args[1];
     let target = &args[2];
+    let (host, port) = if install {
+        if target != "sideload" {
+            eprintln!("zestroku: install approval target must be sideload");
+            return ExitCode::from(2);
+        }
+        let port = if args.len() == 5 {
+            if args[3] != "--installer-port" {
+                eprintln!("zestroku: expected --installer-port <port>");
+                return ExitCode::from(2);
+            }
+            match crate::install::parse_port(&args[4]) {
+                Ok(port) => port,
+                Err(error) => {
+                    eprintln!("zestroku: {error}");
+                    return ExitCode::from(2);
+                }
+            }
+        } else {
+            80
+        };
+        (host_label.clone(), port)
+    } else {
+        crate::split_host_port(host_label)
+    };
     let command = match build_command(verb, target) {
         Ok(command) => command,
         Err(error) => {
@@ -260,7 +299,11 @@ pub fn approve(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let phrase = format!("approve {verb} {host} {target}");
+    let phrase = if install {
+        format!("approve install {host_label} sideload --installer-port {port}")
+    } else {
+        format!("approve {verb} {host_label} {target}")
+    };
     eprint!("Type exactly '{phrase}' to authorize this action: ");
     let _ = io::stderr().flush();
     let mut typed = String::new();
@@ -277,8 +320,8 @@ pub fn approve(args: &[String]) -> ExitCode {
         }
     };
     let device = Device {
-        host: host.clone(),
-        port: 8060,
+        host,
+        port,
         model_name: String::new(),
         model_number: String::new(),
         software_version: String::new(),

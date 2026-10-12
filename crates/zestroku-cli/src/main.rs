@@ -16,33 +16,34 @@ mod aliases;
 mod apps;
 mod daemon_client;
 mod devices;
+mod install;
+mod installer;
 mod mutate;
 mod serve;
 mod store_db;
 mod transport;
 
 fn usage() -> &'static str {
-    "zestroku — owner-interop control for Roku devices\n\
-     \n\
-     USAGE:\n\
-     \x20   zestroku devices                     list discovered devices\n\
-     \x20   zestroku alias <set|rm|ls> ...         manage local device names\n\
-     \x20   zestroku apps <host> [--json]        list installed apps (Permissive)\n\
-     \x20   zestroku info <host>                 device-info (Open tier)\n\
-     \x20   zestroku active-app <host>           focused app (Open tier)\n\
-     \x20   zestroku key <host> <KEY> [--confirm <token>]   keypress (Permissive)\n\
-     \x20   zestroku approve <verb> <host> <target>   owner TTY approval, 5-minute token\n\
-     \x20   zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)\n\
-     \x20   zestroku mcp                         MCP server on stdio (agent tools)\n\
-     \x20   zestroku serve [--bind <ip:port>]    read-only HTTP API daemon (loopback default)\n\
-     \n\
-     Read mode: info/active-app use ZESTROKU_DAEMON_URL (default\n\
-     http://127.0.0.1:8070); set ZESTROKU_DIRECT=1 for direct ECP.\n\
-     A down daemon returns DAEMON_UNAVAILABLE; it never falls back to LAN.\n\
-     \n\
-     Mutations require a single-use token minted by `approve` in an interactive owner terminal.\n\
-     Tier behavior: Permissive-tier commands are refused locally (exit 3)\n\
-     when the device's observed tier is Limited — no round-trip, no 403."
+    r#"zestroku — owner-interop control for Roku devices
+
+USAGE:
+  zestroku devices                     list discovered devices
+  zestroku alias <set|rm|ls> ...       manage local device names
+  zestroku apps <host> [--json]        list installed apps (Permissive)
+  zestroku info <host>                 device-info (Open tier)
+  zestroku active-app <host>           focused app (Open tier)
+  zestroku key <host> <KEY> [--confirm <token>]   keypress (Permissive)
+  zestroku approve <verb> <host> <target> [--installer-port <port>]   owner TTY approval
+  zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)
+  zestroku install <host> <zip> --password-stdin [--installer-port <port>] [--confirm <token>]
+  zestroku mcp                         MCP server on stdio (agent tools)
+  zestroku serve [--bind <ip:port>]    read-only HTTP API daemon (loopback default)
+
+Install uses http://<host>:80/plugin_install by default; credentials are supplied through stdin, never arguments or the action log.
+Read mode: info/active-app use ZESTROKU_DAEMON_URL (default http://127.0.0.1:8070); set ZESTROKU_DIRECT=1 for direct ECP.
+A down daemon returns DAEMON_UNAVAILABLE; it never falls back to LAN.
+Mutations require a single-use token minted by approve in an interactive owner terminal.
+Tier behavior: Permissive-tier commands are refused locally (exit 3) when the device's observed tier is Limited — no round-trip, no 403."#
 }
 
 pub(crate) fn split_host_port(target: &str) -> (String, u16) {
@@ -73,8 +74,9 @@ fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
             (index, false, false)
         }
         "key" | "launch" if args.len() >= 3 => (1, false, true),
+        "install" if args.len() >= 3 => (1, false, true),
         "approve" if args.len() >= 4 => {
-            let mutation = matches!(args[1].as_str(), "key" | "launch");
+            let mutation = matches!(args[1].as_str(), "key" | "launch" | "install");
             (2, false, mutation)
         }
         "alias" if args.get(1).is_some_and(|subcommand| subcommand == "set") && args.len() >= 4 => {
@@ -214,16 +216,16 @@ fn run_direct_read(verb: &str, target: &str) -> ExitCode {
                 .to_owned(),
             Err(_) => "unknown".to_owned(),
         };
-        if let Ok(response) = &apps {
-            if let Ok(store) = store_db::open() {
-                let observed = zestroku_core::tier::classify_tier_from_response(response);
-                let _ = zestroku_core::tier::record_probe(
-                    &store,
-                    &zestroku_core::tier::device_id(&host, port),
-                    observed,
-                    &format!("{}", parse_ecp_response(response).gate as i32),
-                );
-            }
+        if let Ok(response) = &apps
+            && let Ok(store) = store_db::open()
+        {
+            let observed = zestroku_core::tier::classify_tier_from_response(response);
+            let _ = zestroku_core::tier::record_probe(
+                &store,
+                &zestroku_core::tier::device_id(&host, port),
+                observed,
+                &format!("{}", parse_ecp_response(response).gate as i32),
+            );
         }
         let tv_active_channel =
             match daemon_client::direct_ecp_get(&host, port, &query("tv-active-channel")) {
@@ -326,6 +328,7 @@ fn main() -> ExitCode {
             run_read_command(&args[0], &args[1])
         }
         Some("approve") => mutate::approve(&args[1..]),
+        Some("install") if args.len() >= 3 => install::run(&args[1..]),
         Some("launch") if args.len() >= 3 => mutate::run("launch", &args[1..]),
         Some("key") if args.len() >= 3 => mutate::run("key", &args[1..]),
         _ => {
