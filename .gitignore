@@ -1,2 +1,15 @@
 /target
 var/
+
+# Native Cargo target variants; never commit local build products.
+/target-local2/
+/t-local/
+
+# br's byte-preserving WAL recovery journals remain local recovery evidence.
+/.beads/.br-wal-index-*/
+
+# Native tracker/NTM caches and the legacy misplaced scratch-owner marker.
+/.beads/ready-snapshot.json
+/.ntm/pids/
+/.ntm/rate_limits.json
+/.owner

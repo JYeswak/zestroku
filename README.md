@@ -43,6 +43,10 @@ RCH_WORKER=<your lane worker> RCH_REQUIRE_REMOTE=1 rch exec -- \
   -p zestroku-cli
 ```
 
+Local Cargo output (`target/`, `target-local2/`, `t-local/`) and native tracker/NTM
+runtime caches are ignored, not source or publishable evidence. WAL recovery
+journals remain on disk; durable acceptance receipts belong in `docs/evidence/receipts/`.
+
 A cold build takes about 22 minutes; run it unbounded. The result is
 `target/aarch64-apple-darwin/release/zestroku`; `file` must report `Mach-O
 64-bit executable arm64` — treat any untargeted artifact as Linux ELF until
