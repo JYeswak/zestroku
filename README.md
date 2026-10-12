@@ -6,11 +6,11 @@ to the Roku ECP surface.
 
 **Status:** The on-demand `serve` daemon and read-only HTTP API are implemented.
 `info` and `active-app` use the daemon over loopback by default; direct ECP
-requires `ZESTROKU_DIRECT=1`. `devices`, `apps`, `key`, and `launch` are CLI
-surfaces; `key` and `launch` have driven a real device with audit rows and
-require owner-issued, single-use confirmation tokens. The MCP daemon-client,
-resident service, and remaining CLI-to-daemon paths are still open. Protocol
-ground truth lives in `skill-library-growth/candidates/edge-library/roku/`
+requires `ZESTROKU_DIRECT=1`. `devices`, `apps`, `key`, `launch`, and `install` are CLI
+surfaces. `key`, `launch`, and `install` require owner-issued, single-use confirmation tokens
+and record outcomes in the shared action log. The MCP daemon-client, resident service, and
+remaining CLI-to-daemon paths are still open. Protocol ground truth lives in
+`skill-library-growth/candidates/edge-library/roku/`
 (`COMPREHENSIVE_PLAN_FOR_ZESTROKU.md`, `AGENTS.md`, `ECP-WIRE-DOC.md`,
 `CROSS_DEVICE_DIFF.md`, and `firmware/FIRMWARE_UPDATE_PATH.md`). Read those
 before coding.
@@ -116,8 +116,16 @@ aliases, a unique `tv` or `stick` class target, or a unique device-name prefix.
 Ambiguous matches list candidates; mutations never select one implicitly.
 `zestroku approve <launch|key> <host> <target>` requires an interactive owner TTY and
 a typed action phrase. It prints a random, five-minute, single-use token bound
-to the exact device and ECP command. Use `zestroku key <host> <KEY> --confirm <token>` or
+to the device endpoint and command. Use `zestroku key <host> <KEY> --confirm <token>` or
 `zestroku launch <host> <app-id> --confirm <token>` to consume it.
+`zestroku approve install <host> sideload [--installer-port <port>]` defaults to port 80.
+It binds the token to that exact installer port and `POST /plugin_install`.
+`zestroku install <host> <zip> --password-stdin [--installer-port <port>] [--confirm <token>]`
+uploads the owner-provided ZIP to the Roku developer installer using Digest auth.
+The username defaults to `rokudev`; override it with `--username`. Supply the owner-set
+developer password through stdin, not an argument. ZIP contents and credentials are
+never stored in the repository or mutation audit record. The response body is checked
+for Roku HTML error markers; HTTP 200 alone is not treated as success.
 Blank, arbitrary, mismatched, expired, and reused tokens are refused locally
 (exit 4) and audited; MCP mutations take the same opaque token string and
 cannot mint approvals.
