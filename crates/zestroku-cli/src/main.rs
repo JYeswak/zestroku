@@ -27,17 +27,17 @@ fn usage() -> &'static str {
     r#"zestroku — owner-interop control for Roku devices
 
 USAGE:
-  zestroku devices                     list discovered devices
-  zestroku alias <set|rm|ls> ...       manage local device names
-  zestroku apps <host> [--json]        list installed apps (Permissive)
-  zestroku info <host>                 device-info (Open tier)
-  zestroku active-app <host>           focused app (Open tier)
-  zestroku key <host> <KEY> [--confirm <token>]   keypress (Permissive)
-  zestroku approve <verb> <host> <target> [--installer-port <port>]   owner TTY approval
-  zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)
-  zestroku install <host> <zip> --password-stdin [--installer-port <port>] [--confirm <token>]
-  zestroku mcp                         MCP server on stdio (agent tools)
-  zestroku serve [--bind <ip:port>]    read-only HTTP API daemon (loopback default)
+    zestroku devices                     list discovered devices
+    zestroku alias <set|rm|ls> ...       manage local device names
+    zestroku apps <host> [--json]        list installed apps (Permissive)
+    zestroku info <host>                 device-info (Open tier)
+    zestroku active-app <host>           focused app (Open tier)
+    zestroku key <host> <KEY> [--confirm <token>]   keypress (Permissive)
+    zestroku approve <verb> <host> <target> [--installer-port <port>]   owner TTY approval
+    zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)
+    zestroku install <host> <zip> --password-stdin [--installer-port <port>] [--confirm <token>]
+    zestroku mcp                         MCP server on stdio (agent tools)
+    zestroku serve [--bind <ip:port>]    read-only HTTP API daemon (loopback default)
 
 Install uses http://<host>:80/plugin_install by default; credentials are supplied through stdin, never arguments or the action log.
 Read mode: info/active-app use ZESTROKU_DAEMON_URL (default http://127.0.0.1:8070); set ZESTROKU_DIRECT=1 for direct ECP.

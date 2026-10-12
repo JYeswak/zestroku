@@ -160,11 +160,11 @@ fn mcp_stdio_handshake_tools_and_gate() {
         "missing confirm must be refused: {missing}"
     );
 
-    // An explicit `confirm: false` reaches the gate: refused AND audited.
+    // An arbitrary token reaches the gate: refused AND audited.
     let refused = s.call(
         5,
         "key",
-        json!({"host": "127.0.0.1", "target": "Home", "confirm": false}),
+        json!({"host": "127.0.0.1", "target": "Home", "confirm": "not-a-token"}),
     );
     assert!(
         is_error(&refused),

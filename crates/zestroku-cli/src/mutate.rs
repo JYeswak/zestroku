@@ -23,7 +23,7 @@ use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::mutation::{
     MutationContext, MutationError, authorize_mutation, finish_mutation, issue_approval,
 };
-use zestroku_proto::{Command, EcpGate, Transport, parse_active_app, parse_ecp_response, query};
+use zestroku_proto::{Command, EcpGate, parse_active_app, parse_ecp_response, query};
 use zestroku_types::{AccessTier, Device};
 
 use crate::store_db;
