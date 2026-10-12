@@ -1,0 +1,18 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_959f8c764716f43f6fbc94fa7d2b3c21bd829feda0a37149f9b64a1e4a04279b",
+ "limitations": [
+  "Validator checks contract shape, not claim truth; claims mapped to repo evidence by author review."
+ ],
+ "operation": "zestroku.a0h8-verify",
+ "parameters": {
+  "base": "d0ec0b13462d0788202af695eff7e44f8229591f",
+  "bead": "zestroku-zestroku-doctrine-a0h.8"
+ },
+ "producer": "PeachStork",
+ "result_ref": {
+  "bytes": 361,
+  "sha256": "eed0b8d59afff2012851074f97e17e7c04ab969df66cdfc6f06933b5ed3c2d7a"
+ }
+}
