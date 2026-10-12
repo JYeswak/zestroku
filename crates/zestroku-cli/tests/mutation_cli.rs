@@ -259,3 +259,163 @@ fn recorded_limited_tier_refuses_without_any_override() {
         rows[0].before_state
     );
 }
+#[test]
+fn sideload_requires_confirmation_then_authenticates_and_audits_on_installer_port() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    use zestroku_core::mutation::issue_approval;
+    use zestroku_core::store::{AccessTierRow, DeviceRow, SqliteStore, Store};
+    use zestroku_proto::{Command as EcpCommand, Method};
+    use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
+    use zestroku_types::{AccessTier, Device};
+
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let host = "127.0.0.1";
+    let installer_port = sim.port();
+    let dir = tempfile::tempdir().expect("temporary test directory");
+    let db = dir.path().join("actions.db");
+    let zip_path = dir.path().join("generated-owner-zip.zip");
+    std::fs::write(&zip_path, b"PK\x03\x04simulated owner archive")
+        .expect("write simulated ZIP bytes");
+    let ecp_id = zestroku_core::tier::device_id(host, 8060);
+    {
+        let store = SqliteStore::open(&db).expect("open test store");
+        store
+            .upsert_device(&DeviceRow {
+                id: ecp_id.clone(),
+                name: "sim".into(),
+                ip: host.into(),
+                model: "Sim Express".into(),
+                model_num: "SIMX1".into(),
+                firmware: "15.2.4".into(),
+                wifi_driver: "sim".into(),
+                access_tier: "permissive".into(),
+                last_seen: 1,
+            })
+            .expect("seed simulated device");
+        store
+            .upsert_access_tier(&AccessTierRow {
+                device_id: ecp_id,
+                tier: "permissive".into(),
+                probe_at: 1,
+                probe_map: r#"{"query/apps":"open"}"#.into(),
+            })
+            .expect("seed simulated observed tier");
+    }
+
+    let mut denied = Command::new(env!("CARGO_BIN_EXE_zestroku"));
+    denied
+        .env("ZESTROKU_DB", &db)
+        .env("ZESTROKU_TIER", "permissive")
+        .args(["install", host])
+        .arg(&zip_path)
+        .args(["--password-stdin", "--installer-port"])
+        .arg(installer_port.to_string())
+        .stdin(Stdio::piped());
+    let mut denied = denied.spawn().expect("start unconfirmed install");
+    drop(denied.stdin.take());
+    let denied = denied
+        .wait_with_output()
+        .expect("wait for unconfirmed install");
+    assert_eq!(denied.status.code(), Some(4));
+    assert!(
+        sim.received_requests().is_empty(),
+        "confirmation refusal must precede installer HTTP: {:?}",
+        sim.received_requests()
+    );
+
+    let token = {
+        let store = SqliteStore::open(&db).expect("reopen test store");
+        issue_approval(
+            &store,
+            &Device {
+                host: host.into(),
+                port: installer_port,
+                model_name: String::new(),
+                model_number: String::new(),
+                software_version: String::new(),
+                is_tv: false,
+                access_tier: AccessTier::Permissive,
+            },
+            &EcpCommand {
+                method: Method::Post,
+                path: "/plugin_install".into(),
+                tier: AccessTier::Permissive,
+            },
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_secs() as i64,
+        )
+        .expect("mint port-bound installer approval")
+    };
+    let alternate_port = installer_port.wrapping_add(1).max(1);
+    let wrong_port = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &db)
+        .env("ZESTROKU_TIER", "permissive")
+        .args(["install", host])
+        .arg(&zip_path)
+        .args(["--password-stdin", "--installer-port"])
+        .arg(alternate_port.to_string())
+        .args(["--confirm", &token])
+        .stdin(Stdio::piped())
+        .output()
+        .expect("run installer with wrong token port");
+    assert_eq!(wrong_port.status.code(), Some(4));
+    assert!(
+        sim.received_requests().is_empty(),
+        "port-mismatched token must not dispatch"
+    );
+    let test_password = format!("simulated-{}", std::process::id());
+    let mut approved = Command::new(env!("CARGO_BIN_EXE_zestroku"));
+    approved
+        .env("ZESTROKU_DB", &db)
+        .env("ZESTROKU_TIER", "permissive")
+        .args(["install", host])
+        .arg(&zip_path)
+        .args(["--password-stdin", "--installer-port"])
+        .arg(installer_port.to_string())
+        .args(["--confirm", &token])
+        .stdin(Stdio::piped());
+    let mut approved = approved.spawn().expect("start approved install");
+    approved
+        .stdin
+        .take()
+        .expect("password pipe")
+        .write_all(test_password.as_bytes())
+        .expect("supply ephemeral test credential");
+    let approved = approved
+        .wait_with_output()
+        .expect("wait for approved install");
+    assert_eq!(
+        approved.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&approved.stdout),
+        String::from_utf8_lossy(&approved.stderr)
+    );
+    assert_eq!(
+        sim.received_requests(),
+        vec![
+            ("POST".to_string(), "/plugin_install".to_string()),
+            ("POST".to_string(), "/plugin_install".to_string()),
+        ]
+    );
+    let store = SqliteStore::open(&db).expect("read audit rows");
+    let rows = store.list_actions().expect("list audit rows");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].decision, "denied");
+    assert_eq!(rows[1].decision, "denied");
+    assert_eq!(rows[2].decision, "approved");
+    assert!(rows[2].result.contains("installer reported success"));
+    assert!(!rows.iter().any(|row| row.intent.contains(&test_password)));
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row.intent.contains("generated-owner-zip.zip"))
+    );
+}
