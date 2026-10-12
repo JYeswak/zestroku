@@ -1,0 +1,18 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_5e961ffe136deb0cf98f4b3a35eeae031b63bac913e7fd70650e636ab40001ed",
+ "limitations": [
+  "Live-device launch excluded; loopback sim only."
+ ],
+ "operation": "zestroku.a4b-verify",
+ "parameters": {
+  "base": "d0e951daf4d56593bbd459ac960cb1d4dd1941cc",
+  "bead": "zestroku-app-search-a4b"
+ },
+ "producer": "PeachStork",
+ "result_ref": {
+  "bytes": 400,
+  "sha256": "0d04e87c5c1660a56cada4af58a09d1cc2eb115d89c1517bbefcb502530043aa"
+ }
+}
