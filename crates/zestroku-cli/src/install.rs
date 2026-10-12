@@ -108,6 +108,10 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // resolve_cli_target may rewrite <host> to a stored `ip:port` device id;
+    // the installer dials options.port and the approval binds host + installer
+    // port, so strip any resolved ECP suffix here (mirrors key/launch).
+    let (dial_host, _) = crate::split_host_port(&options.host);
     let archive = match std::fs::read(&options.archive) {
         Ok(archive) => archive,
         Err(error) => {
@@ -137,7 +141,7 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let recorded = match zestroku_core::tier::recorded_tier_for(&store, &options.host, 8060) {
+    let recorded = match zestroku_core::tier::recorded_tier_for(&store, &dial_host, 8060) {
         Ok(recorded) => recorded,
         Err(error) => {
             eprintln!("zestroku: cannot read recorded ECP tier: {error}");
@@ -152,7 +156,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 None => {
                     eprintln!(
                         "zestroku: no recorded tier for {} — run zestroku info first or set ZESTROKU_TIER=permissive",
-                        options.host
+                        dial_host
                     );
                     return ExitCode::from(3);
                 }
@@ -163,14 +167,14 @@ pub fn run(args: &[String]) -> ExitCode {
             None => {
                 eprintln!(
                     "zestroku: no recorded tier for {} — run zestroku info first or set ZESTROKU_TIER=permissive",
-                    options.host
+                    dial_host
                 );
                 return ExitCode::from(3);
             }
         },
     };
     let device = Device {
-        host: options.host.clone(),
+        host: dial_host.clone(),
         port: options.port,
         model_name: String::new(),
         model_number: String::new(),
@@ -188,7 +192,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let before = runtime.block_on(async {
         match send_selected(
             AsupersyncTransport,
-            &options.host,
+            &dial_host,
             8060,
             &query("active-app"),
         )
@@ -218,7 +222,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Err(MutationError::ConfirmationRequired { action_id, .. }) => {
             eprintln!(
                 "zestroku: CONFIRMATION_REQUIRED — run zestroku approve install {} sideload --installer-port {} then retry with --confirm <token> (audit id {action_id})",
-                options.host, options.port
+                dial_host, options.port
             );
             return ExitCode::from(4);
         }
@@ -233,7 +237,7 @@ pub fn run(args: &[String]) -> ExitCode {
     };
     let result = read_password().and_then(|password| {
         installer::install(
-            &options.host,
+            &dial_host,
             options.port,
             &archive,
             &filename,
