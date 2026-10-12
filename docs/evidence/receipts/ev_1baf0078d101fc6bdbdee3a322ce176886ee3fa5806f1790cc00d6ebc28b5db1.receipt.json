@@ -1,0 +1,132 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_1baf0078d101fc6bdbdee3a322ce176886ee3fa5806f1790cc00d6ebc28b5db1",
+ "limitations": [
+  "Gate 5 remains NEEDS-REVIEW; not PASS or admitted-PASS.",
+  "TV apps=42 remains a historical recorded replay, not current-TV truth.",
+  "Bulk 780MB SecureUpdate replay was not rerun; original limitation retained.",
+  "No live Roku read or mutation was performed.",
+  "The two upstream rows were in_progress before this publication; local primary already held the original closed rows."
+ ],
+ "operation": "zestroku-doctrine-root-nr1.2-metadata-publication",
+ "parameters": {
+  "bead": "zestroku-doctrine-root-nr1.2",
+  "changed_rows": "2",
+  "commit": "87863fc7822e84c8ce6c943e7136d1f9723a1970",
+  "jsonl_sha256": "ef8090466de024388cab022a4274d1becf2ff93589376773131cc8bb0d33709b",
+  "origin_before": "e09dcdfaf07314bb83358ef0b3e0a3fa1142da8f"
+ },
+ "producer": "OrangeOx",
+ "result_ref": {
+  "bead": "zestroku-doctrine-root-nr1.2",
+  "check_k": {
+   "input": "actual upstream origin/main JSONL, 36 rows",
+   "offenders": [],
+   "planted_unknown_id": "ev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "planted_unknown_offenders": [
+    "zestroku-admit-wire-protocol-skill-fyq"
+   ],
+   "target_ids": [
+    "ev_7effd15ea5bb7ea821b33af81a73faafa5f06442f68cf93ce0d3e0fea0f34439",
+    "ev_7c91717ffe08407a815b1deaf6cc2621405702a04f7ca5f53df44c0bb77894be"
+   ]
+  },
+  "limitations": [
+   "Gate 5 remains NEEDS-REVIEW; no PASS or admitted-PASS claimed.",
+   "TV apps=42 remains based on recorded 2026-10-11 RokuExampleVerifier replay; not current-TV truth.",
+   "Bulk 780MB SecureUpdate replay was not rerun; original receipt limitation retained.",
+   "No live Roku read or mutation performed in this metadata task.",
+   "Independent review is pending; this receipt does not close the leaf."
+  ],
+  "native_readback": {
+   "independent_agent": "PeachKnoll",
+   "message_id": 51007,
+   "summary": "Both closed with original closed_at, exact EV IDs in close_reason, comments and relations unchanged; full check_k empty and unknown-id negative RED."
+  },
+  "plan_previews": [
+   {
+    "fields_per_target": [
+     "close_reason",
+     "updated_at"
+    ],
+    "sha256": "1c8d06f1b8479a43c51013a6905d1bfef5993169d9e77530cc6886b20811b5e1",
+    "status": "conflicted"
+   },
+   {
+    "reason": "source_authoritative_resolution_not_required for both after source and DB were equal; director directed not to rerun stale token",
+    "sha256": "459934a6f563fd23a9cb73f6caca275fee5f2446c2c564e7524dd051f36129ed",
+    "status": "conflicted"
+   }
+  ],
+  "publication": {
+   "bytes": 202211,
+   "changed_issue_ids": [
+    "zestroku-admit-wire-protocol-skill-fyq",
+    "zestroku-admit-secure-update-skill-0mx"
+   ],
+   "changed_rows": 2,
+   "commit": "87863fc7822e84c8ce6c943e7136d1f9723a1970",
+   "commit_parent": "e09dcdfaf07314bb83358ef0b3e0a3fa1142da8f",
+   "origin_before": "e09dcdfaf07314bb83358ef0b3e0a3fa1142da8f",
+   "path": ".beads/issues.jsonl",
+   "sha256": "ef8090466de024388cab022a4274d1becf2ff93589376773131cc8bb0d33709b"
+  },
+  "publication_scope": {
+   "interpretation": "Two existing original-closer closures were previously absent from upstream; publication integrates them without a new acceptance/close action. Local close_reason changes appended only the exact existing EV IDs and updated_at.",
+   "local_primary_after": {
+    "both_targets_closed": true,
+    "closed_count": 11
+   },
+   "local_primary_before": {
+    "both_targets_closed": true,
+    "closed_count": 11
+   },
+   "upstream_after": {
+    "closed_count": 11,
+    "fyq_status": "closed",
+    "zero_mx_status": "closed"
+   },
+   "upstream_before": {
+    "closed_count": 9,
+    "fyq_status": "in_progress",
+    "zero_mx_status": "in_progress"
+   }
+  },
+  "receipts": [
+   {
+    "path": "docs/evidence/receipts/ev_7effd15ea5bb7ea821b33af81a73faafa5f06442f68cf93ce0d3e0fea0f34439.receipt.json",
+    "publication": "4335cdfe8736c1f601f85762f2993e61b33e7d90",
+    "sha256": "eb7e91f1190fb5fe4445d167042d1bbefbd609cbd46ec672948b5d8b81ea3366",
+    "verify_exit": 0
+   },
+   {
+    "path": "docs/evidence/receipts/ev_7c91717ffe08407a815b1deaf6cc2621405702a04f7ca5f53df44c0bb77894be.receipt.json",
+    "publication": "be3a988134bd29750c57c17e0a74b80eda4ead12",
+    "sha256": "4161a81eef5ddc1663a28995956569854e5ef306d825b32daea3bbdf9da71c70",
+    "verify_exit": 0
+   }
+  ],
+  "rows": [
+   {
+    "assignee": "CoralDuck",
+    "closed_at": "2026-10-12T09:39:12.694203Z",
+    "id": "zestroku-admit-wire-protocol-skill-fyq",
+    "receipt_id": "ev_7effd15ea5bb7ea821b33af81a73faafa5f06442f68cf93ce0d3e0fea0f34439",
+    "updated_at": "2026-10-12T11:19:42.247Z"
+   },
+   {
+    "assignee": "OrangeOx",
+    "closed_at": "2026-10-12T09:37:55.106178Z",
+    "id": "zestroku-admit-secure-update-skill-0mx",
+    "receipt_id": "ev_7c91717ffe08407a815b1deaf6cc2621405702a04f7ca5f53df44c0bb77894be",
+    "updated_at": "2026-10-12T11:19:42.247Z"
+   }
+  ],
+  "source_commits": {
+   "current_origin": "87863fc7822e84c8ce6c943e7136d1f9723a1970",
+   "skill_library": "1fbc6106b75f4befe02881b74578b06b6e4fc9e4"
+  },
+  "verdict": "Original close-receipt citations published; check_k resolves both; independent leaf review pending; underlying skill Gate 5 remains NEEDS-REVIEW."
+ }
+}
