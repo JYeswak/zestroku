@@ -202,5 +202,9 @@ fn missing_daemon_fails_fast_without_falling_back_to_the_live_simulator() {
     assert_ne!(output.status.code(), Some(0), "{output:?}");
     assert!(stderr.contains("DAEMON_UNAVAILABLE"), "{stderr}");
     assert!(elapsed < Duration::from_secs(2), "elapsed={elapsed:?}");
-    assert_eq!(sim.received_requests(), 0);
+    assert!(
+        sim.received_requests().is_empty(),
+        "{:?}",
+        sim.received_requests()
+    );
 }
