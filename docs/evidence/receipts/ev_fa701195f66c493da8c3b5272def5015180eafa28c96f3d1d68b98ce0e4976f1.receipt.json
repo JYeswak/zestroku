@@ -1,0 +1,18 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_fa701195f66c493da8c3b5272def5015180eafa28c96f3d1d68b98ce0e4976f1",
+ "limitations": [
+  "Live install per-op owner approval, outside CI; never run."
+ ],
+ "operation": "zestroku.a0h2-verify",
+ "parameters": {
+  "base": "269195df8faa932c0d95aa68c698bd494aaa370e",
+  "bead": "zestroku-zestroku-doctrine-a0h.2"
+ },
+ "producer": "PeachStork",
+ "result_ref": {
+  "bytes": 479,
+  "sha256": "1da1e964ee90b66bee5dea3b94dfad0611e4ed11491067d34f52a3ada9e42f69"
+ }
+}
