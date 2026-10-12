@@ -1,0 +1,21 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_33d2d107d3bbe0b11367180d90714e2382b4f8c9709510435069fdd9f6bc3b2f",
+ "limitations": [
+  "Non-author grade; implementer sources OrangeOx et al; author never closes",
+  "RCH clippy corroboration pending (bg_4); CI clippy gate is the authoritative proof cited",
+  "Strict locked workspace gate separately open per bead; not claimed here"
+ ],
+ "operation": "grade/zestroku-zestroku-doctrine-a0h.3",
+ "parameters": {
+  "bead": "zestroku-zestroku-doctrine-a0h.3",
+  "rerun": "CI-log-read+shape-verify+fmt",
+  "subject": "zestroku@c92f989f4d1e1ee33d9842168ad630bdded36cfb"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 329,
+  "sha256": "e271a58424431fe7f04872a1d79a21057105253dcef46f58e81aec606aa6ccd2"
+ }
+}
