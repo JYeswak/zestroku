@@ -62,7 +62,7 @@ fn start_daemon(db: &Path, port: u16) -> Daemon {
         .stderr(Stdio::inherit())
         .spawn()
         .expect("spawn zestroku serve");
-    let daemon = Daemon(child);
+    let mut daemon = Daemon(child);
     let host = format!("127.0.0.1:{port}");
     let deadline = Instant::now() + Duration::from_secs(30);
 
