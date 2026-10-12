@@ -55,6 +55,12 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "device_aliases",
         sql: "CREATE TABLE aliases (alias TEXT PRIMARY KEY, device_id TEXT NOT NULL)",
     },
+    Migration {
+        version: 6,
+        name: "device_identity",
+        sql: "CREATE TABLE device_identity (device_id TEXT PRIMARY KEY, identity TEXT NOT NULL); \
+              CREATE INDEX idx_device_identity_identity ON device_identity (identity)",
+    },
 ];
 
 /// A migration list is valid when versions are 1..=N with no gaps or repeats.

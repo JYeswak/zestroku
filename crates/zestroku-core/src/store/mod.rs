@@ -111,6 +111,15 @@ pub trait Store {
     fn set_alias(&self, alias: &AliasRow) -> Result<(), StoreError>;
     fn list_aliases(&self) -> Result<Vec<AliasRow>, StoreError>;
     fn delete_alias(&self, alias: &str) -> Result<(), StoreError>;
+    /// Record the stable identity key for a device id (see
+    /// `discovery::identity_key`); the key is a digest, never raw serials.
+    fn record_device_identity(&self, device_id: &str, identity: &str) -> Result<(), StoreError>;
+    /// Find the device id currently holding an identity key, if any.
+    fn find_device_id_by_identity(&self, identity: &str) -> Result<Option<String>, StoreError>;
+    /// Forget one device id's identity record (used when its row moves).
+    fn delete_device_identity(&self, device_id: &str) -> Result<(), StoreError>;
+    /// Re-point alias rows at a moved device id (DHCP move follow-up).
+    fn rekey_aliases(&self, old_id: &str, new_id: &str) -> Result<(), StoreError>;
     fn insert_confirmation_token(&self, token: &ConfirmationTokenRow) -> Result<(), StoreError>;
     fn consume_confirmation_token(
         &self,
@@ -328,6 +337,36 @@ impl Store for SqliteStore {
 
     fn delete_alias(&self, alias: &str) -> Result<(), StoreError> {
         self.exec("DELETE FROM aliases WHERE alias = ?1", &[s(alias)])
+    }
+    fn record_device_identity(&self, device_id: &str, identity: &str) -> Result<(), StoreError> {
+        self.exec(
+            "INSERT OR REPLACE INTO device_identity (device_id, identity) VALUES (?1, ?2)",
+            &[s(device_id), s(identity)],
+        )
+    }
+
+    fn find_device_id_by_identity(&self, identity: &str) -> Result<Option<String>, StoreError> {
+        self.query(
+            "SELECT device_id FROM device_identity WHERE identity = ?1 LIMIT 1",
+            &[s(identity)],
+        )?
+        .first()
+        .map(|row| text(row, 0))
+        .transpose()
+    }
+
+    fn delete_device_identity(&self, device_id: &str) -> Result<(), StoreError> {
+        self.exec(
+            "DELETE FROM device_identity WHERE device_id = ?1",
+            &[s(device_id)],
+        )
+    }
+
+    fn rekey_aliases(&self, old_id: &str, new_id: &str) -> Result<(), StoreError> {
+        self.exec(
+            "UPDATE aliases SET device_id = ?2 WHERE device_id = ?1",
+            &[s(old_id), s(new_id)],
+        )
     }
 
     fn insert_confirmation_token(&self, token: &ConfirmationTokenRow) -> Result<(), StoreError> {

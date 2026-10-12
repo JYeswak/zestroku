@@ -273,6 +273,12 @@ pub struct DeviceInfo {
     pub model_number: String,
     pub software_version: String,
     pub is_tv: bool,
+    /// Raw serial-number/UDN identity fields. Never printed, logged, or
+    /// stored verbatim outside the runtime DB; see `identity_key` in
+    /// zestroku-core. Absent tags parse as empty (fail-open read, the
+    /// required modeled fields still fail closed below).
+    pub serial_number: String,
+    pub udn: String,
 }
 
 /// Parse a `<device-info>` XML body (scrubbed-fixture tested).
@@ -290,11 +296,25 @@ pub fn parse_device_info(xml: &str) -> Result<DeviceInfo> {
             .ok_or_else(|| Error::Malformed(format!("missing </{tag}> in device-info")))?;
         Ok(xml[start..end].to_string())
     };
+    let optional = |tag: &str| -> String {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        let start = match xml.find(&open).map(|i| i + open.len()) {
+            Some(start) => start,
+            None => return String::new(),
+        };
+        match xml[start..].find(&close).map(|i| start + i) {
+            Some(end) => xml[start..end].to_string(),
+            None => String::new(),
+        }
+    };
     Ok(DeviceInfo {
         model_name: field("model-name")?,
         model_number: field("model-number")?,
         software_version: field("software-version")?,
         is_tv: field("is-tv")? == "true",
+        serial_number: optional("serial-number"),
+        udn: optional("udn"),
     })
 }
 
@@ -320,6 +340,8 @@ mod tests {
         assert_eq!(info.model_number, "3941X2");
         assert_eq!(info.software_version, "15.2.4");
         assert!(!info.is_tv);
+        assert_eq!(info.serial_number, "SCRUBBED");
+        assert_eq!(info.udn, "SCRUBBED");
     }
 
     #[test]

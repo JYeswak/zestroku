@@ -52,7 +52,7 @@ fn every_table_insert_query_update_delete_and_survives_reopen() {
     let path = dir.path().join("zestroku.db");
 
     let st = SqliteStore::open(&path).unwrap();
-    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4, 5]);
+    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4, 5, 6]);
 
     // devices: insert, query, update (upsert), delete
     st.upsert_device(&device("dev-a", "open")).unwrap();
@@ -130,7 +130,7 @@ fn every_table_insert_query_update_delete_and_survives_reopen() {
 
     // reopen: rows survive, migrations are not re-applied
     let st = SqliteStore::open(&path).unwrap();
-    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4, 5]);
+    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4, 5, 6]);
     assert_eq!(st.list_devices().unwrap().len(), 2);
     assert_eq!(st.list_apps("dev-a").unwrap(), vec![app("2.0")]);
     assert_eq!(st.list_capabilities("dev-a").unwrap(), vec!["launch"]);
@@ -184,7 +184,7 @@ fn migrations_are_append_only_and_upgrade_in_place() {
 
     // The newer binary appends the remaining migrations and keeps existing data.
     let st = SqliteStore::open(&path).unwrap();
-    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4, 5]);
+    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4, 5, 6]);
     assert!(st.get_device("dev-a").unwrap().is_some());
     st.insert_action(&action("x")).unwrap();
     st.close().unwrap();
@@ -200,4 +200,75 @@ fn gapped_or_reordered_migration_list_is_rejected() {
     assert!(SqliteStore::open_with(&path, &gapped).is_err());
     let reordered = [MIGRATIONS[1], MIGRATIONS[0]];
     assert!(SqliteStore::open_with(&path, &reordered).is_err());
+}
+
+#[test]
+fn identity_lookup_moves_aliases_to_the_new_endpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("identity.db");
+    let st = SqliteStore::open(&path).unwrap();
+
+    // Same physical device seen at its old endpoint first.
+    st.upsert_device(&device("127.0.0.1:1111", "open")).unwrap();
+    st.set_alias(&AliasRow {
+        alias: "living-room".into(),
+        device_id: "127.0.0.1:1111".into(),
+    })
+    .unwrap();
+    st.record_device_identity("127.0.0.1:1111", "key-device-a")
+        .unwrap();
+    assert_eq!(
+        st.find_device_id_by_identity("key-device-a").unwrap(),
+        Some("127.0.0.1:1111".to_string())
+    );
+
+    // DHCP move: the same identity key reappears at a new endpoint.
+    st.upsert_device(&device("127.0.0.1:2222", "open")).unwrap();
+    st.rekey_aliases("127.0.0.1:1111", "127.0.0.1:2222")
+        .unwrap();
+    st.delete_device("127.0.0.1:1111").unwrap();
+    st.delete_device_identity("127.0.0.1:1111").unwrap();
+    st.record_device_identity("127.0.0.1:2222", "key-device-a")
+        .unwrap();
+
+    assert_eq!(st.list_devices().unwrap().len(), 1);
+    assert_eq!(
+        st.list_aliases().unwrap(),
+        vec![AliasRow {
+            alias: "living-room".into(),
+            device_id: "127.0.0.1:2222".into(),
+        }]
+    );
+    assert_eq!(
+        st.find_device_id_by_identity("key-device-a").unwrap(),
+        Some("127.0.0.1:2222".to_string())
+    );
+    st.close().unwrap();
+}
+
+#[test]
+fn different_identities_are_never_merged() {
+    // Planted negative: two same-model devices with different identity keys
+    // must stay two rows. Merging on model (or dropping the key from the
+    // lookup) turns this red.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("no-merge.db");
+    let st = SqliteStore::open(&path).unwrap();
+    st.upsert_device(&device("127.0.0.1:1111", "open")).unwrap();
+    st.upsert_device(&device("127.0.0.1:2222", "open")).unwrap();
+    st.record_device_identity("127.0.0.1:1111", "key-device-a")
+        .unwrap();
+    st.record_device_identity("127.0.0.1:2222", "key-device-b")
+        .unwrap();
+    assert_eq!(st.list_devices().unwrap().len(), 2);
+    assert_eq!(
+        st.find_device_id_by_identity("key-device-a").unwrap(),
+        Some("127.0.0.1:1111".to_string())
+    );
+    assert_eq!(
+        st.find_device_id_by_identity("key-device-b").unwrap(),
+        Some("127.0.0.1:2222".to_string())
+    );
+    assert_eq!(st.find_device_id_by_identity("key-unknown").unwrap(), None);
+    st.close().unwrap();
 }
