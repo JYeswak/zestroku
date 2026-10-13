@@ -370,7 +370,7 @@ mod tests {
             .expect("discovery");
         assert!(devices.is_empty());
         assert_eq!(notes.len(), 1);
-        assert!(notes[0].starts_with("192.0.2.50: "), "{notes:?}");
+        assert!(notes[0].contains("192.0.2.50:8061"), "{notes:?}");
         assert!(notes[0].contains("404"), "{notes:?}");
     }
 
