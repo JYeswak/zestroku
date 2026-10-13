@@ -45,7 +45,6 @@ fn approved_http_dispatch_failures_finish_as_failures() {
         let client = TestClient::new(build_app(Arc::clone(&store), Arc::clone(&transport)));
         let result = client
             .post(&format!("/v1/devices/{HOST}:{PORT}/launch"))
-            .header_str("host", HOST)
             .json(&serde_json::json!({"app_id": 1001, "confirm": &token}))
             .send();
         let expected_status = if absent { 404 } else { 502 };
