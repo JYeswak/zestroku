@@ -1,0 +1,27 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_9b24c4690b0db798e854d78b74424e329946dd43efde06dac63534690d5ab772",
+ "limitations": [
+  "Targeted current-origin integration tests only; not full workspace or CI gates; does not close the bead."
+ ],
+ "operation": "clean_overlay_serve_drain_test",
+ "parameters": {
+  "artifacts_retrieved": "0 files,43 bytes",
+  "base_sha": "95bd11b0c378aac64c2805f3bc09b581d54945c1",
+  "evidence_text": "RCH_REQUIRE_REMOTE=1 RCH_VISIBILITY=verbose; cargo test -j1 --locked -p zestroku-cli --test serve --test serve_drain_controls -- --nocapture --test-threads=1; RCH_BUILD_SOURCE=95bd11b0c378aac64c2805f3bc09b581d54945c1; paired_tree=25e512aba3444b01673b5b397279d8776cc384aa; overlay_fingerprint=fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195; selected_worker=contabo-4; remote_exit=0; duration_ms=49689; artifacts_retrieved=0_files_43_bytes; serve_tests=5_passed_0_failed; serve_drain_controls_tests=4_passed_0_failed; original_SIGTERM=body_abcd_http200_content_length165_body165_Connection_close_three_sim_GETs_exit0_listener_released; vendor_binding=origin_base_Cargo.toml_66_67_path_vendor_fastapi_http_Cargo.lock_887_892_no_source_vendor_server_rs_2511; log_ref=var/agent-tmp/receipt.33349/rch-run.log",
+  "overlay_fingerprint": "fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195",
+  "paired_tree": "25e512aba3444b01673b5b397279d8776cc384aa",
+  "remote_duration_ms": "49689",
+  "remote_exit": "0",
+  "run_log": "var/agent-tmp/receipt.33349/rch-run.log",
+  "selected_worker": "contabo-4",
+  "serve_drain_controls_tests": "4 passed,0 failed",
+  "serve_tests": "5 passed,0 failed"
+ },
+ "producer": "zestroku-m7c-serve-inq.1.1",
+ "result_ref": {
+  "bytes": 13698,
+  "sha256": "41ba46f0e11712074ab31dba38c844ae541694a6423b4bc0a3b3b3cce504bdb3"
+ }
+}
