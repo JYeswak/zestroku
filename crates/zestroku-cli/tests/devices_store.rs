@@ -219,6 +219,45 @@ fn same_model_different_identities_never_merge() {
 }
 
 #[test]
+fn unknown_identity_same_model_devices_never_merge() {
+    // Planted negative: neither sim advertises a serial or UDN. Empty
+    // identity must not collapse distinct same-model endpoints in the store.
+    let config = SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    };
+    let first = SimDevice::start_with_serial(config, "");
+    first.set_unknown_identity();
+    let second = SimDevice::start_with_serial(config, "");
+    second.set_unknown_identity();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let targets = write_targets(dir.path(), &[first.port(), second.port()]);
+    let (code, _stdout, stderr) = run_devices(&db, &targets);
+    assert_eq!(code, 0, "run failed: {stderr}");
+
+    let store = SqliteStore::open(&db).expect("open store");
+    let rows = store.list_devices().expect("list devices");
+    assert_eq!(
+        rows.len(),
+        2,
+        "empty identity must not merge same-model devices: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|row| row.model_num == "SIMX1"),
+        "the negative must use two same-model devices: {rows:?}"
+    );
+    for sim in [&first, &second] {
+        assert_eq!(
+            sim.received_requests(),
+            vec![("GET".into(), "/query/device-info".into())],
+            "each endpoint is queried once"
+        );
+    }
+}
+
+#[test]
 fn cli_output_never_emits_fixture_identifiers() {
     // Acceptance [c]: every CLI/JSON/log surface must be free of the sim's
     // FIXTURESERIAL-class tokens. The identity key is a digest by

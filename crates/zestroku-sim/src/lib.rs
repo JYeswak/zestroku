@@ -106,6 +106,9 @@ struct DeviceState {
     /// Per-device serial placeholder (FIXTURESERIAL-class, never a live
     /// value). Lets tests give two same-model sims different identities.
     serial: String,
+    /// The UDN is a separate stable identity field; an empty serial alone is
+    /// not an unknown identity when a UDN is still advertised.
+    udn: String,
     active: Option<&'static App>,
     malformed_apps: bool,
     focus: Focus,
@@ -187,15 +190,15 @@ impl Reply {
     }
 }
 
-fn device_info_xml(kind: DeviceKind, serial: &str) -> String {
+fn device_info_xml(kind: DeviceKind, serial: &str, udn: &str) -> String {
     let (name, number, is_tv) = match kind {
         DeviceKind::Express => ("Sim Express", "SIMX1", "false"),
         DeviceKind::Tv => ("Sim TV", "SIMT1", "true"),
     };
-    // Identifier fields are FIXTURESERIAL-class placeholders, never live values.
+    // Identifier fields are FIXTURE-class placeholders, never live values.
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<device-info>\n\
-<udn>FIXTUREUDN</udn>\n<serial-number>{serial}</serial-number>\n\
+<udn>{udn}</udn>\n<serial-number>{serial}</serial-number>\n\
 <device-id>FIXTUREDEVICEID</device-id>\n<model-name>{name}</model-name>\n\
 <model-number>{number}</model-number>\n<software-version>{FIRMWARE}</software-version>\n\
 <is-tv>{is_tv}</is-tv>\n</device-info>\n"
@@ -239,7 +242,7 @@ fn route(state: &mut DeviceState, method: &Method, uri: &str) -> Reply {
     let limited = state.tier == SimTier::Limited;
     match (method, path) {
         (Method::Get, "/query/device-info") => {
-            Reply::xml(device_info_xml(state.kind, &state.serial))
+            Reply::xml(device_info_xml(state.kind, &state.serial, &state.udn))
         }
         (Method::Get, "/query/active-app") => Reply::xml(active_app_xml(state.active)),
         (Method::Get, "/query/apps") => {
@@ -476,6 +479,7 @@ impl SimDevice {
                 kind: config.kind,
                 tier: config.tier,
                 serial: serial.to_owned(),
+                udn: "FIXTUREUDN".to_owned(),
                 active: None,
                 focus: Focus::Home,
                 malformed_apps: false,
@@ -505,6 +509,13 @@ impl SimDevice {
     /// Return malformed installed-app XML for read-path error integration tests.
     pub fn set_malformed_apps(&self, malformed: bool) {
         self.shared.lock().malformed_apps = malformed;
+    }
+    /// Make device-info advertise neither serial nor UDN, for unknown-identity
+    /// discovery and persistence tests.
+    pub fn set_unknown_identity(&self) {
+        let mut state = self.shared.lock();
+        state.serial.clear();
+        state.udn.clear();
     }
 
     /// Every request that reached the handler, in arrival order, as

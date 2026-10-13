@@ -139,6 +139,14 @@ pub async fn discover(
     mx_secs: u8,
 ) -> Result<(Vec<(Device, String)>, Vec<String>)> {
     let sweep = sweep(mx_secs).await?;
+    discover_from_sweep(transport, seeds_toml, sweep).await
+}
+
+async fn discover_from_sweep(
+    transport: &impl Transport,
+    seeds_toml: Option<&str>,
+    sweep: SweepResult,
+) -> Result<(Vec<(Device, String)>, Vec<String>)> {
     let seeds = match seeds_toml {
         Some(text) => parse_targets(text)?,
         None => Vec::new(),
@@ -172,15 +180,13 @@ async fn probe_device_info(transport: &impl Transport, endpoint: &Endpoint) -> R
 mod tests {
     use super::*;
     use crate::discovery::ECP_DEFAULT_PORT;
+    use std::io::{Read, Write};
+    use std::net::{TcpStream, UdpSocket};
+    use std::thread;
+    use std::time::Duration;
     use zestroku_proto::{Command, EcpResponse};
+    use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
 
-    /// Fixture transport: answers device-info with a scrubbed body, records
-    /// the endpoints probed. No network, no runtime, no unsafe.
-    ///
-    /// The async trait method delegates to `send_sync` (the fixture future is
-    /// immediately ready); tests drive `send_sync` directly, so the socket-free
-    /// reconcile loop is proven offline. The socket sweep itself is covered by
-    /// the live leg (bead (b), Josh present) and the sim (m7f).
     struct FixtureTransport {
         bodies: std::collections::BTreeMap<(String, u16), String>,
         probed: std::sync::RwLock<Vec<(String, u16)>>,
@@ -212,52 +218,67 @@ mod tests {
         }
     }
 
-    fn info_xml(model: &str) -> String {
-        // Scrubbed synthetic device-info (TEST-NET hosts, fake values only).
-        // Field names match the real parser contract (`model-name`, not
-        // `friendly-name` — zestroku-proto parse_device_info).
-        format!(
-            "<device-info>\n<model-name>{model}</model-name>\
-             \n<model-number>9999X</model-number>\
-             \n<software-version>0.0.0</software-version>\
-             \n<serial-number>FIXTURESERIAL</serial-number>\
-             \n<is-tv>false</is-tv>\n</device-info>"
-        )
+    #[derive(Clone, Copy)]
+    struct LoopbackTransport;
+
+    impl Transport for LoopbackTransport {
+        async fn send(&self, host: &str, port: u16, cmd: &Command) -> Result<EcpResponse> {
+            let address = format!("{host}:{port}");
+            let mut stream = TcpStream::connect(&address)
+                .map_err(|error| Error::Unreachable(format!("{address}: {error}")))?;
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .map_err(|error| Error::Unreachable(format!("read timeout: {error}")))?;
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .map_err(|error| Error::Unreachable(format!("write timeout: {error}")))?;
+            write!(
+                stream,
+                "{} {} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n",
+                cmd.method, cmd.path
+            )
+            .map_err(|error| Error::Unreachable(format!("write: {error}")))?;
+            let mut raw = Vec::new();
+            stream
+                .read_to_end(&mut raw)
+                .map_err(|error| Error::Unreachable(format!("read: {error}")))?;
+            let response = String::from_utf8_lossy(&raw);
+            let status = response
+                .split_whitespace()
+                .nth(1)
+                .and_then(|status| status.parse().ok())
+                .ok_or_else(|| Error::Unreachable("malformed status line".into()))?;
+            let body = response
+                .split_once("\r\n\r\n")
+                .map_or("", |(_, body)| body)
+                .to_owned();
+            Ok(EcpResponse {
+                status,
+                headers: Vec::new(),
+                body,
+            })
+        }
     }
 
-    /// The socket-free half of `discover`, driven synchronously in tests:
-    /// merge seeds, probe each endpoint, reconcile or note the failure.
-    /// Mirrors discover()'s endpoint loop exactly (same helpers, same order);
-    /// the sweep half above the `cfg(test)` line is the part that needs Cx.
-    fn discover_sync(
-        transport: &FixtureTransport,
-        seeds: &[Endpoint],
-    ) -> (Vec<Device>, Vec<String>) {
-        let endpoints = merge_endpoints(&[], seeds);
-        let mut devices = Vec::new();
-        let mut notes = Vec::new();
-        for endpoint in endpoints {
-            let cmd = zestroku_proto::query("device-info");
-            match transport.send_sync(&endpoint.host, endpoint.port, &cmd) {
-                Ok(response) if response.status == 200 => {
-                    match zestroku_proto::parse_device_info(&response.body) {
-                        Ok(info) => devices.push(reconcile(&endpoint, &info)),
-                        Err(error) => notes.push(format!("{}: {error}", endpoint.host)),
-                    }
-                }
-                Ok(response) => notes.push(format!("{}: HTTP {}", endpoint.host, response.status)),
-                Err(error) => notes.push(format!("{}: {error}", endpoint.host)),
-            }
-        }
-        (devices, notes)
+    fn runtime() -> asupersync::runtime::Runtime {
+        let reactor = asupersync::runtime::reactor::create_reactor().expect("reactor");
+        asupersync::runtime::RuntimeBuilder::current_thread()
+            .with_reactor(reactor)
+            .build()
+            .expect("runtime")
+    }
+
+    fn info_xml(model: &str) -> String {
+        format!(
+            "<device-info><udn>FIXTUREUDN</udn><model-name>{model}</model-name>\
+             <model-number>9999X</model-number><software-version>0.0.0</software-version>\
+             <serial-number>FIXTURESERIAL</serial-number><is-tv>false</is-tv></device-info>"
+        )
     }
 
     #[test]
     fn discover_merges_seeds_and_reconciles_probes() {
-        let seeds =
-            parse_targets("[[target]]\nhost = \"192.0.2.10\"\n[[target]]\nhost = \"192.0.2.11\"\n")
-                .unwrap();
-        assert_eq!(seeds.len(), 2);
+        let seeds = "[[target]]\nhost = \"192.0.2.10\"\n[[target]]\nhost = \"192.0.2.11\"\n";
         let transport = FixtureTransport {
             bodies: std::collections::BTreeMap::from([
                 (
@@ -268,11 +289,24 @@ mod tests {
             ]),
             probed: std::sync::RwLock::new(Vec::new()),
         };
-        let (devices, notes) = discover_sync(&transport, &seeds);
+        let (devices, notes) = runtime()
+            .block_on(discover_from_sweep(
+                &transport,
+                Some(seeds),
+                SweepResult {
+                    endpoints: Vec::new(),
+                    refused: Vec::new(),
+                },
+            ))
+            .expect("discovery");
         assert_eq!(devices.len(), 2, "both seeds reconcile: {notes:?}");
-        assert_eq!(devices[0].model_name, "Roku Express");
-        assert_eq!(devices[1].model_name, "Roku TV");
-        assert!(devices.iter().all(|d| d.port == ECP_DEFAULT_PORT));
+        assert_eq!(devices[0].0.model_name, "Roku Express");
+        assert_eq!(devices[1].0.model_name, "Roku TV");
+        assert!(
+            devices.iter().all(|(device, identity)| {
+                device.port == ECP_DEFAULT_PORT && identity.len() == 64
+            })
+        );
         assert!(notes.is_empty(), "{notes:?}");
         assert_eq!(
             transport.probed.read().expect("probed lock").len(),
@@ -283,18 +317,6 @@ mod tests {
 
     #[test]
     fn unreachable_endpoint_degrades_to_note_not_error() {
-        // A seeds file may list a powered-off device: probe failure → note,
-        // the rest of the run continues (store keeps last-known state, m7d).
-        let seeds = vec![
-            Endpoint {
-                host: "192.0.2.10".into(),
-                port: ECP_DEFAULT_PORT,
-            },
-            Endpoint {
-                host: "192.0.2.99".into(),
-                port: ECP_DEFAULT_PORT,
-            },
-        ];
         let transport = FixtureTransport {
             bodies: std::collections::BTreeMap::from([(
                 ("192.0.2.10".into(), ECP_DEFAULT_PORT),
@@ -302,31 +324,107 @@ mod tests {
             )]),
             probed: std::sync::RwLock::new(Vec::new()),
         };
-        let (devices, notes) = discover_sync(&transport, &seeds);
+        let (devices, notes) = runtime()
+            .block_on(discover_from_sweep(
+                &transport,
+                None,
+                SweepResult {
+                    endpoints: vec![
+                        Endpoint {
+                            host: "192.0.2.10".into(),
+                            port: ECP_DEFAULT_PORT,
+                        },
+                        Endpoint {
+                            host: "192.0.2.99".into(),
+                            port: ECP_DEFAULT_PORT,
+                        },
+                    ],
+                    refused: Vec::new(),
+                },
+            ))
+            .expect("discovery");
         assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].host, "192.0.2.10");
+        assert_eq!(devices[0].0.host, "192.0.2.10");
         assert_eq!(notes.len(), 1, "the dead seed becomes a note: {notes:?}");
         assert!(notes[0].contains("192.0.2.99"), "{notes:?}");
     }
 
     #[test]
     fn probe_error_message_carries_host_and_status() {
-        // The note format is the operator's only signal for a dead seed —
-        // pin its shape (host + reason) so it can't silently degrade.
-        let seeds = vec![Endpoint {
-            host: "192.0.2.50".into(),
-            port: 8061,
-        }];
         let transport = FixtureTransport {
-            bodies: std::collections::BTreeMap::new(), // everything 404s
+            bodies: std::collections::BTreeMap::new(),
             probed: std::sync::RwLock::new(Vec::new()),
         };
-        let (devices, notes) = discover_sync(&transport, &seeds);
+        let (devices, notes) = runtime()
+            .block_on(discover_from_sweep(
+                &transport,
+                None,
+                SweepResult {
+                    endpoints: vec![Endpoint {
+                        host: "192.0.2.50".into(),
+                        port: 8061,
+                    }],
+                    refused: Vec::new(),
+                },
+            ))
+            .expect("discovery");
         assert!(devices.is_empty());
         assert_eq!(notes.len(), 1);
-        // discover_sync notes carry "host: reason" (port omitted); the
-        // failure kind (HTTP status) is the actionable part.
         assert!(notes[0].starts_with("192.0.2.50: "), "{notes:?}");
         assert!(notes[0].contains("404"), "{notes:?}");
+    }
+
+    #[test]
+    fn loopback_ssdp_discovery_retains_identity_with_one_device_info_query() {
+        let sim = SimDevice::start_with_serial(
+            SimConfig {
+                kind: DeviceKind::Express,
+                tier: SimTier::Permissive,
+            },
+            "FIXTURESERIAL-SSDP",
+        );
+        let responder = UdpSocket::bind("127.0.0.1:0").expect("SSDP responder");
+        responder
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("SSDP read timeout");
+        let target = format!("127.0.0.1:{}", responder.local_addr().unwrap().port());
+        let sim_port = sim.port();
+        let responder_thread = thread::spawn(move || {
+            let mut request = [0_u8; 1500];
+            let (length, peer) = responder.recv_from(&mut request).expect("receive M-SEARCH");
+            assert!(
+                String::from_utf8_lossy(&request[..length]).contains("M-SEARCH * HTTP/1.1"),
+                "unexpected SSDP request"
+            );
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nLOCATION: http://127.0.0.1:{sim_port}/\r\n\
+                 ST: roku:ecp\r\nUSN: uuid:roku:ecp:loopback\r\n\r\n"
+            );
+            responder
+                .send_to(reply.as_bytes(), peer)
+                .expect("send SSDP reply");
+        });
+        let (devices, notes) = runtime()
+            .block_on(async {
+                let sweep = sweep_to(&target, 1).await?;
+                discover_from_sweep(&LoopbackTransport, None, sweep).await
+            })
+            .expect("loopback discovery");
+        responder_thread.join().expect("SSDP responder thread");
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(devices.len(), 1, "SSDP endpoint must reconcile");
+        assert_eq!(devices[0].0.port, sim.port());
+        let expected = zestroku_proto::parse_device_info(
+            "<device-info><udn>FIXTUREUDN</udn><model-name>Sim Express</model-name>\
+             <model-number>SIMX1</model-number><software-version>15.2.4</software-version>\
+             <serial-number>FIXTURESERIAL-SSDP</serial-number><is-tv>false</is-tv></device-info>",
+        )
+        .expect("expected sim identity");
+        assert_eq!(devices[0].1, identity_key(&expected));
+        assert_eq!(
+            sim.received_requests(),
+            vec![("GET".into(), "/query/device-info".into())],
+            "discovery must retain the identity from exactly one DeviceInfo query"
+        );
     }
 }

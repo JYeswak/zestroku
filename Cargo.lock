@@ -3925,6 +3925,7 @@ dependencies = [
  "thiserror",
  "toml",
  "zestroku-proto",
+ "zestroku-sim",
  "zestroku-types",
 ]
 
