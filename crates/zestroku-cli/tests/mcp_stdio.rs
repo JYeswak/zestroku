@@ -12,6 +12,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
+use zestroku_core::store::{DeviceRow, SqliteStore};
 
 struct Session {
     child: Child,
