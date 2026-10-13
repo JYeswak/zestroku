@@ -1,0 +1,17 @@
+{
+ "authority": "live",
+ "confidence": "observed",
+ "evidence_id": "ev_94c97352172dd6277bb2322442584833d3a3d9560349f0e9d5b29e6f3e2b6d46",
+ "limitations": [
+  "No deletion performed by this session. Space recovered by another actor between the first and later reads (13.06 -> 14.87 pct free). Snapshot thinning needs sudo and was not run. Tool cache prunes not run: gate already passes."
+ ],
+ "operation": "disk recovery check: sbh check --need 10G, df -k /, thin-snapshot dry-run",
+ "parameters": {
+  "files": "00-df-before,00-sbh-before,02-thin-dryrun,03-df-after-preview,05-sbh-final,05-df-final"
+ },
+ "producer": "PeachKnoll",
+ "result_ref": {
+  "bytes": 3056,
+  "sha256": "4a74fbcf04161ac5d9b88d2ef2810b497949ebd100a30e3e035b5871072d0951"
+ }
+}
