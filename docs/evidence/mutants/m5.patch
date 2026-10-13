@@ -1,0 +1,5 @@
+# M5 NOT A PATCH — intentionally no production-source mutation.
+# TcpServer::serve_app_concurrent owns its listener inside the daemon process (vendor/fastapi-http/src/server.rs:1966-1969).
+# tests/serve.rs:427-431 probes the port only after Child::try_wait observes process exit; the OS closes that process's socket descriptors on exit.
+# A listener that remains bound after exit therefore needs a separate process to inherit or re-bind the socket. That changes the process model and cannot be represented as a faithful <=15-line production-source mutation here.
+# No git apply --check applies to this note. Do not apply it as a patch.
