@@ -84,6 +84,29 @@ fn request(port: u16, host: &str, target: &str) -> (u16, String) {
     (status, raw)
 }
 
+fn partial_info_request(port: u16, host: &str, target: &str) -> (TcpStream, Instant) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(40)))
+        .unwrap();
+    let started = Instant::now();
+    write!(
+        stream,
+        "GET /v1/devices/{target}/info HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: 4\r\n\r\nab"
+    )
+    .unwrap();
+    (stream, started)
+}
+
+fn status_code(response: &[u8]) -> Option<u16> {
+    std::str::from_utf8(response)
+        .ok()?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
 fn read_req(stream: &mut TcpStream) -> std::io::Result<(Vec<u8>, String)> {
     let mut reader = std::io::BufReader::new(stream.try_clone()?);
     let mut request = Vec::new();
@@ -252,6 +275,7 @@ fn c2_inflight_proxy_held_info_completes_after_term() {
         .arrived
         .recv_timeout(Duration::from_secs(10))
         .expect("proxy did not observe held tv-active-channel request");
+    let held_at = Instant::now();
     let pid = daemon.0.id().to_string();
     assert!(
         Command::new("kill")
@@ -261,20 +285,35 @@ fn c2_inflight_proxy_held_info_completes_after_term() {
             .success()
     );
     let deadline = Instant::now() + Duration::from_secs(5);
+    let mut admission_stopped = false;
     while Instant::now() < deadline {
         if probe_no_health(port, &host) {
+            admission_stopped = true;
             break;
         }
         thread::sleep(Duration::from_millis(10));
     }
+    assert!(
+        admission_stopped,
+        "health probe still responds after SIGTERM"
+    );
+    let held_for = held_at.elapsed();
+    assert!(
+        held_for < Duration::from_millis(2500),
+        "proxy hold exceeded half the 5s ECP transport timeout: {held_for:?}"
+    );
     proxy.release.send(()).unwrap();
     let (status, response) = request_thread.join().unwrap();
     eprintln!(
-        "C2 status={status} response={response:?} sim={:?}",
+        "C2 held_for={held_for:?} status={status} response={response:?} sim={:?}",
         sim.received_requests()
     );
     assert_eq!(status, 200, "{response}");
     assert!(response.contains("SIMX1"), "{response}");
+    assert!(
+        response.contains("\"tv_active_channel\":false"),
+        "held ECP result did not reach the HTTP response: {response}"
+    );
     let exit_deadline = Instant::now() + Duration::from_secs(40);
     let exit = loop {
         if let Some(s) = daemon.0.try_wait().unwrap() {
@@ -293,15 +332,138 @@ fn c2_inflight_proxy_held_info_completes_after_term() {
     );
 }
 
+#[test]
+fn c4_partial_info_body_completes_without_term() {
+    let sim = ecp_sim();
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("actions.db");
+    let target = format!("127.0.0.1:{}", sim.port());
+    seed(&db, &target);
+    let port = free_port();
+    let _daemon = start(&db, port);
+    let host = format!("127.0.0.1:{port}");
+    let (mut stream, started) = partial_info_request(port, &host, &target);
+    eprintln!(
+        "C4 frame=sent_headers_plus_ab elapsed={:?}",
+        started.elapsed()
+    );
+    thread::sleep(Duration::from_millis(250));
+    stream.write_all(b"cd").unwrap();
+    eprintln!("C4 frame=sent_cd elapsed={:?}", started.elapsed());
+    let mut response = Vec::new();
+    let read = stream.read_to_end(&mut response);
+    let elapsed_to_eof = started.elapsed();
+    let text = String::from_utf8_lossy(&response);
+    eprintln!(
+        "C4 read={read:?} elapsed_to_eof={elapsed_to_eof:?} status={:?} response={text:?} sim={:?}",
+        status_code(&response),
+        sim.received_requests()
+    );
+    assert!(
+        read.is_ok(),
+        "complete partial-body baseline failed: {read:?}"
+    );
+    assert_eq!(status_code(&response), Some(200), "{text}");
+    assert!(text.contains("SIMX1"), "{text}");
+}
+
+#[test]
+fn c3_partial_info_body_completes_after_term_and_admission_stop() {
+    let sim = ecp_sim();
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("actions.db");
+    let target = format!("127.0.0.1:{}", sim.port());
+    seed(&db, &target);
+    let port = free_port();
+    let mut daemon = start(&db, port);
+    let host = format!("127.0.0.1:{port}");
+    let (mut stream, started) = partial_info_request(port, &host, &target);
+    eprintln!(
+        "C3 source={} frame=sent_headers_plus_ab elapsed={:?}",
+        std::env::var("RCH_BUILD_SOURCE").unwrap_or_else(|_| "unavailable".into()),
+        started.elapsed()
+    );
+    thread::sleep(Duration::from_millis(250));
+    let pid = daemon.0.id().to_string();
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &pid])
+            .status()
+            .unwrap()
+            .success(),
+        "failed to deliver SIGTERM"
+    );
+    let term_at = Instant::now();
+    let admission_deadline = term_at + Duration::from_secs(5);
+    let mut admission_stopped = false;
+    while Instant::now() < admission_deadline {
+        if probe_no_health(port, &host) {
+            admission_stopped = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        admission_stopped,
+        "health probe still responds 5s after SIGTERM"
+    );
+    eprintln!(
+        "C3 frame=admission_stopped elapsed_since_term={:?}",
+        term_at.elapsed()
+    );
+    let send_cd = stream.write_all(b"cd");
+    eprintln!(
+        "C3 frame=sent_cd result={send_cd:?} elapsed_since_term={:?}",
+        term_at.elapsed()
+    );
+    let mut response = Vec::new();
+    let read = stream.read_to_end(&mut response);
+    let elapsed_to_eof = started.elapsed();
+    let elapsed_since_term = term_at.elapsed();
+    let text = String::from_utf8_lossy(&response);
+    eprintln!(
+        "C3 read={read:?} elapsed_to_eof={elapsed_to_eof:?} elapsed_since_term={elapsed_since_term:?} status={:?} response={text:?} sim={:?}",
+        status_code(&response),
+        sim.received_requests()
+    );
+    let exit_deadline = term_at + Duration::from_secs(40);
+    while daemon.0.try_wait().unwrap().is_none() && Instant::now() < exit_deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    let exit = daemon.0.try_wait().unwrap();
+    eprintln!(
+        "C3 daemon_exit={:?} elapsed_since_term={:?}",
+        exit.map(|status| status.code()),
+        term_at.elapsed()
+    );
+}
+
 fn probe_no_health(port: u16, host: &str) -> bool {
-    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
-        return true;
+    let mut stream = match TcpStream::connect(("127.0.0.1", port)) {
+        Ok(stream) => stream,
+        Err(error) => return error.kind() == std::io::ErrorKind::ConnectionRefused,
     };
     let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
-    let _ = write!(
+    if let Err(error) = write!(
         stream,
         "GET /health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
-    );
+    ) {
+        return matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+        );
+    }
     let mut byte = [0; 1];
-    stream.read(&mut byte).is_err()
+    match stream.read(&mut byte) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(error) => matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+        ),
+    }
 }
