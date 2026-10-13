@@ -326,9 +326,13 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
         "info",
         json!({"host": target, "daemon_url": "http://192.0.2.1:8070"}),
     );
-    assert_eq!(
-        tool_error_text(&extra_backend),
-        "Tool arguments do not match the declared input schema.",
+    assert_eq!(extra_backend["error"]["code"], -32602, "{extra_backend}");
+    assert!(
+        extra_backend["error"]["message"]
+            .as_str()
+            .is_some_and(|message| {
+                message.contains("additional property not allowed: daemon_url")
+            }),
         "{extra_backend}"
     );
     assert_eq!(sim.received_requests().len(), before_extra);
