@@ -4,6 +4,8 @@
 use std::io::{BufRead, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -114,27 +116,33 @@ struct Proxy {
     port: u16,
     arrived: Receiver<()>,
     release: Sender<()>,
+    stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 impl Proxy {
-    fn start(backend: u16, hold_path: &'static str) -> Self {
+    fn start(backend: u16, hold_path: Option<&'static str>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (arrived_tx, arrived) = mpsc::channel();
         let (release, release_rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
         let worker = thread::spawn(move || {
             let mut held = false;
             for client in listener.incoming() {
                 let Ok(mut client) = client else { break };
+                if worker_stop.load(Ordering::Acquire) {
+                    break;
+                }
                 let (bytes, header) = match read_req(&mut client) {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
                 let path = header.split_whitespace().nth(1).unwrap_or("");
-                if path.contains(hold_path) && !held {
+                if hold_path.is_some_and(|needle| path.contains(needle)) && !held {
                     held = true;
                     let _ = arrived_tx.send(());
-                    let _ = release_rx.recv();
+                    let _ = release_rx.recv_timeout(Duration::from_secs(20));
                 }
                 let Ok(mut upstream) = TcpStream::connect(("127.0.0.1", backend)) else {
                     continue;
@@ -181,12 +189,15 @@ impl Proxy {
             port,
             arrived,
             release,
+            stop,
             worker: Some(worker),
         }
     }
 }
 impl Drop for Proxy {
     fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.release.send(());
         let _ = TcpStream::connect(("127.0.0.1", self.port));
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -204,7 +215,7 @@ fn ecp_sim() -> zestroku_sim::SimDevice {
 #[test]
 fn c1_no_term_info_baseline_returns_200() {
     let sim = ecp_sim();
-    let proxy = Proxy::start(sim.port(), "/query/tv-active-channel");
+    let proxy = Proxy::start(sim.port(), None);
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("actions.db");
     let target = format!("127.0.0.1:{}", proxy.port);
@@ -224,7 +235,7 @@ fn c1_no_term_info_baseline_returns_200() {
 #[test]
 fn c2_inflight_proxy_held_info_completes_after_term() {
     let sim = ecp_sim();
-    let proxy = Proxy::start(sim.port(), "/query/tv-active-channel");
+    let proxy = Proxy::start(sim.port(), Some("/query/tv-active-channel"));
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("actions.db");
     let target = format!("127.0.0.1:{}", proxy.port);
