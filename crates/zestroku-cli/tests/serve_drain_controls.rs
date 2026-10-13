@@ -139,10 +139,41 @@ impl Proxy {
                 let Ok(mut upstream) = TcpStream::connect(("127.0.0.1", backend)) else {
                     continue;
                 };
-                let _ = upstream.write_all(&bytes);
-                let _ = client.set_read_timeout(Some(Duration::from_secs(20)));
-                let _ = upstream.set_read_timeout(Some(Duration::from_secs(20)));
-                let _ = std::io::copy(&mut upstream, &mut client);
+                if upstream.write_all(&bytes).is_err() {
+                    continue;
+                }
+                let mut response = std::io::BufReader::new(upstream);
+                let mut head = Vec::new();
+                let mut line = Vec::new();
+                let mut length = 0usize;
+                loop {
+                    line.clear();
+                    match response.read_until(b'\n', &mut line) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    if let Some(colon) = line.iter().position(|b| *b == b':') {
+                        if line[..colon].eq_ignore_ascii_case(b"content-length") {
+                            length = std::str::from_utf8(&line[colon + 1..])
+                                .ok()
+                                .and_then(|v| v.trim().parse().ok())
+                                .unwrap_or(0);
+                        }
+                    }
+                    let done = line == b"\r\n";
+                    head.extend_from_slice(&line);
+                    if done {
+                        break;
+                    }
+                }
+                if client.write_all(&head).is_err() {
+                    continue;
+                }
+                let mut body = vec![0; length];
+                if response.read_exact(&mut body).is_err() {
+                    continue;
+                }
+                let _ = client.write_all(&body);
                 let _ = client.shutdown(Shutdown::Both);
             }
         });
