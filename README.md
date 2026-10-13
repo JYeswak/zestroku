@@ -46,28 +46,32 @@ journals remain on disk; durable acceptance receipts belong in `docs/evidence/re
 
 A cold build takes about 22 minutes; run it unbounded. The result is
 `target/aarch64-apple-darwin/release/zestroku`; `file` must report `Mach-O
-64-bit executable arm64` — treat any untargeted artifact as Linux ELF until
-proven otherwise. `zestroku mcp` serves the MCP tools over stdio (`echo`, `list_devices`,
-`recent_actions`, and the confirmation-gated `key` and `launch`). It reads the
-shared store; it does not open LAN sockets itself.
+64-bit executable arm64`. An untargeted artifact is a Linux ELF and is not
+valid macOS evidence.
+`zestroku mcp` serves stdio tools: `echo`, `list_devices`, `info`,
+`active_app`, `apps`, `recent_actions`, and confirmation-gated `key`/`launch`.
+Inventory, info, active-app, and apps reads use the daemon API; they never open
+direct LAN sockets or fall back to local results.
 `zestroku --version` prints
 `zestroku <semver> <git-sha7>[-dirty]`; the sha7 equals
 `git rev-parse --short C`. A `-dirty` binary is never acceptable evidence.
 
 ### Running from agent panes
 
-`info` and `active-app` can run from an agent pane: they call the daemon over
-loopback and never fall back to ECP. Keep the daemon running in a process tree
-that has LAN permission; for example, leave this SSH session attached:
+MCP `list_devices`, `info`, `active_app`, and `apps` use the daemon over
+loopback; they fail if it is unavailable rather than falling back to ECP.
+Keep the daemon running in a process tree that has LAN permission; for example,
+leave this SSH session attached:
 
 ```
 ssh -o BatchMode=yes localhost \
   'exec ./target/aarch64-apple-darwin/release/zestroku serve --bind 127.0.0.1:8070'
 ```
 
-The default endpoint is `http://127.0.0.1:8070`; override it with
-`ZESTROKU_DAEMON_URL`. `ZESTROKU_DIRECT=1` explicitly selects direct ECP and
-requires LAN permission in the CLI's own process tree.
+For MCP, the default endpoint is `http://127.0.0.1:8070`; `ZESTROKU_DAEMON_URL`
+may override it only with `http://<loopback-ip>:<nonzero-port>`. Invalid MCP
+endpoints are rejected before startup. `ZESTROKU_DIRECT=1` explicitly selects
+direct ECP and requires LAN permission in the CLI's own process tree.
 
 ## Architecture (frankensonos §3 pattern)
 
@@ -128,12 +132,15 @@ developer password through stdin, not an argument. ZIP contents and credentials 
 never stored in the repository or mutation audit record. The response body is checked
 for Roku HTML error markers; HTTP 200 alone is not treated as success.
 Blank, arbitrary, mismatched, expired, and reused tokens are refused locally
-(exit 4) and audited; MCP mutations take the same opaque token string and
-cannot mint approvals.
-`zestroku serve [--bind <ip:port>]` runs the read-only HTTP API (`/health`,
-`/v1/devices`, `/v1/devices/{host}/info`, `/v1/devices/{host}/active-app`)
-over the shared store on loopback by default (`127.0.0.1:8070`). It binds
-loopback or private-LAN addresses only; a wildcard needs
+(exit 4) and audited. HTTP and MCP key/launch requests take the same opaque
+token string; neither surface can mint approvals.
+`zestroku serve [--bind <ip:port>]` exposes `GET /health`,
+`GET /v1/devices`, `GET /v1/devices/{host}/info`,
+`GET /v1/devices/{host}/active-app`, `GET /v1/devices/{host}/apps`, and the
+confirmation-gated `POST /v1/devices/{host}/key` and
+`POST /v1/devices/{host}/launch` routes over the shared store on loopback by
+default (`127.0.0.1:8070`).
+It binds loopback or private-LAN addresses only; a wildcard needs
 `--allow-unsafe-bind`, and the Host header must match the bind address. The
 info response includes live `access_tier` and `tv_active_channel`; the channel
 field is `null` when the optional ECP probe fails.
@@ -155,9 +162,11 @@ repo (in progress) · M8 parity features (beaded).
 
 ## Limitations
 
-- macOS gates UDP multicast and LAN sockets per executable: an agent pane gets
-  errno 65 on LAN IPs while the same binary works under `ssh localhost`; run
-  LAN-touching commands through the resident daemon or an SSH session.
+- Recorded 2026-10-10: Zestroku Rust TCP/SSDP requests from an agent pane
+  failed to reach LAN devices, while the same binary reached them through
+  `ssh -o BatchMode=yes localhost`; `/usr/bin/nc` and `/usr/bin/python3`
+  succeeded from the pane. The cause is not established. Run LAN-touching
+  commands through the resident daemon or an SSH session.
 - Live mutations need an interactive owner terminal approval per operation;
   there is no standing blanket and no approval API for agents to call.
 - `zestroku-sim` reproduces the documented wire behavior, not device firmware;
@@ -168,12 +177,23 @@ repo (in progress) · M8 parity features (beaded).
 
 ## Status
 
-The on-demand `serve` daemon and read-only HTTP API are implemented.
-`info` and `active-app` use the daemon over loopback by default; direct ECP
-requires `ZESTROKU_DIRECT=1`. `devices`, `apps`, `key`, `launch`, and `install` are CLI
-surfaces. `key`, `launch`, and `install` require owner-issued, single-use confirmation tokens
-and record outcomes in the shared action log. The MCP daemon-client, resident service, and
-remaining CLI-to-daemon paths are still open. Protocol ground truth lives in
+The on-demand `serve` daemon exposes read routes and confirmation-gated
+key/launch writes. MCP read tools map to:
+
+| MCP tool | Daemon route |
+|---|---|
+| `list_devices` | `GET /v1/devices` |
+| `info` | `GET /v1/devices/{host}/info` |
+| `active_app` | `GET /v1/devices/{host}/active-app` |
+| `apps` | `GET /v1/devices/{host}/apps` |
+
+`echo` is a stdio connectivity check; `recent_actions` reads the shared audit
+store. MCP `key` and `launch` keep their confirmation and audit behavior, but
+this read-tools path does not dispatch mutations. Daemon-backed read failures
+return distinct MCP tool errors such as `device_not_found`, `malformed_apps`,
+`transport_error`, and `daemon_unavailable`; no direct-ECP or local-result
+fallback is used. CLI `info` and `active-app` also use the daemon by default;
+direct ECP requires `ZESTROKU_DIRECT=1`. Protocol ground truth lives in
 `skill-library-growth/candidates/edge-library/roku/`
 (`COMPREHENSIVE_PLAN_FOR_ZESTROKU.md`, `AGENTS.md`, `ECP-WIRE-DOC.md`,
 `CROSS_DEVICE_DIFF.md`, and `firmware/FIRMWARE_UPDATE_PATH.md`). Read those

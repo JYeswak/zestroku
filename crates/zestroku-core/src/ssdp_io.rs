@@ -25,6 +25,7 @@
 //!   "repeat the sweep" is the caller's loop, not a tight probe.
 #![forbid(unsafe_code)]
 
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use zestroku_proto::{DeviceInfo, Transport};
@@ -39,13 +40,21 @@ use crate::discovery::{
 /// devices answers up to ~6 datagrams; 32 is generous headroom.
 const MAX_REPLIES_PER_SWEEP: usize = 32;
 
+/// One endpoint advertisement and the UDP peer that supplied it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcedEndpoint {
+    pub endpoint: Endpoint,
+    pub responder: SocketAddr,
+}
+
 /// What one M-SEARCH sweep produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SweepResult {
-    /// Endpoints parsed from replies (deduped, stable order).
-    pub endpoints: Vec<Endpoint>,
+    /// Endpoints parsed from replies with their responder source addresses.
+    pub endpoints: Vec<SourcedEndpoint>,
     /// Datagram-level errors, kept for the operator (refused STs, garbage).
     pub refused: Vec<String>,
+    scope: DiscoveryScope,
 }
 
 /// Send one M-SEARCH for `roku:ecp` and collect replies inside the MX window.
@@ -53,13 +62,66 @@ pub struct SweepResult {
 /// `mx_secs` is the MX header value AND the collection window (responders
 /// wait a random delay inside MX, so the listener must outwait it).
 pub async fn sweep(mx_secs: u8) -> Result<SweepResult> {
-    sweep_to(crate::discovery::SSDP_ADDR, mx_secs).await
+    sweep_with_scope(
+        crate::discovery::SSDP_ADDR,
+        mx_secs,
+        DiscoveryScope::LocalLan,
+    )
+    .await
 }
 
 /// Sweep one explicit target address (multicast group for the live LAN,
 /// a loopback responder for tests). Test seam so the sweep pipeline is
 /// exercisable offline.
 pub async fn sweep_to(target: &str, mx_secs: u8) -> Result<SweepResult> {
+    let scope = explicit_target_scope(target);
+    sweep_with_scope(target, mx_secs, scope).await
+}
+
+/// Production multicast is limited to private IPv4 peers. Explicit local
+/// targets are narrower: the LOCATION must match that exact peer address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiscoveryScope {
+    LocalLan,
+    ExplicitTarget(IpAddr),
+}
+
+fn explicit_target_scope(target: &str) -> DiscoveryScope {
+    let Ok(address) = target.parse::<SocketAddr>() else {
+        return DiscoveryScope::LocalLan;
+    };
+    match address.ip() {
+        IpAddr::V4(ip) if ip.is_private() || ip.is_loopback() => {
+            DiscoveryScope::ExplicitTarget(address.ip())
+        }
+        _ => DiscoveryScope::LocalLan,
+    }
+}
+
+fn advertisement_is_in_scope(
+    endpoint: &Endpoint,
+    responder: SocketAddr,
+    scope: DiscoveryScope,
+) -> bool {
+    let SocketAddr::V4(responder) = responder else {
+        return false;
+    };
+    let Ok(location_ip) = endpoint.host.parse::<Ipv4Addr>() else {
+        return false;
+    };
+    if location_ip != *responder.ip() {
+        return false;
+    }
+    match scope {
+        DiscoveryScope::LocalLan => responder.ip().is_private(),
+        DiscoveryScope::ExplicitTarget(target) => {
+            target == IpAddr::V4(*responder.ip())
+                && (responder.ip().is_private() || responder.ip().is_loopback())
+        }
+    }
+}
+
+async fn sweep_with_scope(target: &str, mx_secs: u8, scope: DiscoveryScope) -> Result<SweepResult> {
     if mx_secs == 0 {
         return Err(Error::Malformed("ssdp: MX must be >= 1".into()));
     }
@@ -74,7 +136,7 @@ pub async fn sweep_to(target: &str, mx_secs: u8) -> Result<SweepResult> {
     // ALWAYS returns its accumulator. One short bounded op per sweep; the
     // async wrapper awaits its join handle.
     let target = target.to_owned();
-    let handle = std::thread::spawn(move || collect_replies(&request, target, window));
+    let handle = std::thread::spawn(move || collect_replies(&request, target, window, scope));
     handle
         .join()
         .map_err(|_| Error::Unreachable("ssdp collector panicked".into()))
@@ -84,7 +146,12 @@ pub async fn sweep_to(target: &str, mx_secs: u8) -> Result<SweepResult> {
 /// `target`, then recv until the MX window closes. Owns its accumulator;
 /// returns everything gathered (dedupe at the end) — nothing is dropped on
 /// timeout.
-fn collect_replies(request: &[u8], target: String, window: Duration) -> SweepResult {
+fn collect_replies(
+    request: &[u8],
+    target: String,
+    window: Duration,
+    scope: DiscoveryScope,
+) -> SweepResult {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").expect("ssdp bind");
     socket.set_read_timeout(Some(window)).expect("read timeout");
     let sent = socket
@@ -106,8 +173,11 @@ fn collect_replies(request: &[u8], target: String, window: Duration) -> SweepRes
             .set_read_timeout(Some(remaining))
             .expect("read timeout refresh");
         match socket.recv_from(&mut buf) {
-            Ok((n, _source)) => match parse_ssdp_response(&buf[..n]) {
-                Ok(endpoint) => endpoints.push(endpoint),
+            Ok((n, source)) => match parse_ssdp_response(&buf[..n]) {
+                Ok(endpoint) => endpoints.push(SourcedEndpoint {
+                    endpoint,
+                    responder: source,
+                }),
                 Err(error) => refused.push(error.to_string()),
             },
             Err(error) => {
@@ -123,9 +193,16 @@ fn collect_replies(request: &[u8], target: String, window: Duration) -> SweepRes
             }
         }
     }
+    endpoints.sort_by(|a, b| {
+        a.endpoint
+            .cmp(&b.endpoint)
+            .then_with(|| a.responder.cmp(&b.responder))
+    });
+    endpoints.dedup_by(|a, b| a.endpoint == b.endpoint && a.responder == b.responder);
     SweepResult {
-        endpoints: merge_endpoints(&endpoints, &[]),
+        endpoints,
         refused,
+        scope,
     }
 }
 
@@ -151,9 +228,20 @@ async fn discover_from_sweep(
         Some(text) => parse_targets(text)?,
         None => Vec::new(),
     };
-    let endpoints = merge_endpoints(&sweep.endpoints, &seeds);
-    let mut devices = Vec::with_capacity(endpoints.len());
     let mut notes = sweep.refused;
+    let mut ssdp_endpoints = Vec::with_capacity(sweep.endpoints.len());
+    for sourced in sweep.endpoints {
+        if advertisement_is_in_scope(&sourced.endpoint, sourced.responder, sweep.scope) {
+            ssdp_endpoints.push(sourced.endpoint);
+        } else {
+            notes.push(format!(
+                "ssdp: LOCATION {}:{} is outside the responder scope ({})",
+                sourced.endpoint.host, sourced.endpoint.port, sourced.responder
+            ));
+        }
+    }
+    let endpoints = merge_endpoints(&ssdp_endpoints, &seeds);
+    let mut devices = Vec::with_capacity(endpoints.len());
     for endpoint in endpoints {
         match probe_device_info(transport, &endpoint).await {
             Ok(info) => devices.push((reconcile(&endpoint, &info), identity_key(&info))),
@@ -276,6 +364,83 @@ mod tests {
         )
     }
 
+    fn sourced_endpoint(host: &str, port: u16) -> SourcedEndpoint {
+        let ip = host.parse::<Ipv4Addr>().expect("fixture IPv4 address");
+        SourcedEndpoint {
+            endpoint: Endpoint {
+                host: host.to_owned(),
+                port,
+            },
+            responder: SocketAddr::new(IpAddr::V4(ip), 1900),
+        }
+    }
+
+    #[test]
+    fn ssdp_scope_requires_a_matching_private_ipv4_responder() {
+        let in_scope = DiscoveryScope::LocalLan;
+        assert!(advertisement_is_in_scope(
+            &Endpoint {
+                host: "192.168.1.23".into(),
+                port: ECP_DEFAULT_PORT,
+            },
+            "192.168.1.23:1900".parse().unwrap(),
+            in_scope,
+        ));
+        for (host, responder) in [
+            ("127.0.0.1", "127.0.0.1:1900"),
+            ("169.254.169.254", "169.254.169.254:1900"),
+            ("10.1.2.99", "192.168.1.23:1900"),
+            ("203.0.113.8", "203.0.113.8:1900"),
+            ("roku.attacker.invalid", "192.168.1.23:1900"),
+        ] {
+            let endpoint = Endpoint {
+                host: host.into(),
+                port: ECP_DEFAULT_PORT,
+            };
+            assert!(
+                !advertisement_is_in_scope(
+                    &endpoint,
+                    responder.parse().expect("fixture responder"),
+                    in_scope,
+                ),
+                "unexpectedly trusted LOCATION {host} from {responder}"
+            );
+        }
+        assert!(advertisement_is_in_scope(
+            &Endpoint {
+                host: "127.0.0.1".into(),
+                port: ECP_DEFAULT_PORT,
+            },
+            "127.0.0.1:1900".parse().unwrap(),
+            DiscoveryScope::ExplicitTarget(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        ));
+    }
+
+    #[test]
+    fn local_lan_refuses_loopback_before_transport() {
+        let transport = FixtureTransport {
+            bodies: std::collections::BTreeMap::new(),
+            probed: std::sync::RwLock::new(Vec::new()),
+        };
+        let (devices, notes) = runtime()
+            .block_on(discover_from_sweep(
+                &transport,
+                None,
+                SweepResult {
+                    endpoints: vec![sourced_endpoint("127.0.0.1", ECP_DEFAULT_PORT)],
+                    refused: Vec::new(),
+                    scope: DiscoveryScope::LocalLan,
+                },
+            ))
+            .expect("discovery");
+        assert!(devices.is_empty());
+        assert_eq!(notes.len(), 1);
+        assert!(
+            transport.probed.read().expect("probed lock").is_empty(),
+            "a loopback LOCATION must not reach Transport::send"
+        );
+    }
+
     #[test]
     fn discover_merges_seeds_and_reconciles_probes() {
         let seeds = "[[target]]\nhost = \"192.0.2.10\"\n[[target]]\nhost = \"192.0.2.11\"\n";
@@ -296,6 +461,7 @@ mod tests {
                 SweepResult {
                     endpoints: Vec::new(),
                     refused: Vec::new(),
+                    scope: DiscoveryScope::LocalLan,
                 },
             ))
             .expect("discovery");
@@ -319,7 +485,7 @@ mod tests {
     fn unreachable_endpoint_degrades_to_note_not_error() {
         let transport = FixtureTransport {
             bodies: std::collections::BTreeMap::from([(
-                ("192.0.2.10".into(), ECP_DEFAULT_PORT),
+                ("192.168.1.10".into(), ECP_DEFAULT_PORT),
                 info_xml("Roku Express"),
             )]),
             probed: std::sync::RwLock::new(Vec::new()),
@@ -330,23 +496,21 @@ mod tests {
                 None,
                 SweepResult {
                     endpoints: vec![
-                        Endpoint {
-                            host: "192.0.2.10".into(),
-                            port: ECP_DEFAULT_PORT,
-                        },
-                        Endpoint {
-                            host: "192.0.2.99".into(),
-                            port: ECP_DEFAULT_PORT,
-                        },
+                        sourced_endpoint("192.168.1.10", ECP_DEFAULT_PORT),
+                        sourced_endpoint("192.168.1.99", ECP_DEFAULT_PORT),
                     ],
                     refused: Vec::new(),
+                    scope: DiscoveryScope::LocalLan,
                 },
             ))
             .expect("discovery");
         assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].0.host, "192.0.2.10");
-        assert_eq!(notes.len(), 1, "the dead seed becomes a note: {notes:?}");
-        assert!(notes[0].contains("192.0.2.99"), "{notes:?}");
+        assert_eq!(
+            notes.len(),
+            1,
+            "the dead endpoint becomes a note: {notes:?}"
+        );
+        assert!(notes[0].contains("192.168.1.99"), "{notes:?}");
     }
 
     #[test]
@@ -360,17 +524,14 @@ mod tests {
                 &transport,
                 None,
                 SweepResult {
-                    endpoints: vec![Endpoint {
-                        host: "192.0.2.50".into(),
-                        port: 8061,
-                    }],
+                    endpoints: vec![sourced_endpoint("192.168.1.50", 8061)],
                     refused: Vec::new(),
+                    scope: DiscoveryScope::LocalLan,
                 },
             ))
             .expect("discovery");
         assert!(devices.is_empty());
         assert_eq!(notes.len(), 1);
-        assert!(notes[0].contains("192.0.2.50:8061"), "{notes:?}");
         assert!(notes[0].contains("404"), "{notes:?}");
     }
 
@@ -425,6 +586,74 @@ mod tests {
             sim.received_requests(),
             vec![("GET".into(), "/query/device-info".into())],
             "discovery must retain the identity from exactly one DeviceInfo query"
+        );
+    }
+    #[test]
+    fn out_of_scope_ssdp_locations_never_reach_transport() {
+        let responder = UdpSocket::bind("127.0.0.1:0").expect("SSDP responder");
+        responder
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("SSDP read timeout");
+        let target = format!("127.0.0.1:{}", responder.local_addr().unwrap().port());
+        let responder_thread = thread::spawn(move || {
+            let mut request = [0_u8; 1500];
+            let (length, peer) = responder.recv_from(&mut request).expect("receive M-SEARCH");
+            assert!(
+                String::from_utf8_lossy(&request[..length]).contains("M-SEARCH * HTTP/1.1"),
+                "unexpected SSDP request"
+            );
+            for (index, location) in [
+                "169.254.169.254:8060",
+                "10.1.2.99:8060",
+                "203.0.113.8:8060",
+                "roku.attacker.invalid:8060",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nLOCATION: http://{location}/\r\n\
+                     ST: roku:ecp\r\nUSN: uuid:roku:ecp:escape-{index}\r\n\r\n"
+                );
+                responder
+                    .send_to(reply.as_bytes(), peer)
+                    .expect("send SSDP reply");
+            }
+        });
+        let transport = FixtureTransport {
+            bodies: std::collections::BTreeMap::new(),
+            probed: std::sync::RwLock::new(Vec::new()),
+        };
+
+        let (devices, notes, parsed_count) = runtime()
+            .block_on(async {
+                let sweep = sweep_to(&target, 1).await?;
+                let parsed_count = sweep.endpoints.len();
+                let (devices, notes) = discover_from_sweep(&transport, None, sweep).await?;
+                Ok((devices, notes, parsed_count))
+            })
+            .expect("loopback discovery");
+        responder_thread.join().expect("SSDP responder thread");
+        assert_eq!(parsed_count, 4, "every valid Roku SSDP reply is parsed");
+
+        assert!(
+            devices.is_empty(),
+            "out-of-scope advertisements are refused"
+        );
+        assert_eq!(
+            notes.len(),
+            4,
+            "each escape is refused by policy: {notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .all(|note| note.contains("outside the responder scope")),
+            "the parser accepted these replies before the scope refused them: {notes:?}"
+        );
+        assert!(
+            transport.probed.read().expect("probed lock").is_empty(),
+            "SSDP LOCATION escapes must be rejected before Transport::send"
         );
     }
 }
