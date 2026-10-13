@@ -284,24 +284,14 @@ fn c2_inflight_proxy_held_info_completes_after_term() {
             .unwrap()
             .success()
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut admission_stopped = false;
-    while Instant::now() < deadline {
-        if probe_no_health(port, &host) {
-            admission_stopped = true;
-            break;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        admission_stopped,
-        "health probe still responds after SIGTERM"
-    );
+    let term_at = Instant::now();
+    let stopped_after = wait_for_admission_stopped(&mut daemon, port, &host, term_at, "C2");
     let held_for = held_at.elapsed();
     assert!(
         held_for < Duration::from_millis(2500),
         "proxy hold exceeded half the 5s ECP transport timeout: {held_for:?}"
     );
+    eprintln!("C2 admission_stopped_after={stopped_after:?} held_for={held_for:?}");
     proxy.release.send(()).unwrap();
     let (status, response) = request_thread.join().unwrap();
     eprintln!(
@@ -394,23 +384,8 @@ fn c3_partial_info_body_completes_after_term_and_admission_stop() {
         "failed to deliver SIGTERM"
     );
     let term_at = Instant::now();
-    let admission_deadline = term_at + Duration::from_secs(5);
-    let mut admission_stopped = false;
-    while Instant::now() < admission_deadline {
-        if probe_no_health(port, &host) {
-            admission_stopped = true;
-            break;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        admission_stopped,
-        "health probe still responds 5s after SIGTERM"
-    );
-    eprintln!(
-        "C3 frame=admission_stopped elapsed_since_term={:?}",
-        term_at.elapsed()
-    );
+    let stopped_after = wait_for_admission_stopped(&mut daemon, port, &host, term_at, "C3");
+    eprintln!("C3 frame=admission_stopped elapsed_since_term={stopped_after:?}");
     let send_cd = stream.write_all(b"cd");
     eprintln!(
         "C3 frame=sent_cd result={send_cd:?} elapsed_since_term={:?}",
@@ -438,32 +413,91 @@ fn c3_partial_info_body_completes_after_term_and_admission_stop() {
     );
 }
 
-fn probe_no_health(port: u16, host: &str) -> bool {
-    let mut stream = match TcpStream::connect(("127.0.0.1", port)) {
+#[derive(Debug, Clone, Copy)]
+enum HealthProbe {
+    Refused,
+    Reset,
+    Eof,
+    Timeout,
+    Status(u16),
+}
+
+fn classify_probe_error(error: std::io::Error) -> HealthProbe {
+    match error.kind() {
+        std::io::ErrorKind::ConnectionRefused => HealthProbe::Refused,
+        std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::ConnectionAborted
+        | std::io::ErrorKind::BrokenPipe => HealthProbe::Reset,
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => HealthProbe::Timeout,
+        _ => panic!("unexpected health probe I/O error: {error}"),
+    }
+}
+
+fn probe_health_status(port: u16, host: &str) -> HealthProbe {
+    let stream = match TcpStream::connect(("127.0.0.1", port)) {
         Ok(stream) => stream,
-        Err(error) => return error.kind() == std::io::ErrorKind::ConnectionRefused,
+        Err(error) => return classify_probe_error(error),
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+    if let Err(error) = stream.set_read_timeout(Some(Duration::from_millis(200))) {
+        return classify_probe_error(error);
+    }
+    let mut stream = stream;
     if let Err(error) = write!(
         stream,
         "GET /health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
     ) {
-        return matches!(
-            error.kind(),
-            std::io::ErrorKind::ConnectionReset
-                | std::io::ErrorKind::ConnectionAborted
-                | std::io::ErrorKind::BrokenPipe
-        );
+        return classify_probe_error(error);
     }
-    let mut byte = [0; 1];
-    match stream.read(&mut byte) {
-        Ok(0) => true,
-        Ok(_) => false,
-        Err(error) => matches!(
-            error.kind(),
-            std::io::ErrorKind::ConnectionReset
-                | std::io::ErrorKind::ConnectionAborted
-                | std::io::ErrorKind::BrokenPipe
+    let mut reader = std::io::BufReader::new(stream);
+    let mut status_line = String::new();
+    match reader.read_line(&mut status_line) {
+        Ok(0) => HealthProbe::Eof,
+        Ok(_) => HealthProbe::Status(
+            status_line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|status| status.parse().ok())
+                .unwrap_or(0),
         ),
+        Err(error) => classify_probe_error(error),
+    }
+}
+
+fn wait_for_admission_stopped(
+    daemon: &mut Daemon,
+    port: u16,
+    host: &str,
+    term_at: Instant,
+    label: &str,
+) -> Duration {
+    let stop_deadline = Instant::now() + Duration::from_secs(5);
+    let mut stopped_probes = 0;
+    let mut probes = 0;
+    loop {
+        assert!(
+            daemon.0.try_wait().expect("poll daemon").is_none(),
+            "{label}: daemon exited before the admitted request completed"
+        );
+        let result = probe_health_status(port, host);
+        probes += 1;
+        if probes <= 5 {
+            eprintln!(
+                "{label} health_probe={probes} elapsed_since_term={:?} classification={result:?}",
+                term_at.elapsed()
+            );
+        }
+        if matches!(result, HealthProbe::Status(200)) {
+            stopped_probes = 0;
+        } else {
+            stopped_probes += 1;
+        }
+        if stopped_probes >= 2 {
+            return term_at.elapsed();
+        }
+        assert!(
+            Instant::now() < stop_deadline,
+            "{label}: health probe still returns status 200 after SIGTERM"
+        );
+        thread::sleep(Duration::from_millis(10));
     }
 }
