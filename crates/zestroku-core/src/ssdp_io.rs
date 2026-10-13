@@ -31,8 +31,8 @@ use zestroku_proto::{DeviceInfo, Transport};
 use zestroku_types::{Device, Error, Result};
 
 use crate::discovery::{
-    Endpoint, MAX_DATAGRAM, build_msearch, merge_endpoints, parse_ssdp_response, parse_targets,
-    reconcile,
+    Endpoint, MAX_DATAGRAM, build_msearch, identity_key, merge_endpoints, parse_ssdp_response,
+    parse_targets, reconcile,
 };
 
 /// One sweep's reply budget: every advertised ST answers, so a pair of
@@ -130,16 +130,14 @@ fn collect_replies(request: &[u8], target: String, window: Duration) -> SweepRes
 }
 
 /// Full discovery: SSDP sweep ∪ targets.toml seeds, then reconcile each
-/// endpoint into a `Device` by probing `query/device-info` over `transport`.
-///
-/// One probe failure downgrades that endpoint to an unreachable note; it does
-/// not fail the whole run (a seeds file may legitimately list a powered-off
-/// device — the store records last-known state, m7d).
+/// endpoint into a `(Device, identity)` pair by probing `query/device-info`
+/// over `transport`. The identity is hashed from the already-parsed info —
+/// no second probe. Unknown (empty) identity never merges downstream.
 pub async fn discover(
     transport: &impl Transport,
     seeds_toml: Option<&str>,
     mx_secs: u8,
-) -> Result<(Vec<Device>, Vec<String>)> {
+) -> Result<(Vec<(Device, String)>, Vec<String>)> {
     let sweep = sweep(mx_secs).await?;
     let seeds = match seeds_toml {
         Some(text) => parse_targets(text)?,
@@ -150,7 +148,7 @@ pub async fn discover(
     let mut notes = sweep.refused;
     for endpoint in endpoints {
         match probe_device_info(transport, &endpoint).await {
-            Ok(info) => devices.push(reconcile(&endpoint, &info)),
+            Ok(info) => devices.push((reconcile(&endpoint, &info), identity_key(&info))),
             Err(error) => notes.push(format!("{}:{}: {error}", endpoint.host, endpoint.port)),
         }
     }

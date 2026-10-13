@@ -18,6 +18,7 @@ mod daemon_client;
 mod devices;
 mod install;
 mod installer;
+mod inventory;
 mod mutate;
 mod serve;
 mod store_db;
