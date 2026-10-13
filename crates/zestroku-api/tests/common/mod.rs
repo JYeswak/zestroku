@@ -10,7 +10,6 @@ use zestroku_types::{Error, Result};
 
 pub const HOST: &str = "192.0.2.10";
 pub const PORT: u16 = 18_063;
-pub const LIMITED_BODY: &str = "ECP command not allowed in Limited mode.";
 
 pub struct ResponseTransport {
     responses: Mutex<VecDeque<EcpResponse>>,
@@ -83,10 +82,6 @@ pub fn store_with_device(
     (directory, Arc::new(Mutex::new(store)))
 }
 
-pub fn apps_path(host: &str, port: u16) -> String {
-    format!("/v1/devices/{host}:{port}/apps")
-}
-
 pub fn error_code(response: &fastapi::TestResponse) -> String {
     assert_no_cors(response);
     let body: Value = serde_json::from_str(response.text()).expect("error response JSON");
@@ -97,16 +92,4 @@ pub fn assert_no_cors(response: &fastapi::TestResponse) {
         response.header("access-control-allow-origin").is_none(),
         "HTTP API responses must not grant cross-origin read access"
     );
-}
-
-pub fn resolve_schema<'a>(spec: &'a Value, schema: &'a Value) -> &'a Value {
-    match schema.get("$ref").and_then(Value::as_str) {
-        Some(reference) => {
-            let name = reference
-                .strip_prefix("#/components/schemas/")
-                .expect("local component schema reference");
-            &spec["components"]["schemas"][name]
-        }
-        None => schema,
-    }
 }
