@@ -10,7 +10,6 @@ use std::sync::Arc;
 use fastapi::{OpenApi, TestClient, core::Method as HttpMethod};
 use serde_json::Value;
 use zestroku_api::build_app;
-use zestroku_core::store::Store;
 use zestroku_proto::Method as EcpMethod;
 use zestroku_types::AccessTier;
 
