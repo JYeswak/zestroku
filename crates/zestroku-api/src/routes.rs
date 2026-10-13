@@ -177,6 +177,31 @@ fn same_origin_or_absent(req: &Request) -> bool {
         .strip_prefix("http://")
         .is_some_and(|authority| !authority.is_empty() && authority.eq_ignore_ascii_case(host))
 }
+fn request_host_is_ip_literal(req: &Request) -> bool {
+    let Some(host) = req.headers().get("host") else {
+        // The HTTP/1.1 server rejects a missing Host; direct TestClient calls
+        // have no listener-level Host validation.
+        return true;
+    };
+    let Ok(host) = std::str::from_utf8(host) else {
+        return false;
+    };
+    host.parse::<std::net::SocketAddr>().is_ok()
+        || host.parse::<std::net::IpAddr>().is_ok()
+        || host
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+            .is_some_and(|value| value.parse::<std::net::Ipv6Addr>().is_ok())
+}
+fn browser_safety_error(req: &Request) -> Option<Response> {
+    if !request_host_is_ip_literal(req) {
+        Some(error_response(StatusCode::BAD_REQUEST, "invalid_host"))
+    } else if !same_origin_or_absent(req) {
+        Some(error_response(StatusCode::FORBIDDEN, "UNTRUSTED_ORIGIN"))
+    } else {
+        None
+    }
+}
 
 pub(super) fn build_app<S, T>(store: Arc<Mutex<S>>, transport: Arc<T>) -> App
 where
@@ -199,11 +224,19 @@ where
             "Health status",
             "Returns whether the HTTP service is responding.",
         ),
-        |_ctx: &RequestContext, _req: &mut Request| -> BoxFuture<'_, Response> {
-            Box::pin(async { json_response(StatusCode::OK, &HealthView { status: "ok" }) })
+        |_ctx: &RequestContext, req: &mut Request| -> BoxFuture<'_, Response> {
+            let safety_error = browser_safety_error(req);
+            Box::pin(async move {
+                if let Some(response) = safety_error {
+                    return response;
+                }
+                json_response(StatusCode::OK, &HealthView { status: "ok" })
+            })
         },
     )
-    .response_schema::<HealthView>(200, "The service is healthy.");
+    .response_schema::<HealthView>(200, "The service is healthy.")
+    .response_schema::<ErrorView>(400, "The Host header is invalid.")
+    .response_schema::<ErrorView>(403, "The request Origin is not trusted.");
 
     let devices = with_error_schemas(
         RouteEntry::from_route(
@@ -213,13 +246,23 @@ where
                 "List known devices",
                 "Returns the device rows currently stored in the inventory.",
             ),
-            move |_ctx: &RequestContext, _req: &mut Request| -> BoxFuture<'_, Response> {
+            move |_ctx: &RequestContext, req: &mut Request| -> BoxFuture<'_, Response> {
+                let safety_error = browser_safety_error(req);
                 let state = Arc::clone(&devices_state);
-                Box::pin(async move { list_devices(&state) })
+                Box::pin(async move {
+                    if let Some(response) = safety_error {
+                        return response;
+                    }
+                    list_devices(&state)
+                })
             },
         )
         .response_schema::<Vec<DeviceSummary>>(200, "The stored device list."),
-        &[(500, "The inventory store could not be read.")],
+        &[
+            (400, "The Host header is invalid."),
+            (403, "The request Origin is not trusted."),
+            (500, "The inventory store could not be read."),
+        ],
     );
 
     let info = with_error_schemas(
@@ -231,9 +274,13 @@ where
                 "Reads ECP device information and refreshes the stored access-tier observation.",
             ),
             move |_ctx: &RequestContext, req: &mut Request| -> BoxFuture<'_, Response> {
+                let safety_error = browser_safety_error(req);
                 let target = path_target(req);
                 let state = Arc::clone(&info_state);
                 Box::pin(async move {
+                    if let Some(response) = safety_error {
+                        return response;
+                    }
                     match target {
                         Some(target) => device_info(&state, &target).await,
                         None => error_response(StatusCode::BAD_REQUEST, "missing_host"),
@@ -244,8 +291,11 @@ where
         .path_schema::<String>(&["host"])
         .response_schema::<DeviceInfoView>(200, "The device information."),
         &[
-            (400, "The device path parameter is invalid."),
-            (403, "The device access tier refuses this query."),
+            (400, "The Host header or device path parameter is invalid."),
+            (
+                403,
+                "The request Origin or device access tier refuses this query.",
+            ),
             (404, "The device is not present in the inventory."),
             (500, "The inventory store failed."),
             (502, "The device response was unavailable or malformed."),
@@ -261,9 +311,13 @@ where
                 "Reads the foreground app from a device in the inventory.",
             ),
             move |_ctx: &RequestContext, req: &mut Request| -> BoxFuture<'_, Response> {
+                let safety_error = browser_safety_error(req);
                 let target = path_target(req);
                 let state = Arc::clone(&active_app_state);
                 Box::pin(async move {
+                    if let Some(response) = safety_error {
+                        return response;
+                    }
                     match target {
                         Some(target) => active_app(&state, &target).await,
                         None => error_response(StatusCode::BAD_REQUEST, "missing_host"),
@@ -274,8 +328,11 @@ where
         .path_schema::<String>(&["host"])
         .response_schema::<ActiveAppView>(200, "The active app."),
         &[
-            (400, "The device path parameter is invalid."),
-            (403, "The device access tier refuses this query."),
+            (400, "The Host header or device path parameter is invalid."),
+            (
+                403,
+                "The request Origin or device access tier refuses this query.",
+            ),
             (404, "The device is not present in the inventory."),
             (500, "The inventory store failed."),
             (502, "The device response was unavailable or malformed."),
@@ -291,9 +348,13 @@ where
                 "Reads and parses the device's installed-app list. This query requires Permissive access.",
             ),
             move |_ctx: &RequestContext, req: &mut Request| -> BoxFuture<'_, Response> {
+                let safety_error = browser_safety_error(req);
                 let target = path_target(req);
                 let state = Arc::clone(&apps_state);
                 Box::pin(async move {
+                    if let Some(response) = safety_error {
+                        return response;
+                    }
                     match target {
                         Some(target) => installed_apps(&state, &target).await,
                         None => error_response(StatusCode::BAD_REQUEST, "missing_host"),
@@ -304,8 +365,11 @@ where
         .path_schema::<String>(&["host"])
         .response_schema::<InstalledAppsView>(200, "The device's installed apps."),
         &[
-            (400, "The device path parameter is invalid."),
-            (403, "The device's access tier refuses the query."),
+            (400, "The Host header or device path parameter is invalid."),
+            (
+                403,
+                "The request Origin or device access tier refuses this query.",
+            ),
             (404, "The device or its apps query endpoint is absent."),
             (500, "The inventory store failed."),
             (502, "The device response was unavailable or malformed."),
@@ -320,12 +384,12 @@ where
                 "Authorizes one keypress against the inventory-selected device.",
             ),
             move |ctx: &RequestContext, req: &mut Request| -> BoxFuture<'_, Response> {
-                let origin_ok = same_origin_or_absent(req);
+                let safety_error = browser_safety_error(req);
                 let target = path_target(req);
                 let state = Arc::clone(&key_state);
                 Box::pin(async move {
-                    if !origin_ok {
-                        return error_response(StatusCode::FORBIDDEN, "UNTRUSTED_ORIGIN");
+                    if let Some(response) = safety_error {
+                        return response;
                     }
                     let Some(target) = target else {
                         return error_response(StatusCode::BAD_REQUEST, "missing_host");
@@ -345,10 +409,10 @@ where
         .request_schema::<KeyMutationRequest>(true)
         .response_schema::<MutationResponse>(200, "The approved keypress result."),
         &[
-            (400, "The key or request body is invalid."),
+            (400, "The Host header, key, or request body is invalid."),
             (
                 403,
-                "The request origin, device tier, or confirmation gate refused the mutation.",
+                "The request Origin, device tier, or confirmation gate refused the mutation.",
             ),
             (
                 404,
@@ -370,12 +434,12 @@ where
                 "Authorizes one app launch using the inventory-selected device and app id.",
             ),
             move |ctx: &RequestContext, req: &mut Request| -> BoxFuture<'_, Response> {
-                let origin_ok = same_origin_or_absent(req);
+                let safety_error = browser_safety_error(req);
                 let target = path_target(req);
                 let state = Arc::clone(&launch_state);
                 Box::pin(async move {
-                    if !origin_ok {
-                        return error_response(StatusCode::FORBIDDEN, "UNTRUSTED_ORIGIN");
+                    if let Some(response) = safety_error {
+                        return response;
                     }
                     let Some(target) = target else {
                         return error_response(StatusCode::BAD_REQUEST, "missing_host");
@@ -399,10 +463,10 @@ where
         .request_schema::<LaunchMutationRequest>(true)
         .response_schema::<MutationResponse>(200, "The approved app-launch result."),
         &[
-            (400, "The request body is invalid."),
+            (400, "The Host header or request body is invalid."),
             (
                 403,
-                "The request origin, device tier, or confirmation gate refused the mutation.",
+                "The request Origin, device tier, or confirmation gate refused the mutation.",
             ),
             (
                 404,

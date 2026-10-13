@@ -197,8 +197,17 @@ fn real_serve_reads_and_documents_simulator_installed_apps() {
     assert_eq!(spec["openapi"], "3.1.0");
     let paths = spec["paths"].as_object().expect("documented paths");
     assert!(paths.contains_key("/v1/devices/{host}/apps"));
+    let mut post_paths: Vec<_> = paths
+        .iter()
+        .filter_map(|(path, item)| item.get("post").map(|_| path.as_str()))
+        .collect();
+    post_paths.sort_unstable();
+    assert_eq!(
+        post_paths,
+        ["/v1/devices/{host}/key", "/v1/devices/{host}/launch",],
+        "only the approved key and launch mutations are exposed"
+    );
     for item in paths.values() {
-        assert!(item.get("post").is_none(), "no unimplemented POST routes");
         assert!(item.get("put").is_none());
         assert!(item.get("patch").is_none());
         assert!(item.get("delete").is_none());
