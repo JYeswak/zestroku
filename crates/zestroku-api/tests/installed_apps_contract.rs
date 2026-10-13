@@ -1,121 +1,45 @@
 #![forbid(unsafe_code)]
 
-use std::collections::{BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex};
+#[path = "common/mod.rs"]
+mod common;
+use common::*;
 
-use fastapi::core::Method as HttpMethod;
-use fastapi::{OpenApi, TestClient};
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
+use fastapi::{OpenApi, TestClient, core::Method as HttpMethod};
 use serde_json::Value;
 use zestroku_api::build_app;
-use zestroku_core::store::{DeviceRow, SqliteStore, Store};
-use zestroku_proto::{Command, EcpResponse, Method as EcpMethod, Transport};
-use zestroku_types::{AccessTier, Error, Result};
-
-const HOST: &str = "192.0.2.10";
-const PORT: u16 = 18_063;
-const LIMITED_BODY: &str = "ECP command not allowed in Limited mode.";
-
-struct ResponseTransport {
-    responses: Mutex<VecDeque<EcpResponse>>,
-    calls: Mutex<Vec<(String, u16, Command)>>,
-}
-
-impl ResponseTransport {
-    fn new(responses: impl IntoIterator<Item = EcpResponse>) -> Self {
-        Self {
-            responses: Mutex::new(responses.into_iter().collect()),
-            calls: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn calls(&self) -> Vec<(String, u16, Command)> {
-        self.calls.lock().expect("calls lock").clone()
-    }
-}
-
-impl Transport for ResponseTransport {
-    async fn send(&self, host: &str, port: u16, command: &Command) -> Result<EcpResponse> {
-        self.calls
-            .lock()
-            .expect("calls lock")
-            .push((host.to_owned(), port, command.clone()));
-        self.responses
-            .lock()
-            .expect("responses lock")
-            .pop_front()
-            .ok_or_else(|| Error::Unreachable("fixture response exhausted".into()))
-    }
-}
-
-fn response(status: u16, body: &str) -> EcpResponse {
-    EcpResponse {
-        status,
-        headers: Vec::new(),
-        body: body.to_owned(),
-    }
-}
-
-fn store_with_device(
-    host: &str,
-    port: u16,
-    access_tier: &str,
-) -> (tempfile::TempDir, Arc<Mutex<SqliteStore>>) {
-    let directory = tempfile::tempdir().expect("create store directory");
-    let store = SqliteStore::open(&directory.path().join("api.db")).expect("open store");
-    store
-        .upsert_device(&DeviceRow {
-            id: zestroku_core::tier::device_id(host, port),
-            name: "Fixture Roku".into(),
-            ip: host.into(),
-            model: "Roku Fixture".into(),
-            model_num: "FIXTURE1".into(),
-            firmware: "15.2.4".into(),
-            wifi_driver: "fixture".into(),
-            access_tier: access_tier.into(),
-            last_seen: 1_700_000_000,
-        })
-        .expect("seed device");
-    (directory, Arc::new(Mutex::new(store)))
-}
-
-fn apps_path(host: &str, port: u16) -> String {
-    format!("/v1/devices/{host}:{port}/apps")
-}
-
-fn error_code(response: &fastapi::TestResponse) -> String {
-    let body: Value = serde_json::from_str(response.text()).expect("error response JSON");
-    body["error"].as_str().expect("error code").to_owned()
-}
-
-fn resolve_schema<'a>(spec: &'a Value, schema: &'a Value) -> &'a Value {
-    match schema.get("$ref").and_then(Value::as_str) {
-        Some(reference) => {
-            let name = reference
-                .strip_prefix("#/components/schemas/")
-                .expect("local component schema reference");
-            &spec["components"]["schemas"][name]
-        }
-        None => schema,
-    }
-}
+use zestroku_core::store::Store;
+use zestroku_proto::Method as EcpMethod;
+use zestroku_types::AccessTier;
 
 #[test]
 fn openapi_matches_registered_read_routes_and_apps_response_schema() {
     let (_directory, store) = store_with_device(HOST, PORT, "permissive");
     let transport = Arc::new(ResponseTransport::new([]));
     let app = build_app(store, transport);
-    let registered: BTreeSet<String> = app
+    let registered: Vec<(HttpMethod, String)> = app
         .routes()
         .filter(|(_, path)| *path != "/openapi.json")
-        .map(|(method, path)| {
-            assert_eq!(
-                method,
-                HttpMethod::Get,
-                "only GET routes belong in this read API"
-            );
-            path.to_owned()
-        })
+        .map(|(method, path)| (method, path.to_owned()))
         .collect();
+    let expected_routes = [
+        (HttpMethod::Get, "/health"),
+        (HttpMethod::Get, "/v1/devices"),
+        (HttpMethod::Get, "/v1/devices/{host}/active-app"),
+        (HttpMethod::Get, "/v1/devices/{host}/apps"),
+        (HttpMethod::Get, "/v1/devices/{host}/info"),
+        (HttpMethod::Post, "/v1/devices/{host}/key"),
+        (HttpMethod::Post, "/v1/devices/{host}/launch"),
+    ];
+    assert_eq!(registered.len(), expected_routes.len());
+    for (method, path) in expected_routes {
+        assert!(
+            registered.contains(&(method, path.to_owned())),
+            "missing {method:?} {path}"
+        );
+    }
     let client = TestClient::new(app);
 
     let response = client.get("/openapi.json").send();
@@ -124,7 +48,9 @@ fn openapi_matches_registered_read_routes_and_apps_response_schema() {
     assert_eq!(spec.openapi, "3.1.0");
     assert_eq!(spec.info.version, "v1");
     let documented: BTreeSet<String> = spec.paths.keys().cloned().collect();
-    assert_eq!(documented, registered);
+    let registered_paths: BTreeSet<String> =
+        registered.iter().map(|(_, path)| path.clone()).collect();
+    assert_eq!(documented, registered_paths);
     assert_eq!(
         documented,
         [
@@ -133,6 +59,8 @@ fn openapi_matches_registered_read_routes_and_apps_response_schema() {
             "/v1/devices/{host}/active-app",
             "/v1/devices/{host}/apps",
             "/v1/devices/{host}/info",
+            "/v1/devices/{host}/key",
+            "/v1/devices/{host}/launch",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -141,10 +69,6 @@ fn openapi_matches_registered_read_routes_and_apps_response_schema() {
 
     let spec: Value = serde_json::to_value(spec).expect("serialize OpenAPI document");
     for path in spec["paths"].as_object().expect("OpenAPI paths").values() {
-        assert!(
-            path.get("post").is_none(),
-            "no mutation routes are implemented"
-        );
         assert!(path.get("put").is_none());
         assert!(path.get("patch").is_none());
         assert!(path.get("delete").is_none());

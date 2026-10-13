@@ -1,16 +1,27 @@
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use fastapi::OpenApiConfig;
 use fastapi::core::app::RouteEntry;
-use fastapi::core::{App, BoxFuture, Method, Request, RequestContext, Response, StatusCode};
+use fastapi::core::{
+    App, BoxFuture, FromRequest, Json, JsonExtractError, Method, Request, RequestContext, Response,
+    StatusCode,
+};
 use fastapi::fastapi_openapi;
 use fastapi::router::Route;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use zestroku_core::mutation::{
+    MutationContext, MutationError, authorize_mutation, finish_mutation,
+};
 use zestroku_core::store::Store;
-use zestroku_proto::{EcpGate, Transport, parse_apps, parse_ecp_response, query_apps};
-use zestroku_types::Error;
+use zestroku_core::tier::{marked_before_state, recorded_tier_for};
+use zestroku_proto::{
+    EcpGate, Transport, keypress_raw, launch, parse_active_app, parse_apps, parse_ecp_response,
+    query, query_apps,
+};
+use zestroku_types::{AccessTier, Error};
 
 use super::{
     ActiveAppView, ApiState, DeviceInfoView, DeviceSummary, ErrorView, HealthView, active_app,
@@ -22,6 +33,88 @@ const DEVICES_PATH: &str = "/v1/devices";
 const INFO_PATH: &str = "/v1/devices/{host}/info";
 const ACTIVE_APP_PATH: &str = "/v1/devices/{host}/active-app";
 const APPS_PATH: &str = "/v1/devices/{host}/apps";
+const KEY_PATH: &str = "/v1/devices/{host}/key";
+const LAUNCH_PATH: &str = "/v1/devices/{host}/launch";
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyMutationRequest {
+    key: String,
+    confirm: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LaunchMutationRequest {
+    app_id: u32,
+    confirm: Option<String>,
+}
+fn closed_request_schema(
+    title: &str,
+    properties: HashMap<String, fastapi_openapi::Schema>,
+    required: Vec<String>,
+) -> fastapi_openapi::Schema {
+    let mut schema = fastapi_openapi::Schema::object(properties, required);
+    if let fastapi_openapi::Schema::Object(object) = &mut schema {
+        object.title = Some(title.to_owned());
+        object.additional_properties = Some(Box::new(fastapi_openapi::Schema::Boolean(false)));
+    }
+    schema
+}
+
+impl fastapi_openapi::JsonSchema for KeyMutationRequest {
+    fn schema() -> fastapi_openapi::Schema {
+        closed_request_schema(
+            "KeyMutationRequest",
+            HashMap::from([
+                (
+                    "key".to_owned(),
+                    <String as fastapi_openapi::JsonSchema>::schema(),
+                ),
+                (
+                    "confirm".to_owned(),
+                    <Option<String> as fastapi_openapi::JsonSchema>::schema(),
+                ),
+            ]),
+            vec!["key".to_owned()],
+        )
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("KeyMutationRequest")
+    }
+}
+
+impl fastapi_openapi::JsonSchema for LaunchMutationRequest {
+    fn schema() -> fastapi_openapi::Schema {
+        closed_request_schema(
+            "LaunchMutationRequest",
+            HashMap::from([
+                (
+                    "app_id".to_owned(),
+                    <u32 as fastapi_openapi::JsonSchema>::schema(),
+                ),
+                (
+                    "confirm".to_owned(),
+                    <Option<String> as fastapi_openapi::JsonSchema>::schema(),
+                ),
+            ]),
+            vec!["app_id".to_owned()],
+        )
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("LaunchMutationRequest")
+    }
+}
+
+#[derive(Debug, Serialize, fastapi::JsonSchema)]
+struct MutationResponse {
+    action_id: i64,
+    target: String,
+    surface: &'static str,
+    outcome: &'static str,
+}
 
 #[derive(Debug, Serialize, fastapi::JsonSchema)]
 struct InstalledAppView {
@@ -51,12 +144,38 @@ fn documented_route(
         .description(description)
         .tag("read")
 }
+fn mutation_route(
+    path: &'static str,
+    operation_id: &'static str,
+    summary: &'static str,
+    description: &'static str,
+) -> Route {
+    Route::new(Method::Post, path)
+        .operation_id(operation_id)
+        .summary(summary)
+        .description(description)
+        .tag("mutation")
+}
 
 fn with_error_schemas(mut route: RouteEntry, errors: &[(u16, &'static str)]) -> RouteEntry {
     for &(status, description) in errors {
         route = route.response_schema::<ErrorView>(status, description);
     }
     route
+}
+fn same_origin_or_absent(req: &Request) -> bool {
+    let Some(origin) = req.headers().get("origin") else {
+        return true;
+    };
+    let Some(host) = req.headers().get("host") else {
+        return false;
+    };
+    let (Ok(origin), Ok(host)) = (std::str::from_utf8(origin), std::str::from_utf8(host)) else {
+        return false;
+    };
+    origin
+        .strip_prefix("http://")
+        .is_some_and(|authority| !authority.is_empty() && authority.eq_ignore_ascii_case(host))
 }
 
 pub(super) fn build_app<S, T>(store: Arc<Mutex<S>>, transport: Arc<T>) -> App
@@ -70,6 +189,8 @@ where
     let info_state = Arc::clone(&state);
     let active_app_state = Arc::clone(&state);
     let apps_state = Arc::clone(&state);
+    let key_state = Arc::clone(&state);
+    let launch_state = Arc::clone(&state);
 
     let health = RouteEntry::from_route(
         documented_route(
@@ -190,6 +311,109 @@ where
             (502, "The device response was unavailable or malformed."),
         ],
     );
+    let key = with_error_schemas(
+        RouteEntry::from_route(
+            mutation_route(
+                KEY_PATH,
+                "keypress",
+                "Press a key",
+                "Authorizes one keypress against the inventory-selected device.",
+            ),
+            move |ctx: &RequestContext, req: &mut Request| -> BoxFuture<'_, Response> {
+                let origin_ok = same_origin_or_absent(req);
+                let target = path_target(req);
+                let state = Arc::clone(&key_state);
+                Box::pin(async move {
+                    if !origin_ok {
+                        return error_response(StatusCode::FORBIDDEN, "UNTRUSTED_ORIGIN");
+                    }
+                    let Some(target) = target else {
+                        return error_response(StatusCode::BAD_REQUEST, "missing_host");
+                    };
+                    let body = match Json::<KeyMutationRequest>::from_request(ctx, req).await {
+                        Ok(Json(body)) => body,
+                        Err(error) => return json_extract_error(error),
+                    };
+                    let Some(command) = keypress_command(&body.key) else {
+                        return error_response(StatusCode::BAD_REQUEST, "invalid_key");
+                    };
+                    execute_mutation(&state, &target, "key", command, body.confirm.as_deref()).await
+                })
+            },
+        )
+        .path_schema::<String>(&["host"])
+        .request_schema::<KeyMutationRequest>(true)
+        .response_schema::<MutationResponse>(200, "The approved keypress result."),
+        &[
+            (400, "The key or request body is invalid."),
+            (
+                403,
+                "The request origin, device tier, or confirmation gate refused the mutation.",
+            ),
+            (
+                404,
+                "The inventory device is absent or the requested key is unknown.",
+            ),
+            (413, "The JSON request body exceeds the framework limit."),
+            (415, "The request body is not JSON."),
+            (500, "The inventory or action log failed."),
+            (502, "The device transport or response failed."),
+        ],
+    );
+
+    let launch_route = with_error_schemas(
+        RouteEntry::from_route(
+            mutation_route(
+                LAUNCH_PATH,
+                "launch_app",
+                "Launch an app",
+                "Authorizes one app launch using the inventory-selected device and app id.",
+            ),
+            move |ctx: &RequestContext, req: &mut Request| -> BoxFuture<'_, Response> {
+                let origin_ok = same_origin_or_absent(req);
+                let target = path_target(req);
+                let state = Arc::clone(&launch_state);
+                Box::pin(async move {
+                    if !origin_ok {
+                        return error_response(StatusCode::FORBIDDEN, "UNTRUSTED_ORIGIN");
+                    }
+                    let Some(target) = target else {
+                        return error_response(StatusCode::BAD_REQUEST, "missing_host");
+                    };
+                    let body = match Json::<LaunchMutationRequest>::from_request(ctx, req).await {
+                        Ok(Json(body)) => body,
+                        Err(error) => return json_extract_error(error),
+                    };
+                    execute_mutation(
+                        &state,
+                        &target,
+                        "launch",
+                        launch(body.app_id),
+                        body.confirm.as_deref(),
+                    )
+                    .await
+                })
+            },
+        )
+        .path_schema::<String>(&["host"])
+        .request_schema::<LaunchMutationRequest>(true)
+        .response_schema::<MutationResponse>(200, "The approved app-launch result."),
+        &[
+            (400, "The request body is invalid."),
+            (
+                403,
+                "The request origin, device tier, or confirmation gate refused the mutation.",
+            ),
+            (
+                404,
+                "The inventory device is absent or the requested app is not installed.",
+            ),
+            (413, "The JSON request body exceeds the framework limit."),
+            (415, "The request body is not JSON."),
+            (500, "The inventory or action log failed."),
+            (502, "The device transport or response failed."),
+        ],
+    );
 
     App::builder()
         .route_entry(health)
@@ -197,11 +421,13 @@ where
         .route_entry(info)
         .route_entry(active_app_route)
         .route_entry(apps)
+        .route_entry(key)
+        .route_entry(launch_route)
         .openapi(
             OpenApiConfig::new()
                 .title("zestroku HTTP API")
                 .version("v1")
-                .description("Read-only HTTP routes for the local Roku device inventory."),
+                .description("HTTP control and read routes for the local Roku inventory."),
         )
         .build()
 }
@@ -261,6 +487,170 @@ async fn installed_apps<S: Store, T: Transport>(
                     version: app.version,
                 })
                 .collect(),
+        },
+    )
+}
+fn keypress_command(key: &str) -> Option<zestroku_proto::Command> {
+    let is_segment_byte = |byte: u8| {
+        byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'-' | b'.'
+                    | b'_'
+                    | b'~'
+                    | b'!'
+                    | b'$'
+                    | b'&'
+                    | 0x27
+                    | b'('
+                    | b')'
+                    | b'*'
+                    | b'+'
+                    | b','
+                    | b';'
+                    | b'='
+                    | b':'
+                    | b'@'
+            )
+    };
+    if key.is_empty() || !key.bytes().all(is_segment_byte) {
+        return None;
+    }
+    Some(keypress_raw(key))
+}
+
+fn json_extract_error(error: JsonExtractError) -> Response {
+    match error {
+        JsonExtractError::UnsupportedMediaType { .. } => {
+            error_response(StatusCode::from_u16(415), "unsupported_media_type")
+        }
+        JsonExtractError::PayloadTooLarge { .. } => {
+            error_response(StatusCode::from_u16(413), "request_too_large")
+        }
+        JsonExtractError::ReadError { .. } | JsonExtractError::DeserializeError { .. } => {
+            error_response(StatusCode::BAD_REQUEST, "invalid_json")
+        }
+    }
+}
+
+async fn execute_mutation<S: Store, T: Transport>(
+    state: &ApiState<S, T>,
+    raw_target: &str,
+    surface: &'static str,
+    command: zestroku_proto::Command,
+    confirmation: Option<&str>,
+) -> Response {
+    let target = match super::parse_device_target(raw_target) {
+        Some(target) => target,
+        None => return error_response(StatusCode::BAD_REQUEST, "invalid_device_target"),
+    };
+    let row = match super::find_device(state, &target) {
+        Ok(Some(row)) => row,
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "device_not_found"),
+        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
+    };
+    let (tier_source, recorded_tier) = {
+        let store = match state.store.lock() {
+            Ok(store) => store,
+            Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
+        };
+        match recorded_tier_for(&*store, &row.ip, target.port) {
+            Ok(Some(tier)) => ("recorded", tier.access_tier()),
+            Ok(None) => ("unknown-unprobed", AccessTier::Open),
+            Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
+        }
+    };
+    let mut device = super::device_for_gate(&row, &target);
+    device.access_tier = recorded_tier;
+
+    // Match the CLI contract: snapshot before the core's tier-then-token gate.
+    // A failed read is represented honestly and never treated as a real state.
+    let before = match super::send_checked(state, &device, &query("active-app")).await {
+        Ok(response) => parse_active_app(&response.body)
+            .map(|app| app.name)
+            .unwrap_or_else(|_| "unparseable".to_owned()),
+        Err(_) => "unreachable".to_owned(),
+    };
+    let before_state = marked_before_state(tier_source, &before);
+    let intent = format!("{surface} {} {}", target.id, command.path);
+    let action_id = {
+        let store = match state.store.lock() {
+            Ok(store) => store,
+            Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
+        };
+        match authorize_mutation(
+            &*store,
+            &device,
+            &command,
+            MutationContext {
+                client: "http",
+                surface,
+                intent: &intent,
+                before_state: &before_state,
+            },
+            confirmation,
+        ) {
+            Ok(action_id) => action_id,
+            Err(MutationError::ConfirmationRequired { .. }) => {
+                return error_response(StatusCode::FORBIDDEN, "confirmation_required");
+            }
+            Err(MutationError::TierRefused(_)) => {
+                return error_response(StatusCode::FORBIDDEN, "tier_refused");
+            }
+            Err(_) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "mutation_gate_error");
+            }
+        }
+    };
+
+    let (outcome, failure) = match state
+        .transport
+        .send(&device.host, device.port, &command)
+        .await
+    {
+        Err(_) => (
+            "dispatch_failed",
+            Some((StatusCode::from_u16(502), "transport_error")),
+        ),
+        Ok(response) => match parse_ecp_response(&response).gate {
+            EcpGate::Open => ("completed", None),
+            EcpGate::Limited403 => (
+                "device_tier_refused",
+                Some((StatusCode::FORBIDDEN, "tier_refused")),
+            ),
+            EcpGate::Absent404 => {
+                let code = if surface == "launch" {
+                    "app_not_installed"
+                } else {
+                    "invalid_key"
+                };
+                (code, Some((StatusCode::NOT_FOUND, code)))
+            }
+            EcpGate::Unknown403 | EcpGate::Other => (
+                "device_response_unclassified",
+                Some((StatusCode::from_u16(502), "ecp_response")),
+            ),
+        },
+    };
+    {
+        let store = match state.store.lock() {
+            Ok(store) => store,
+            Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "action_log_error"),
+        };
+        if finish_mutation(&*store, action_id, outcome).is_err() {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "action_log_error");
+        }
+    }
+    if let Some((status, code)) = failure {
+        return error_response(status, code);
+    }
+    json_response(
+        StatusCode::OK,
+        &MutationResponse {
+            action_id,
+            target: target.id,
+            surface,
+            outcome,
         },
     )
 }
