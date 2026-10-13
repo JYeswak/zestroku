@@ -293,3 +293,55 @@ fn cli_output_never_emits_fixture_identifiers() {
     }
     drop(sim);
 }
+#[test]
+fn real_devices_json_reports_an_unreachable_seed() {
+    let live = SimDevice::start_with_serial(
+        SimConfig {
+            kind: DeviceKind::Express,
+            tier: SimTier::Permissive,
+        },
+        "FIXTURE-MACHINE-READABLE",
+    );
+    let dead_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve closed port");
+    let dead_port = dead_listener
+        .local_addr()
+        .expect("closed port address")
+        .port();
+    drop(dead_listener);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let targets = write_targets(dir.path(), &[live.port(), dead_port]);
+    let output = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &db)
+        .args(["devices", "--no-ssdp", "--targets"])
+        .arg(&targets)
+        .arg("--json")
+        .output()
+        .expect("run actual devices JSON command");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("valid CLI JSON");
+    assert_eq!(document["devices"].as_array().map(Vec::len), Some(1));
+    let notes = document["notes"].as_array().expect("notes array");
+    let dead_target = format!("127.0.0.1:{dead_port}");
+    let note = notes
+        .iter()
+        .find(|note| note["target"] == dead_target)
+        .expect("dead seed note");
+    assert!(!note["reason"].as_str().unwrap_or_default().is_empty());
+    assert_eq!(
+        live.received_requests(),
+        vec![("GET".into(), "/query/device-info".into())]
+    );
+    let stdout = String::from_utf8(output.stdout).expect("JSON output UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr UTF-8");
+    for surface in [&stdout, &stderr] {
+        assert!(!surface.contains("FIXTURE-MACHINE-READABLE"));
+    }
+}

@@ -886,7 +886,6 @@ dependencies = [
 [[package]]
 name = "fastapi-http"
 version = "0.4.4"
-source = "git+https://github.com/Dicklesworthstone/fastapi_rust?rev=cb9d72926434e2ec3e08cced5eae7f7c13168c7d#cb9d72926434e2ec3e08cced5eae7f7c13168c7d"
 dependencies = [
  "asupersync",
  "fastapi-core",

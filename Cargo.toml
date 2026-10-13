@@ -10,6 +10,8 @@ members = [
     "crates/zestroku-sim",
 ]
 
+exclude = ["vendor/fastapi-http"]
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
@@ -59,4 +61,8 @@ fastmcp-server = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", re
 # expansion emits `#[allow(unsafe_code)]` (a Linux `link_section` route
 # registry), which cannot coexist with the workspace `forbid(unsafe_code)`.
 fastapi = { git = "https://github.com/Dicklesworthstone/fastapi_rust", rev = "cb9d72926434e2ec3e08cced5eae7f7c13168c7d", package = "fastapi-rust", default-features = false }
+
+# Keep the pinned FastAPI stack while patching its current-thread drain wait.
+[patch."https://github.com/Dicklesworthstone/fastapi_rust"]
+fastapi-http = { path = "vendor/fastapi-http" }
 

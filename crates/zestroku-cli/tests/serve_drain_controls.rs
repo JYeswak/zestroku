@@ -119,10 +119,10 @@ fn read_req(stream: &mut TcpStream) -> std::io::Result<(Vec<u8>, String)> {
             return Ok((request, String::new()));
         }
         request.extend_from_slice(line.as_bytes());
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("content-length") {
-                content_length = value.trim().parse().unwrap_or(0);
-            }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            content_length = value.trim().parse().unwrap_or(0);
         }
         if line == "\r\n" {
             break;
@@ -183,13 +183,13 @@ impl Proxy {
                         Ok(0) | Err(_) => break,
                         Ok(_) => {}
                     }
-                    if let Some(colon) = line.iter().position(|b| *b == b':') {
-                        if line[..colon].eq_ignore_ascii_case(b"content-length") {
-                            length = std::str::from_utf8(&line[colon + 1..])
-                                .ok()
-                                .and_then(|v| v.trim().parse().ok())
-                                .unwrap_or(0);
-                        }
+                    if let Some(colon) = line.iter().position(|b| *b == b':')
+                        && line[..colon].eq_ignore_ascii_case(b"content-length")
+                    {
+                        length = std::str::from_utf8(&line[colon + 1..])
+                            .ok()
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
                     }
                     let done = line == b"\r\n";
                     head.extend_from_slice(&line);
@@ -294,20 +294,10 @@ fn c2_inflight_proxy_held_info_completes_after_term() {
     eprintln!("C2 admission_stopped_after={stopped_after:?} held_for={held_for:?}");
     proxy.release.send(()).unwrap();
     let (status, response) = request_thread.join().unwrap();
-    eprintln!(
-        "C2 held_for={held_for:?} status={status} response={response:?} sim={:?}",
-        sim.received_requests()
-    );
-    assert_eq!(status, 200, "{response}");
-    assert!(response.contains("SIMX1"), "{response}");
-    assert!(
-        response.contains("\"tv_active_channel\":false"),
-        "held ECP result did not reach the HTTP response: {response}"
-    );
     let exit_deadline = Instant::now() + Duration::from_secs(40);
     let exit = loop {
-        if let Some(s) = daemon.0.try_wait().unwrap() {
-            break s;
+        if let Some(status) = daemon.0.try_wait().unwrap() {
+            break status;
         }
         assert!(
             Instant::now() < exit_deadline,
@@ -315,10 +305,21 @@ fn c2_inflight_proxy_held_info_completes_after_term() {
         );
         thread::sleep(Duration::from_millis(20));
     };
-    assert_eq!(exit.code(), Some(0), "{exit}");
+    let listener_closed = TcpStream::connect(("127.0.0.1", port)).is_err();
+    let tv_active_channel_ok = response.contains("\"tv_active_channel\":false");
+    eprintln!(
+        "C2 held_for={held_for:?} status={status} response={response:?} sim={:?} daemon_exit={:?} listener_closed={listener_closed} tv_active_channel_ok={tv_active_channel_ok}",
+        sim.received_requests(),
+        exit.code()
+    );
     assert!(
-        TcpStream::connect(("127.0.0.1", port)).is_err(),
-        "listener still open"
+        status == 200
+            && response.contains("SIMX1")
+            && tv_active_channel_ok
+            && exit.code() == Some(0)
+            && listener_closed,
+        "C2 status={status}, response={response:?}, daemon_exit={:?}, listener_closed={listener_closed}, tv_active_channel_ok={tv_active_channel_ok}",
+        exit.code()
     );
 }
 
@@ -391,11 +392,61 @@ fn c3_partial_info_body_completes_after_term_and_admission_stop() {
         "C3 frame=sent_cd result={send_cd:?} elapsed_since_term={:?}",
         term_at.elapsed()
     );
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let read_deadline = Instant::now() + Duration::from_secs(40);
     let mut response = Vec::new();
-    let read = stream.read_to_end(&mut response);
+    let mut buffer = [0; 8192];
+    let mut observed_requests = Vec::new();
+    let read = loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break Ok(response.len()),
+            Ok(n) => response.extend_from_slice(&buffer[..n]),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                let requests = sim.received_requests();
+                if requests != observed_requests {
+                    eprintln!(
+                        "C3 sim_requests elapsed_since_term={:?} requests={requests:?}",
+                        term_at.elapsed()
+                    );
+                    observed_requests = requests;
+                }
+                if Instant::now() >= read_deadline {
+                    break Err(error);
+                }
+            }
+            Err(error) => break Err(error),
+        }
+    };
     let elapsed_to_eof = started.elapsed();
     let elapsed_since_term = term_at.elapsed();
     let text = String::from_utf8_lossy(&response);
+    let header_end = response.windows(4).position(|window| window == b"\r\n\r\n");
+    let response_head = header_end.map_or_else(String::new, |end| {
+        String::from_utf8_lossy(&response[..end]).into_owned()
+    });
+    let response_body_bytes = header_end.map_or(0, |end| response.len() - end - 4);
+    let response_content_length = response_head
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find_map(|(name, value)| {
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        });
+    let response_connection = response_head
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find_map(|(name, value)| {
+            name.eq_ignore_ascii_case("connection")
+                .then_some(value.trim())
+        });
     eprintln!(
         "C3 read={read:?} elapsed_to_eof={elapsed_to_eof:?} elapsed_since_term={elapsed_since_term:?} status={:?} response={text:?} sim={:?}",
         status_code(&response),
@@ -410,6 +461,29 @@ fn c3_partial_info_body_completes_after_term_and_admission_stop() {
         "C3 daemon_exit={:?} elapsed_since_term={:?}",
         exit.map(|status| status.code()),
         term_at.elapsed()
+    );
+    let listener_closed = TcpStream::connect(("127.0.0.1", port)).is_err();
+    assert!(send_cd.is_ok(), "C3 failed to send the request remainder");
+    assert_eq!(status_code(&response), Some(200), "{text}");
+    assert!(text.contains("SIMX1"), "{text}");
+    assert_eq!(exit.and_then(|status| status.code()), Some(0));
+    assert!(read.is_ok(), "C3 response did not reach EOF: {read:?}");
+    assert!(
+        header_end.is_some(),
+        "C3 response lacks a header terminator: {response_head:?}"
+    );
+    assert_eq!(
+        response_content_length,
+        Some(response_body_bytes),
+        "C3 response body framing mismatch: {response_head:?}"
+    );
+    assert!(
+        response_connection.is_some_and(|value| value.eq_ignore_ascii_case("close")),
+        "C3 response did not request connection close: {response_head:?}"
+    );
+    assert!(
+        listener_closed,
+        "C3 listener remained open after daemon exit"
     );
 }
 
@@ -496,7 +570,7 @@ fn wait_for_admission_stopped(
         }
         assert!(
             Instant::now() < stop_deadline,
-            "{label}: health probe still returns status 200 after SIGTERM"
+            "{label}: admission did not stop within 5s; last probe={result:?}"
         );
         thread::sleep(Duration::from_millis(10));
     }

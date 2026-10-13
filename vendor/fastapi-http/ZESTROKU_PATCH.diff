@@ -1,0 +1,17 @@
+--- a/crates/fastapi-http/src/server.rs
++++ b/crates/fastapi-http/src/server.rs
+@@ -2505,8 +2505,10 @@
+                 return;
+             }
+-
++
+-            // Yield to allow tasks to make progress
+-            asupersync::runtime::yield_now().await;
++            // A self-waking yield keeps a current-thread block_on root runnable,
++            // so its driver may skip reactor turns while this drain loop spins.
++            // Park briefly to let admitted socket reads make progress.
++            asupersync::time::sleep(cx.now(), Duration::from_millis(10)).await;
+         }
+-
++
+         self.cleanup_completed_handles(cx).await;
