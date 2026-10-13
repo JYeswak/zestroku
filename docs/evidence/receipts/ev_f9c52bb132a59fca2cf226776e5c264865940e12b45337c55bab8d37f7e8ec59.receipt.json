@@ -1,0 +1,48 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_f9c52bb132a59fca2cf226776e5c264865940e12b45337c55bab8d37f7e8ec59",
+ "limitations": [
+  "Dirty-source ordinary RCH runs; targeted behaviors passed, but exact-source proof and full gate suite remain pending."
+ ],
+ "operation": "cargo-test",
+ "parameters": {
+  "c2": "cargo test -j 2 -p zestroku-cli --test serve_drain_controls c2_inflight_proxy_held_info_completes_after_term -- --exact --nocapture --test-threads=1",
+  "c2_remote_exit": "0",
+  "c3": "cargo test -j 2 -p zestroku-cli --test serve_drain_controls c3_partial_info_body_completes_after_term_and_admission_stop -- --exact --nocapture --test-threads=1",
+  "c3_remote_exit": "0",
+  "candidate_sha": "f7c58ef4a24a0c2b59f50833c83df2b70482f548",
+  "original": "cargo test -j 2 -p zestroku-cli --test serve sigterm_stops_admission_and_drains_an_admitted_info_read -- --exact --nocapture --test-threads=1",
+  "original_remote_exit": "0",
+  "selected_worker": "contabo-1",
+  "tested_source": "d69e5ae19a10fbfc26c9f8c6af33308cea072bcc-dirty"
+ },
+ "producer": "rch",
+ "result_ref": {
+  "bytes": 73656,
+  "decisive_output": [
+   "C2: Status(200),Timeout,Timeout; 200 SIMX1 tv_active_channel=false; exit=0; listener closed",
+   "C3: Status(200),Timeout,Timeout; sent cd; status=200 SIMX1; content-length=165 matches; Connection:close; EOF; exit=0; listener closed",
+   "original: 200 SIMX1; body_complete=true; sim device-info/apps/tv-active-channel; exit=0; listener_released=true"
+  ],
+  "logs": [
+   {
+    "bytes": 24290,
+    "path": "var/agent-tmp/drain.37793/c2.log",
+    "sha256": "d816972511df657cca6e0172b795caba0334c98c384b4eeeb1100456db1850cb"
+   },
+   {
+    "bytes": 24088,
+    "path": "var/agent-tmp/drain.37793/c3.log",
+    "sha256": "58014ba36a5385831c79dc89d9886a5b616430abeed7bab80949d24d8e32e975"
+   },
+   {
+    "bytes": 25278,
+    "path": "var/agent-tmp/drain.37793/original-serve.log",
+    "sha256": "f138b0edf6a7953191251dea2f05e431abe3b1e62827a9f829e89dfa2fc45a28"
+   }
+  ],
+  "sha256": "b29c7fd8f58c0afdeb833ebd20fa1a45eae26e8d0f7ac6ac093616822dffdaae",
+  "source_limit": "RCH_BUILD_SOURCE=d69e5ae19a10fbfc26c9f8c6af33308cea072bcc-dirty; not an exact clean-overlay SHA run"
+ }
+}
