@@ -13,6 +13,24 @@ use zestroku_api::build_app;
 use zestroku_proto::Method as EcpMethod;
 use zestroku_types::AccessTier;
 
+const LIMITED_BODY: &str = "ECP command not allowed in Limited mode.";
+
+fn apps_path(host: &str, port: u16) -> String {
+    format!("/v1/devices/{host}:{port}/apps")
+}
+
+fn resolve_schema<'a>(spec: &'a Value, schema: &'a Value) -> &'a Value {
+    match schema.get("$ref").and_then(Value::as_str) {
+        Some(reference) => {
+            let name = reference
+                .strip_prefix("#/components/schemas/")
+                .expect("local component schema reference");
+            &spec["components"]["schemas"][name]
+        }
+        None => schema,
+    }
+}
+
 #[test]
 fn openapi_matches_registered_read_routes_and_apps_response_schema() {
     let (_directory, store) = store_with_device(HOST, PORT, "permissive");
@@ -41,7 +59,7 @@ fn openapi_matches_registered_read_routes_and_apps_response_schema() {
     }
     let client = TestClient::new(app);
 
-    let response = client.get("/openapi.json").send();
+    let response = client.get("/openapi.json").header_str("host", HOST).send();
     assert_eq!(response.status().as_u16(), 200);
     let spec: OpenApi = serde_json::from_str(response.text()).expect("valid OpenAPI document");
     assert_eq!(spec.openapi, "3.1.0");
@@ -118,11 +136,17 @@ fn malformed_apps_xml_and_unknown_targets_have_distinct_errors() {
     let transport = Arc::new(ResponseTransport::new([response(200, "<apps><app")]));
     let client = TestClient::new(build_app(store, Arc::clone(&transport)));
 
-    let malformed = client.get(&apps_path(HOST, PORT)).send();
+    let malformed = client
+        .get(&apps_path(HOST, PORT))
+        .header_str("host", HOST)
+        .send();
     assert_eq!(malformed.status().as_u16(), 502);
     assert_eq!(error_code(&malformed), "malformed_apps");
 
-    let unknown = client.get(&apps_path("192.0.2.99", PORT)).send();
+    let unknown = client
+        .get(&apps_path("192.0.2.99", PORT))
+        .header_str("host", HOST)
+        .send();
     assert_eq!(unknown.status().as_u16(), 404);
     assert_eq!(error_code(&unknown), "device_not_found");
 
@@ -140,7 +164,10 @@ fn apps_route_keeps_limited_and_absent_endpoint_responses_distinct() {
     let (_limited_directory, limited_store) = store_with_device(HOST, PORT, "limited");
     let local_transport = Arc::new(ResponseTransport::new([]));
     let local_client = TestClient::new(build_app(limited_store, Arc::clone(&local_transport)));
-    let local_refusal = local_client.get(&apps_path(HOST, PORT)).send();
+    let local_refusal = local_client
+        .get(&apps_path(HOST, PORT))
+        .header_str("host", HOST)
+        .send();
     assert_eq!(local_refusal.status().as_u16(), 403);
     assert_eq!(error_code(&local_refusal), "tier_refused");
     assert!(
@@ -153,7 +180,10 @@ fn apps_route_keeps_limited_and_absent_endpoint_responses_distinct() {
     let limited_reply = Arc::new(ResponseTransport::new([response(403, LIMITED_BODY)]));
     let limited_reply_client =
         TestClient::new(build_app(limited_reply_store, Arc::clone(&limited_reply)));
-    let limited = limited_reply_client.get(&apps_path(HOST, PORT)).send();
+    let limited = limited_reply_client
+        .get(&apps_path(HOST, PORT))
+        .header_str("host", HOST)
+        .send();
     assert_eq!(limited.status().as_u16(), 403);
     assert_eq!(error_code(&limited), "tier_refused");
     assert_eq!(limited_reply.calls().len(), 1);
@@ -161,7 +191,10 @@ fn apps_route_keeps_limited_and_absent_endpoint_responses_distinct() {
     let (_absent_directory, absent_store) = store_with_device(HOST, PORT, "permissive");
     let absent_transport = Arc::new(ResponseTransport::new([response(404, "")]));
     let absent_client = TestClient::new(build_app(absent_store, Arc::clone(&absent_transport)));
-    let absent = absent_client.get(&apps_path(HOST, PORT)).send();
+    let absent = absent_client
+        .get(&apps_path(HOST, PORT))
+        .header_str("host", HOST)
+        .send();
     assert_eq!(absent.status().as_u16(), 404);
     assert_eq!(error_code(&absent), "apps_endpoint_not_found");
     assert_eq!(absent_transport.calls().len(), 1);
