@@ -1,0 +1,146 @@
+{
+  "schema_version": "1.0",
+  "bead": "zestroku-zestroku-doctrine-a0h.13",
+  "status": "partial; full proof batch not complete",
+  "policy": {
+    "comment": 297,
+    "text": "clean-overlay for source-SHA proofs; plain RCH only for scratch checks",
+    "receipt_citation": "policy_comment=297"
+  },
+  "clean_overlay_source_sha": "92cbdf7327e84fcc07f2038bcdb6ed81be2b5bd7",
+  "controlled_pool_negative": {
+    "worker": "contabo-3",
+    "purpose": "A plain scratch check followed by a clean-overlay proof check on the same worker creates two separate pooled stores.",
+    "baseline": {
+      "observed_at": "2026-10-13T19:01:22Z",
+      "cache_total_kb": 8958542,
+      "zestroku_pools": [],
+      "status": "healthy",
+      "disk_free_gb_text": "26.296222686767575",
+      "slots": 4
+    },
+    "plain_scratch": {
+      "command": "RCH_WORKER=contabo-3 RCH_REQUIRE_REMOTE=1 rch exec -- cargo check -j 1 --locked -p zestroku-types",
+      "source_authority": "plain scratch command used the current checkout and makes no exact-SHA claim",
+      "run_id": 30062307857924157,
+      "project_id": "zestroku-a73e00bf",
+      "started_at": "2026-10-13T19:03:13.592445Z",
+      "completed_at": "2026-10-13T19:03:46.280852Z",
+      "exit_code": 0,
+      "log_sha256": "e435b82b475bd612e94fd5f5268fb4f8e144d0710bf982d877f53d4d817ec585",
+      "cache_after_kb": 9011261,
+      "pool": {
+        "path": "/Users/josh/Developer/zestroku/.rch-target-contabo-3-pool-26ae4a4a819d94bdc9b782cf38b9577b",
+        "kb": 52719,
+        "class": "pooled",
+        "reapable": false
+      }
+    },
+    "clean_overlay_proof": {
+      "command": "RCH_WORKER=contabo-3 RCH_REQUIRE_REMOTE=1 rch exec --base 92cbdf7327e84fcc07f2038bcdb6ed81be2b5bd7 --clean-overlay --no-overlay -- cargo check -j 1 --locked -p zestroku-types",
+      "run_id": 30062307857924158,
+      "project_id": "zestroku-a73e00bf::clean-overlay::80c2a3f6970d1074",
+      "started_at": "2026-10-13T19:04:33.835716Z",
+      "completed_at": "2026-10-13T19:05:07.940700Z",
+      "exit_code": 0,
+      "log_sha256": "f92e149b5ed63a4507f8224ee4f8b68f43da71d1509e333619d7711aa78950e2",
+      "cache_after_kb": 9063981,
+      "pool": {
+        "path": "/Users/josh/rch-build/rch-remote/zestroku/.rch-target-contabo-3-pool-d20ea17a9eb622106c88c0564d5560dd",
+        "kb": 52720,
+        "class": "pooled",
+        "reapable": false
+      }
+    },
+    "after_both": {
+      "observed_at": "2026-10-13T19:05:43Z",
+      "cache_total_kb": 9063981,
+      "zestroku_pools": [
+        {
+          "path": "/Users/josh/Developer/zestroku/.rch-target-contabo-3-pool-26ae4a4a819d94bdc9b782cf38b9577b",
+          "kb": 52719,
+          "class": "pooled",
+          "reapable": false
+        },
+        {
+          "path": "/Users/josh/rch-build/rch-remote/zestroku/.rch-target-contabo-3-pool-d20ea17a9eb622106c88c0564d5560dd",
+          "kb": 52720,
+          "class": "pooled",
+          "reapable": false
+        }
+      ],
+      "status": "healthy",
+      "disk_free_gb_text": "26.22863388061523",
+      "slots": 4,
+      "total_cache_growth_kb": 105439
+    }
+  },
+  "partial_proof_batch": {
+    "worker": "contabo-2",
+    "initial_cold_attempt": {
+      "command": "rch exec --base 92cbdf7327e84fcc07f2038bcdb6ed81be2b5bd7 --clean-overlay --no-overlay -- cargo test -j 1 --locked -p zestroku-cli --test serve sigterm_stops_admission_and_drains_an_admitted_info_read -- --exact --nocapture",
+      "run_id": 30062307857924154,
+      "started_at": "2026-10-13T18:05:00.769679Z",
+      "completed_at": "2026-10-13T18:35:16.702081Z",
+      "exit_code": 137,
+      "remote_duration_ms": 1802043,
+      "log_sha256": "7c4f0fd02f907450364ea9b8d6b62aacbbcd67e6394457bb8f22504fb27daddb",
+      "observation": "RCH's 1800-second deadline killed the cold build while compiling dependencies; no test verdict."
+    },
+    "sigterm_test_retry": {
+      "command": "rch exec --base 92cbdf7327e84fcc07f2038bcdb6ed81be2b5bd7 --clean-overlay --no-overlay -- cargo test -j 1 --locked -p zestroku-cli --test serve sigterm_stops_admission_and_drains_an_admitted_info_read -- --exact --nocapture",
+      "run_id": 30062307857924155,
+      "started_at": "2026-10-13T18:37:00.260485Z",
+      "completed_at": "2026-10-13T18:38:13.060032Z",
+      "exit_code": 0,
+      "log_sha256": "94c8fad5545ac012b5a846091e9beb4365f5038d86ece701c8c7b271b07ee9a5",
+      "test_frame": "1 passed; m7c-sigterm info=200 with tv_active_channel=false; 165/165 body bytes complete; exit=0; listener_released=true."
+    },
+    "workspace": {
+      "command": "rch exec --base 92cbdf7327e84fcc07f2038bcdb6ed81be2b5bd7 --clean-overlay --no-overlay -- cargo test -j 1 --locked --workspace",
+      "run_id": 30062307857924156,
+      "started_at": "2026-10-13T18:38:43.524987Z",
+      "completed_at": "2026-10-13T18:58:16.610038Z",
+      "exit_code": 101,
+      "log_sha256": "89246491441340dd0fa1225a582e509a1fd772be915f11e079010d221c1a9db0",
+      "failure_frames": [
+        "serve_readiness::bind_conflict_exits_without_readiness_message failed: bind failure printed 'listening on http://127.0.0.1:39977/' before Address already in use.",
+        "serve_readiness::sigint_stops_serve_after_health_readiness_and_releases_listener failed: serve did not finish SIGINT shutdown within 10 seconds."
+      ],
+      "test_result": "workspace test command failed; this is not a green proof batch."
+    },
+    "cache_after_workspace": {
+      "observed_at": "2026-10-13T18:59:09Z",
+      "cache_total_kb": 40738934,
+      "partial_growth_from_after_timeout_baseline_kb": 22145042,
+      "zestroku_pools": [
+        {
+          "path": "/Users/josh/Developer/zestroku/.rch-target-contabo-2-pool-26ae4a4a819d94bdc9b782cf38b9577b",
+          "kb": 6741488,
+          "class": "pooled",
+          "reapable": false
+        },
+        {
+          "path": "/Users/josh/rch-build/rch-remote/zestroku/.rch-target-contabo-2-pool-d6aef8bd05eceadf4611e13ada2aa84b",
+          "kb": 26112351,
+          "class": "pooled",
+          "reapable": false
+        }
+      ],
+      "status": "warning",
+      "disk_free_gb_text": "10.907867431640623",
+      "total_slots": 0,
+      "reapable_kb": 0
+    },
+    "clippy": {
+      "command": "rch exec --base 92cbdf7327e84fcc07f2038bcdb6ed81be2b5bd7 --clean-overlay --no-overlay -- cargo clippy -j 1 --locked --workspace --all-targets -- -D warnings",
+      "result": "not run: contabo-2 has zero slots at 10.91 GB free; contabo-3 has only 26.23 GB free, while the observed c2 clean-overlay pool is 26,112,351 KB (about 24.9 GiB), which would leave c3 below its current free space and far below c2's warning state. No other worker is admissible."
+    }
+  },
+  "limitations": [
+    "The SIGTERM test passed independently, but the full workspace test failed and full-workspace Clippy was not run; acceptance [b] is incomplete.",
+    "The c3 cache negative is a controlled same-worker mode pair. It demonstrates separate plain and clean-overlay pools, but does not substitute for the full proof-batch cache measurement.",
+    "No disk cleanup, cache deletion, gate weakening, or local build was used. All RCH proof runs were remote."
+  ],
+  "raw_log_retention": "Full logs remain in session scratch; SHA-256 and decisive frames are recorded here."
+}
