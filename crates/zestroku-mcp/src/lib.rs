@@ -17,7 +17,12 @@
 //! only arg parsing and result wrapping.
 #![forbid(unsafe_code)]
 
-use fastmcp::server::{ToolExecutionMode, ToolHandler};
+use std::sync::Arc;
+use std::time::Duration;
+
+use asupersync::http::Client as HttpClient;
+use asupersync::{CancelReason, Cx, Outcome};
+use fastmcp::server::{BoxFuture, ToolExecutionMode, ToolHandler};
 use fastmcp::{Content, McpContext, McpError, McpErrorCode, McpResult, Tool, ToolAnnotations};
 use zestroku_core::mutation::{MutationContext, MutationError, authorize_mutation};
 use zestroku_core::store::{ActionRow, SqliteStore, Store};
@@ -336,38 +341,213 @@ impl ToolHandler for EchoTool {
     }
 }
 
-/// Render stored devices, one line each. Only fields the store already
-/// holds privately-safe: id (`host:port`), model number, firmware, tier,
-/// last-seen. No serial, UDN, MAC, ad-id or friendly name is ever stored.
-pub fn render_devices(rows: &[zestroku_core::store::DeviceRow]) -> String {
-    if rows.is_empty() {
-        return "no devices recorded (run `zestroku devices`)".to_string();
-    }
-    rows.iter()
-        .map(|d| {
-            format!(
-                "{} model={} firmware={} tier={} last_seen={}",
-                d.id, d.model_num, d.firmware, d.access_tier, d.last_seen
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+const DEFAULT_DAEMON_URL: &str = "http://127.0.0.1:8070";
+const MAX_DAEMON_RESPONSE_BYTES: usize = 1_048_576;
+
+#[derive(Clone, Copy)]
+enum ReadOperation {
+    Devices,
+    Info,
+    ActiveApp,
+    Apps,
 }
 
-/// Read-only inventory: the devices the CLI discovery sweep persisted.
-/// Store read only, so it works from a process tree that cannot open LAN
-/// sockets.
-pub struct ListDevicesTool;
+impl ReadOperation {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Devices => "list_devices",
+            Self::Info => "info",
+            Self::ActiveApp => "active_app",
+            Self::Apps => "apps",
+        }
+    }
 
-impl ToolHandler for ListDevicesTool {
+    fn description(self) -> &'static str {
+        match self {
+            Self::Devices => "Read-only device inventory from the running zestroku daemon.",
+            Self::Info => "Read device information through the daemon; host must match inventory.",
+            Self::ActiveApp => "Read the active app through the daemon; host must match inventory.",
+            Self::Apps => "Read installed apps through the daemon; host must match inventory.",
+        }
+    }
+
+    fn input_schema(self) -> serde_json::Value {
+        match self {
+            Self::Devices => serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            Self::Info | Self::ActiveApp | Self::Apps => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "host": {
+                        "type": "string",
+                        "description": "Inventory host or host:port."
+                    }
+                },
+                "required": ["host"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn request_path(self, arguments: &serde_json::Value) -> Result<String, McpError> {
+        match self {
+            Self::Devices => {
+                let Some(object) = arguments.as_object() else {
+                    return Err(mcp_error(
+                        McpErrorCode::InvalidParams,
+                        "list_devices accepts an empty object",
+                    ));
+                };
+                if !object.is_empty() {
+                    return Err(mcp_error(
+                        McpErrorCode::InvalidParams,
+                        "list_devices accepts no arguments",
+                    ));
+                }
+                Ok("/v1/devices".to_string())
+            }
+            Self::Info | Self::ActiveApp | Self::Apps => {
+                let Some(object) = arguments.as_object() else {
+                    return Err(mcp_error(
+                        McpErrorCode::InvalidParams,
+                        "read tool requires a host string",
+                    ));
+                };
+                if object.len() != 1 {
+                    return Err(mcp_error(
+                        McpErrorCode::InvalidParams,
+                        "read tool accepts only the host argument",
+                    ));
+                }
+                let Some(host) = object.get("host").and_then(serde_json::Value::as_str) else {
+                    return Err(mcp_error(
+                        McpErrorCode::InvalidParams,
+                        "read tool requires a host string",
+                    ));
+                };
+                if host.is_empty() {
+                    return Err(mcp_error(
+                        McpErrorCode::InvalidParams,
+                        "host must not be empty",
+                    ));
+                }
+                let target = encode_path_segment(host);
+                let suffix = match self {
+                    Self::Info => "info",
+                    Self::ActiveApp => "active-app",
+                    Self::Apps => "apps",
+                    Self::Devices => unreachable!(),
+                };
+                Ok(format!("/v1/devices/{target}/{suffix}"))
+            }
+        }
+    }
+
+    fn accepts_response(self, value: &serde_json::Value) -> bool {
+        match self {
+            Self::Devices => value.is_array(),
+            Self::Info | Self::ActiveApp => value.is_object(),
+            Self::Apps => value.get("apps").is_some_and(serde_json::Value::is_array),
+        }
+    }
+}
+
+fn encode_path_segment(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::with_capacity(value.len());
+    for &byte in value.as_bytes() {
+        if matches!(
+            byte,
+            b'a'..=b'z'
+                | b'A'..=b'Z'
+                | b'0'..=b'9'
+                | b'-'
+                | b'.'
+                | b'_'
+                | b'~'
+                | b':'
+                | b'['
+                | b']'
+        ) {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[(byte >> 4) as usize]));
+            encoded.push(char::from(HEX[(byte & 0x0f) as usize]));
+        }
+    }
+    encoded
+}
+
+fn daemon_base_url() -> String {
+    std::env::var("ZESTROKU_DAEMON_URL")
+        .unwrap_or_else(|_| DEFAULT_DAEMON_URL.to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+struct DaemonReadTool {
+    operation: ReadOperation,
+    client: Arc<HttpClient>,
+    base_url: Arc<str>,
+}
+
+impl DaemonReadTool {
+    fn new(operation: ReadOperation, client: Arc<HttpClient>, base_url: Arc<str>) -> Self {
+        Self {
+            operation,
+            client,
+            base_url,
+        }
+    }
+
+    fn response_content(
+        &self,
+        response: asupersync::http::h1::Response,
+    ) -> Result<Vec<Content>, McpError> {
+        let body = String::from_utf8(response.body).map_err(|_| {
+            mcp_error(
+                McpErrorCode::InternalError,
+                "daemon_invalid_response: response is not UTF-8",
+            )
+        })?;
+        let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
+            mcp_error(
+                McpErrorCode::InternalError,
+                "daemon_invalid_response: response is not JSON",
+            )
+        })?;
+
+        if !(200..300).contains(&response.status) {
+            let code = value
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("daemon_http_error");
+            return Err(mcp_error(
+                McpErrorCode::InternalError,
+                format!("daemon API error: {code} (HTTP {})", response.status),
+            ));
+        }
+        if !self.operation.accepts_response(&value) {
+            return Err(mcp_error(
+                McpErrorCode::InternalError,
+                "daemon_response_schema_mismatch",
+            ));
+        }
+        Ok(vec![Content::Text { text: body }])
+    }
+}
+
+impl ToolHandler for DaemonReadTool {
     fn definition(&self) -> Tool {
         Tool {
-            name: "list_devices".to_string(),
-            description: Some(
-                "Read-only inventory of discovered Roku devices (from the shared store)."
-                    .to_string(),
-            ),
-            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            name: self.operation.name().to_string(),
+            description: Some(self.operation.description().to_string()),
+            input_schema: self.operation.input_schema(),
             output_schema: None,
             icon: None,
             version: None,
@@ -380,31 +560,84 @@ impl ToolHandler for ListDevicesTool {
     }
 
     fn execution_mode(&self) -> ToolExecutionMode {
-        ToolExecutionMode::Blocking
+        ToolExecutionMode::Async
     }
 
     fn call(&self, _ctx: &McpContext, _arguments: serde_json::Value) -> McpResult<Vec<Content>> {
-        let store = SqliteStore::open(&store_path()).map_err(|e| {
-            mcp_error(
-                McpErrorCode::InternalError,
-                format!("store unavailable: {e}"),
-            )
-        })?;
-        let rows = store
-            .list_devices()
-            .map_err(|e| mcp_error(McpErrorCode::InternalError, format!("store: {e}")))?;
-        Ok(vec![Content::Text {
-            text: render_devices(&rows),
-        }])
+        Err(mcp_error(
+            McpErrorCode::InternalError,
+            "daemon read tools require the asynchronous request context",
+        ))
+    }
+
+    fn call_async<'a>(
+        &'a self,
+        ctx: &'a McpContext,
+        arguments: serde_json::Value,
+    ) -> BoxFuture<'a, Outcome<Vec<Content>, McpError>> {
+        self.call_async_in_request(ctx, ctx.cx(), arguments)
+    }
+
+    fn call_async_in_request<'a>(
+        &'a self,
+        _ctx: &'a McpContext,
+        request_cx: &'a Cx,
+        arguments: serde_json::Value,
+    ) -> BoxFuture<'a, Outcome<Vec<Content>, McpError>> {
+        Box::pin(async move {
+            let path = match self.operation.request_path(&arguments) {
+                Ok(path) => path,
+                Err(error) => return Outcome::Err(error),
+            };
+            let url = format!("{}{path}", self.base_url);
+            match self.client.send_get(request_cx, &url).await {
+                Ok(response) => match self.response_content(response) {
+                    Ok(content) => Outcome::Ok(content),
+                    Err(error) => Outcome::Err(error),
+                },
+                Err(asupersync::http::h1::ClientError::Cancelled) => Outcome::Cancelled(
+                    request_cx
+                        .cancel_reason()
+                        .unwrap_or_else(|| CancelReason::user("daemon read request cancelled")),
+                ),
+                Err(_) => {
+                    Outcome::Err(mcp_error(McpErrorCode::InternalError, "daemon_unavailable"))
+                }
+            }
+        })
     }
 }
 
-/// The MCP server: one tool per implemented CLI surface (inventory, audit
-/// log, gated key/launch) plus `echo`.
+/// The MCP server: daemon-backed read tools, the audit log, gated mutations,
+/// and the local `echo` connectivity check.
 pub fn server() -> fastmcp::auto::Server {
+    let client = Arc::new(
+        HttpClient::builder()
+            .max_body_size(MAX_DAEMON_RESPONSE_BYTES)
+            .request_timeout(Duration::from_secs(2))
+            .no_redirects()
+            .no_retries()
+            .build(),
+    );
+    let base_url: Arc<str> = Arc::from(daemon_base_url());
     fastmcp::auto::server_builder("zestroku", env!("CARGO_PKG_VERSION"))
         .tool(EchoTool)
-        .tool(ListDevicesTool)
+        .tool(DaemonReadTool::new(
+            ReadOperation::Devices,
+            Arc::clone(&client),
+            Arc::clone(&base_url),
+        ))
+        .tool(DaemonReadTool::new(
+            ReadOperation::Info,
+            Arc::clone(&client),
+            Arc::clone(&base_url),
+        ))
+        .tool(DaemonReadTool::new(
+            ReadOperation::ActiveApp,
+            Arc::clone(&client),
+            Arc::clone(&base_url),
+        ))
+        .tool(DaemonReadTool::new(ReadOperation::Apps, client, base_url))
         .tool(RecentActionsTool { limit: 20 })
         .tool(MutationTool { kind: "key" })
         .tool(MutationTool { kind: "launch" })
