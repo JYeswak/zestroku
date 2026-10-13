@@ -107,6 +107,7 @@ struct DeviceState {
     /// value). Lets tests give two same-model sims different identities.
     serial: String,
     active: Option<&'static App>,
+    malformed_apps: bool,
     focus: Focus,
     launch_count: usize,
     requests: Vec<(String, String)>,
@@ -244,6 +245,8 @@ fn route(state: &mut DeviceState, method: &Method, uri: &str) -> Reply {
         (Method::Get, "/query/apps") => {
             if limited {
                 Reply::limited_403()
+            } else if state.malformed_apps {
+                Reply::xml("<apps><app".to_string())
             } else {
                 Reply::xml(apps_xml())
             }
@@ -475,6 +478,7 @@ impl SimDevice {
                 serial: serial.to_owned(),
                 active: None,
                 focus: Focus::Home,
+                malformed_apps: false,
                 launch_count: 0,
                 requests: Vec::new(),
             }),
@@ -496,6 +500,11 @@ impl SimDevice {
     /// next request, on the same server.
     pub fn set_tier(&self, tier: SimTier) {
         self.shared.lock().tier = tier;
+    }
+
+    /// Return malformed installed-app XML for read-path error integration tests.
+    pub fn set_malformed_apps(&self, malformed: bool) {
+        self.shared.lock().malformed_apps = malformed;
     }
 
     /// Every request that reached the handler, in arrival order, as
