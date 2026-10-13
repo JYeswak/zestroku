@@ -1,0 +1,17 @@
+# M1: drop an admitted partial-body connection as soon as drain is observed.
+# Expected unchanged oracle: crates/zestroku-cli/tests/serve.rs:389-392 (response Content-Length/body framing).
+diff --git a/vendor/fastapi-http/src/server.rs b/vendor/fastapi-http/src/server.rs
+--- a/vendor/fastapi-http/src/server.rs
++++ b/vendor/fastapi-http/src/server.rs
+@@ -2578,7 +2578,11 @@
+                     if bytes_read == 0 {
+                         return Ok(());
+                     }
+
+                     self.record_bytes_in(bytes_read as u64);
+
++                    if self.is_draining() {
++                        return Ok(());
++                    }
++
+                     match parser.feed(&read_buffer[..bytes_read])? {

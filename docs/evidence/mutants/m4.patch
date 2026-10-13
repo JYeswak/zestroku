@@ -1,0 +1,14 @@
+# M4: report status 143 after a successful SIGTERM drain instead of zero.
+# Expected unchanged oracle: crates/zestroku-cli/tests/serve.rs:427 (exit code must be zero).
+diff --git a/crates/zestroku-cli/src/serve.rs b/crates/zestroku-cli/src/serve.rs
+--- a/crates/zestroku-cli/src/serve.rs
++++ b/crates/zestroku-cli/src/serve.rs
+@@ -124,7 +124,7 @@
+         return ExitCode::FAILURE;
+     }
+     match result {
+-        Ok(()) => ExitCode::SUCCESS,
++        Ok(()) => ExitCode::from(143),
+         Err(e) => {
+             eprintln!("zestroku serve: {e}");
+             ExitCode::FAILURE

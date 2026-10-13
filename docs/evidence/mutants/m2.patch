@@ -1,0 +1,12 @@
+# M2: advertise keep-alive even though the client requested close and the server closes the socket.
+# Expected unchanged oracle: crates/zestroku-cli/tests/serve.rs:394-396 (response Connection header).
+diff --git a/vendor/fastapi-http/src/server.rs b/vendor/fastapi-http/src/server.rs
+--- a/vendor/fastapi-http/src/server.rs
++++ b/vendor/fastapi-http/src/server.rs
+@@ -2758,5 +2758,5 @@
+             response = if server_will_keep_alive {
+                 response.header("connection", b"keep-alive".to_vec())
+             } else {
+-                response.header("connection", b"close".to_vec())
++                response.header("connection", b"keep-alive".to_vec())
+             };

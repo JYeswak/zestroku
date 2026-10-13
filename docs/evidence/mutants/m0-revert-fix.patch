@@ -1,0 +1,11 @@
+# M0: revert the drain scheduler sleep to a self-waking yield, reintroducing reactor starvation.
+# Expected unchanged oracle: crates/zestroku-cli/tests/serve.rs:385-392 (response EOF/framing).
+diff --git a/vendor/fastapi-http/src/server.rs b/vendor/fastapi-http/src/server.rs
+--- a/vendor/fastapi-http/src/server.rs
++++ b/vendor/fastapi-http/src/server.rs
+@@ -2508,4 +2508,4 @@
+             // A self-waking yield keeps a current-thread block_on root runnable,
+             // so its driver may skip reactor turns while this drain loop spins.
+             // Park briefly to let admitted socket reads make progress.
+-            asupersync::time::sleep(cx.now(), Duration::from_millis(10)).await;
++            asupersync::runtime::yield_now().await;

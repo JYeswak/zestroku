@@ -1,0 +1,14 @@
+# M3: omit the drain request, so the accept loop continues admitting health requests after SIGTERM.
+# Expected unchanged oracle: crates/zestroku-cli/tests/serve.rs:343-345 (admission-stop deadline).
+diff --git a/crates/zestroku-cli/src/serve.rs b/crates/zestroku-cli/src/serve.rs
+--- a/crates/zestroku-cli/src/serve.rs
++++ b/crates/zestroku-cli/src/serve.rs
+@@ -65,8 +65,7 @@
+     let result = match Select::new(serving.as_mut(), receiving_signal.as_mut()).await {
+         Ok(Either::Left(result)) => result.map_err(|error| format!("HTTP server failed: {error}")),
+         Ok(Either::Right(_)) => {
+-            server.shutdown();
+             serving
+                 .as_mut()
+                 .await
+                 .map_err(|error| format!("HTTP server drain failed: {error}"))
