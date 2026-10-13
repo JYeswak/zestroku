@@ -210,7 +210,7 @@ fn c2_inflight_proxy_held_info_completes_after_term() {
         .arrived
         .recv_timeout(Duration::from_secs(10))
         .expect("proxy did not observe held tv-active-channel request");
-    let pid = daemon.0.id().unwrap().to_string();
+    let pid = daemon.0.id().to_string();
     assert!(
         Command::new("kill")
             .args(["-TERM", &pid])
