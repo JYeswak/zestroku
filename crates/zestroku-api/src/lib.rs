@@ -445,7 +445,10 @@ mod tests {
         let transport = Arc::new(FakeTransport::new([]));
         let client = TestClient::new(build_app(store, transport));
 
-        let response = client.get("/v1/devices").send();
+        let response = client
+            .get("/v1/devices")
+            .header_str("host", "192.0.2.10")
+            .send();
         assert_eq!(response.status().as_u16(), 200);
         let devices: serde_json::Value =
             serde_json::from_str(response.text()).expect("device JSON");
@@ -471,6 +474,7 @@ mod tests {
 
         let info = client
             .get(&format!("/v1/devices/192.0.2.10:{port}/info"))
+            .header_str("host", "192.0.2.10")
             .send();
         assert_eq!(info.status().as_u16(), 200);
         let info_json: serde_json::Value = serde_json::from_str(info.text()).expect("info JSON");
@@ -484,6 +488,7 @@ mod tests {
 
         let active_app = client
             .get(&format!("/v1/devices/192.0.2.10:{port}/active-app"))
+            .header_str("host", "192.0.2.10")
             .send();
         assert_eq!(active_app.status().as_u16(), 200);
         let active_json: serde_json::Value =
@@ -517,6 +522,7 @@ mod tests {
 
         let info = client
             .get(&format!("/v1/devices/192.0.2.10:{port}/info"))
+            .header_str("host", "192.0.2.10")
             .send();
         assert_eq!(info.status().as_u16(), 200);
         let info_json: serde_json::Value = serde_json::from_str(info.text()).expect("info JSON");
@@ -548,6 +554,7 @@ mod tests {
 
         let info = client
             .get(&format!("/v1/devices/192.0.2.10:{port}/info"))
+            .header_str("host", "192.0.2.10")
             .send();
         assert_eq!(info.status().as_u16(), 200);
         let info_json: serde_json::Value = serde_json::from_str(info.text()).expect("info JSON");
@@ -564,7 +571,7 @@ mod tests {
             "/v1/devices/192.0.2.99/info",
             "/v1/devices/192.0.2.99/active-app",
         ] {
-            let response = client.get(path).send();
+            let response = client.get(path).header_str("host", "192.0.2.10").send();
             assert_eq!(response.status().as_u16(), 404, "path={path}");
             assert!(transport.calls().is_empty(), "path={path}");
         }
@@ -609,7 +616,10 @@ mod tests {
         let transport = Arc::new(FakeTransport::new([]));
         let client = TestClient::new(build_app(store, Arc::clone(&transport)));
 
-        let response = client.get("/health").send();
+        let response = client
+            .get("/health")
+            .header_str("host", "192.0.2.10")
+            .send();
         assert_eq!(response.status().as_u16(), 200);
         let body: serde_json::Value = serde_json::from_str(response.text()).expect("health JSON");
         assert_eq!(body["status"], "ok");
