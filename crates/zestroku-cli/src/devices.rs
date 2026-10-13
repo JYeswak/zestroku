@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
-use zestroku_core::discovery::ECP_DEFAULT_PORT;
 use zestroku_core::ssdp_io::discover;
 use zestroku_types::Result;
 
