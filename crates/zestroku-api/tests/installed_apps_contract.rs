@@ -13,24 +13,6 @@ use zestroku_api::build_app;
 use zestroku_proto::Method as EcpMethod;
 use zestroku_types::AccessTier;
 
-const LIMITED_BODY: &str = "ECP command not allowed in Limited mode.";
-
-fn apps_path(host: &str, port: u16) -> String {
-    format!("/v1/devices/{host}:{port}/apps")
-}
-
-fn resolve_schema<'a>(spec: &'a Value, schema: &'a Value) -> &'a Value {
-    match schema.get("$ref").and_then(Value::as_str) {
-        Some(reference) => {
-            let name = reference
-                .strip_prefix("#/components/schemas/")
-                .expect("local component schema reference");
-            &spec["components"]["schemas"][name]
-        }
-        None => schema,
-    }
-}
-
 #[test]
 fn openapi_matches_registered_read_routes_and_apps_response_schema() {
     let (_directory, store) = store_with_device(HOST, PORT, "permissive");
