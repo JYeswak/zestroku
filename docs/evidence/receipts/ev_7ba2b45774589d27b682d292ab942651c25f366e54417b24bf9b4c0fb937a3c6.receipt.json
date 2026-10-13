@@ -1,0 +1,20 @@
+{
+ "authority": "live",
+ "confidence": "observed",
+ "evidence_id": "ev_7ba2b45774589d27b682d292ab942651c25f366e54417b24bf9b4c0fb937a3c6",
+ "limitations": [
+  "Mechanism remains unproven; process-context differential only.",
+  "No OS settings or device state changed."
+ ],
+ "operation": "macos_lan_probe",
+ "parameters": {
+  "binary_sha256": "1983c7b899c6285820c14ad89200d9fccb2c8facbbf0c718c4cb9d9e395e7eca",
+  "binary_version": "zestroku 0.1.0 0e8dca0",
+  "evidence_text": "binary_sha256=1983c7b899c6285820c14ad89200d9fccb2c8facbbf0c718c4cb9d9e395e7eca;version=zestroku 0.1.0 0e8dca0;target=<TARGET> owner-owned Express 4K+;pane_command=ZESTROKU_DIRECT=1 <same Mach-O binary> info <TARGET>;pane_output=zestroku device unreachable http://<TARGET>:8060/query/device-info No route to host os error 65;pane_exit=1;ssh_command=ssh -o BatchMode=yes localhost same direct info command;ssh_output=Roku Express 4K+ (3941X2) software 15.2.4 tv=false tier=permissive tv-active-channel absent;ssh_exit=0;nc_command=/usr/bin/nc -z -G2 <TARGET> 8060;nc_output=Connection to <TARGET> port 8060 tcp succeeded;nc_exit=0;doctor_bead=zestroku-m8-doctor-zxo includes lan-policy and planted network-down acceptance;error_bead=zestroku-m8-error-codes-d2u adds LAN_BLOCKED_BY_OS_POLICY and registry acceptance;classification=not a defect environment policy for this TCP leg; mechanism unproven; no settings changed"
+ },
+ "producer": "zestroku-asup-macos-lan-connect-8dp",
+ "result_ref": {
+  "bytes": 917,
+  "sha256": "51a7c5508312851959aa68cbd48541745d89ecfcbc45c1aa14ec32c581a12758"
+ }
+}
