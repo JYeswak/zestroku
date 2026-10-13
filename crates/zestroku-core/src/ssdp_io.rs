@@ -630,7 +630,7 @@ mod tests {
                 let sweep = sweep_to(&target, 1).await?;
                 let parsed_count = sweep.endpoints.len();
                 let (devices, notes) = discover_from_sweep(&transport, None, sweep).await?;
-                Ok((devices, notes, parsed_count))
+                Ok::<_, Error>((devices, notes, parsed_count))
             })
             .expect("loopback discovery");
         responder_thread.join().expect("SSDP responder thread");
