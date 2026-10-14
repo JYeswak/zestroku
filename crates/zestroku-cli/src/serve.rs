@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use asupersync::combinator::{Either, Select};
+use asupersync::net::TcpListener;
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use asupersync::signal::{SignalKind, signal};
 use fastapi::{ServerConfig, TcpServer};
@@ -42,9 +43,15 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
     Ok(o)
 }
 
-async fn serve_until_sigterm(app: fastapi::App, config: ServerConfig) -> Result<(), String> {
+async fn serve_until_shutdown(
+    app: fastapi::App,
+    bind_addr: String,
+    config: ServerConfig,
+) -> Result<(), String> {
     let mut sigterm = signal(SignalKind::terminate())
         .map_err(|error| format!("could not register SIGTERM handler: {error}"))?;
+    let mut sigint = signal(SignalKind::interrupt())
+        .map_err(|error| format!("could not register SIGINT handler: {error}"))?;
     match app.run_startup_hooks().await {
         fastapi::fastapi_core::StartupOutcome::Success => {}
         fastapi::fastapi_core::StartupOutcome::PartialSuccess { warnings } => {
@@ -58,22 +65,42 @@ async fn serve_until_sigterm(app: fastapi::App, config: ServerConfig) -> Result<
     let app = Arc::new(app);
     let cx = fastapi::Cx::current()
         .ok_or_else(|| "fastapi App::serve must run inside an asupersync runtime".to_string())?;
+    let listener = match TcpListener::bind(bind_addr).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            app.run_shutdown_hooks().await;
+            return Err(format!("HTTP server failed: {error}"));
+        }
+    };
+    let bound_addr = match listener.local_addr() {
+        Ok(addr) => addr,
+        Err(error) => {
+            app.run_shutdown_hooks().await;
+            return Err(format!("HTTP server failed: {error}"));
+        }
+    };
+
+    eprintln!("zestroku serve: listening on http://{bound_addr}/");
     let server = TcpServer::new(config);
-    let mut serving = std::pin::pin!(server.serve_app_concurrent(&cx, Arc::clone(&app)));
-    let mut receiving_signal = std::pin::pin!(sigterm.recv());
+    let mut serving =
+        std::pin::pin!(server.serve_on_app_concurrent(&cx, listener, Arc::clone(&app)));
+    let mut sigterm_recv = std::pin::pin!(sigterm.recv());
+    let mut sigint_recv = std::pin::pin!(sigint.recv());
+    let mut receiving_signal =
+        std::pin::pin!(Select::new(sigterm_recv.as_mut(), sigint_recv.as_mut()));
 
     let result = match Select::new(serving.as_mut(), receiving_signal.as_mut()).await {
         Ok(Either::Left(result)) => result.map_err(|error| format!("HTTP server failed: {error}")),
-        Ok(Either::Right(_)) => {
+        Ok(Either::Right(Ok(_))) => {
             server.shutdown();
             serving
                 .as_mut()
                 .await
                 .map_err(|error| format!("HTTP server drain failed: {error}"))
         }
-        Err(error) => Err(format!("SIGTERM selection failed: {error:?}")),
+        Ok(Either::Right(Err(error))) => Err(format!("signal selection failed: {error:?}")),
+        Err(error) => Err(format!("shutdown selection failed: {error:?}")),
     };
-
     app.run_shutdown_hooks().await;
     result
 }
@@ -101,7 +128,8 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     };
     let app = zestroku_api::build_app(Arc::new(Mutex::new(store)), Arc::new(AsupersyncTransport));
-    let mut config = ServerConfig::new(addr.to_string());
+    let bind_addr = addr.to_string();
+    let mut config = ServerConfig::new(bind_addr.clone());
     if !addr.ip().is_unspecified() {
         config = config.with_allowed_hosts([addr.ip().to_string()]);
     }
@@ -117,8 +145,7 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    eprintln!("zestroku serve: listening on http://{addr}/");
-    let result = runtime.block_on(serve_until_sigterm(app, config));
+    let result = runtime.block_on(serve_until_shutdown(app, bind_addr, config));
     if !runtime.shutdown_timeout(Duration::from_secs(30)) {
         eprintln!("zestroku serve: asupersync runtime did not drain within 30s");
         return ExitCode::FAILURE;

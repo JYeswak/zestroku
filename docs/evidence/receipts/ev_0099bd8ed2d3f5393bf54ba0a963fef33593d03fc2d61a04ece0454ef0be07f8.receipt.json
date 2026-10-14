@@ -1,0 +1,28 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_0099bd8ed2d3f5393bf54ba0a963fef33593d03fc2d61a04ece0454ef0be07f8",
+ "limitations": [
+  "Remote Linux offline workspace tests; not hosted CI, Darwin artifact, or live Roku proof.",
+  "Source tree printed by RCH is the baseline tree; overlay fingerprint and file SHA bind the changed source separately."
+ ],
+ "operation": "zestroku.serve-readiness.current-main-workspace",
+ "parameters": {
+  "base": "ef93d8a18b9d1728702776041eea24d76348f21a",
+  "bead_id": "zestroku-m7c-serve-inq.1.2",
+  "overlay_fingerprint": "b2493ed0fe7afd1651aa0bb825ddfdc4ac9eec4917c48c0924f7e01d846b5ee2",
+  "overlay_path": "crates/zestroku-cli/src/serve.rs",
+  "overlay_sha256": "ec07da20fc7e2c3f4f7dbb1ddecd93fc5544658a9c09fb103e008771355f0773",
+  "phase": "VALIDATE",
+  "tick_class": "validation"
+ },
+ "producer": "PeachKnoll",
+ "result_ref": {
+  "command": "cargo test -j 2 --locked --workspace",
+  "decisive_output": "Remote command finished: exit=0 in 52390ms",
+  "remote_elapsed_ms": 52390,
+  "remote_exit": 0,
+  "source": "immutable main baseline plus one explicit source overlay",
+  "worker": "contabo-2"
+ }
+}

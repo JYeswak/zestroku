@@ -144,6 +144,9 @@ It binds loopback or private-LAN addresses only; a wildcard needs
 `--allow-unsafe-bind`, and the Host header must match the bind address. The
 info response includes live `access_tier` and `tv_active_channel`; the channel
 field is `null` when the optional ECP probe fails.
+The daemon prints its listening address only after binding succeeds; an
+occupied port exits unsuccessfully without claiming readiness. SIGINT
+(Ctrl-C) and SIGTERM both stop admission and drain the running HTTP server.
 `zestroku --version` prints `zestroku <semver> <git-sha7>[-dirty]`.
 
 ## Ground truth (verified live 2026-10-09)
