@@ -1,0 +1,33 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_9c89949974619dee4a19fbc0664f3dc5dac78b41ad4df06c3f56540d6ad51df4",
+ "limitations": [
+  "Candidate source only; current-main full workspace proof was refused before execution with RCH-I001 queue_timeout.",
+  "Loopback real daemon proof, not live Roku or installed current binary proof; no independent bead closure."
+ ],
+ "operation": "zestroku.serve-readiness.candidate-runtime",
+ "parameters": {
+  "bead_id": "zestroku-m7c-serve-inq.1.2",
+  "phase": "VALIDATE",
+  "source_commit": "066f3d669695891ed7ef96776aa481e30b72dffa",
+  "source_tree": "dd5fde56308f2b152a6a55f6a79e995c95e7e588",
+  "subject_sha256": "ec07da20fc7e2c3f4f7dbb1ddecd93fc5544658a9c09fb103e008771355f0773",
+  "tick_class": "validation"
+ },
+ "producer": "PeachKnoll",
+ "result_ref": {
+  "failed": 0,
+  "health_status": 200,
+  "listener_released": true,
+  "passed": 2,
+  "remote_elapsed_ms": 35284,
+  "remote_exit": 0,
+  "sigint_exit": 0,
+  "tests": [
+   "bind_conflict_exits_without_readiness_message",
+   "sigint_stops_serve_after_health_readiness_and_releases_listener"
+  ],
+  "worker": "contabo-1"
+ }
+}
