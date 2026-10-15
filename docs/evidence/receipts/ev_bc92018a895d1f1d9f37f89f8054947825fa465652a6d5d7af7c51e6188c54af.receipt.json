@@ -1,0 +1,23 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_bc92018a895d1f1d9f37f89f8054947825fa465652a6d5d7af7c51e6188c54af",
+ "limitations": [
+  "Loopback sim proof; live install per-op owner approval outside CI."
+ ],
+ "operation": "zestroku-install-a0h2-nonauthor-rerun",
+ "parameters": {
+  "base": "65ca080b692bdf6d12354bc66d488e4a99d95f86",
+  "bead_id": "zestroku-zestroku-doctrine-a0h.2",
+  "overlay": "none-no-overlay-fe0d5151",
+  "suite": "mutation_cli-9of9"
+ },
+ "producer": "QuietStream",
+ "result_ref": {
+  "command": "cargo test -j1 --locked -p zestroku-cli --test mutation_cli",
+  "decisive_output": "exit 0 in 23024ms; 9 passed incl sideload_requires_confirmation, unconfirmed/wrong-port exit-4 zero-POST, audit greps",
+  "remote_exit": 0,
+  "source": "immutable 65ca080 --clean-overlay --no-overlay",
+  "worker": "contabo-2"
+ }
+}
