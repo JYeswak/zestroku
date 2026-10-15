@@ -120,6 +120,13 @@ pub trait Store {
     fn delete_device_identity(&self, device_id: &str) -> Result<(), StoreError>;
     /// Re-point alias rows at a moved device id (DHCP move follow-up).
     fn rekey_aliases(&self, old_id: &str, new_id: &str) -> Result<(), StoreError>;
+    /// Move a known device identity to a new endpoint as one durable state change.
+    fn move_device_identity(
+        &self,
+        old_id: &str,
+        new_device: &DeviceRow,
+        identity: &str,
+    ) -> Result<(), StoreError>;
     fn insert_confirmation_token(&self, token: &ConfirmationTokenRow) -> Result<(), StoreError>;
     fn consume_confirmation_token(
         &self,
@@ -229,6 +236,39 @@ impl SqliteStore {
             .map(drop)
             .map_err(backend)
     }
+}
+
+fn delete_device_rows(conn: &AsyncConnection, id: &str) -> Result<(), FrankenError> {
+    for sql in [
+        "DELETE FROM apps WHERE device_id = ?1",
+        "DELETE FROM capabilities WHERE device_id = ?1",
+        "DELETE FROM access_tier WHERE device_id = ?1",
+        "DELETE FROM aliases WHERE device_id = ?1",
+        "DELETE FROM devices WHERE id = ?1",
+    ] {
+        conn.execute_with_params_sync(sql, &[s(id)])?;
+    }
+    Ok(())
+}
+
+fn upsert_device_row(conn: &AsyncConnection, device: &DeviceRow) -> Result<(), FrankenError> {
+    conn.execute_with_params_sync(
+        &format!(
+            "INSERT OR REPLACE INTO devices ({DEVICE_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"
+        ),
+        &[
+            s(&device.id),
+            s(&device.name),
+            s(&device.ip),
+            s(&device.model),
+            s(&device.model_num),
+            s(&device.firmware),
+            s(&device.wifi_driver),
+            s(&device.access_tier),
+            i(device.last_seen),
+        ],
+    )
+    .map(drop)
 }
 
 fn text(row: &Row, i: usize) -> Result<String, StoreError> {
@@ -369,6 +409,34 @@ impl Store for SqliteStore {
         )
     }
 
+    fn move_device_identity(
+        &self,
+        old_id: &str,
+        new_device: &DeviceRow,
+        identity: &str,
+    ) -> Result<(), StoreError> {
+        self.in_transaction(|conn| {
+            conn.execute_with_params_sync(
+                "UPDATE aliases SET device_id = ?2 WHERE device_id = ?1",
+                &[s(old_id), s(&new_device.id)],
+            )
+            .map(drop)?;
+            delete_device_rows(conn, old_id)?;
+            conn.execute_with_params_sync(
+                "DELETE FROM device_identity WHERE device_id = ?1",
+                &[s(old_id)],
+            )
+            .map(drop)?;
+            upsert_device_row(conn, new_device)?;
+            conn.execute_with_params_sync(
+                "INSERT OR REPLACE INTO device_identity (device_id, identity) VALUES (?1, ?2)",
+                &[s(&new_device.id), s(identity)],
+            )
+            .map(drop)?;
+            Ok(())
+        })
+    }
+
     fn insert_confirmation_token(&self, token: &ConfirmationTokenRow) -> Result<(), StoreError> {
         self.exec(
             "INSERT INTO confirmation_tokens (token_hash, device_id, action, expires_at, consumed_at) VALUES (?1, ?2, ?3, ?4, NULL)",
@@ -398,22 +466,7 @@ impl Store for SqliteStore {
     }
 
     fn upsert_device(&self, d: &DeviceRow) -> Result<(), StoreError> {
-        self.exec(
-            &format!(
-                "INSERT OR REPLACE INTO devices ({DEVICE_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"
-            ),
-            &[
-                s(&d.id),
-                s(&d.name),
-                s(&d.ip),
-                s(&d.model),
-                s(&d.model_num),
-                s(&d.firmware),
-                s(&d.wifi_driver),
-                s(&d.access_tier),
-                i(d.last_seen),
-            ],
-        )
+        upsert_device_row(&self.conn, d).map_err(backend)
     }
 
     fn get_device(&self, id: &str) -> Result<Option<DeviceRow>, StoreError> {
@@ -437,18 +490,7 @@ impl Store for SqliteStore {
     }
 
     fn delete_device(&self, id: &str) -> Result<(), StoreError> {
-        self.in_transaction(|c| {
-            for sql in [
-                "DELETE FROM apps WHERE device_id = ?1",
-                "DELETE FROM capabilities WHERE device_id = ?1",
-                "DELETE FROM access_tier WHERE device_id = ?1",
-                "DELETE FROM aliases WHERE device_id = ?1",
-                "DELETE FROM devices WHERE id = ?1",
-            ] {
-                c.execute_with_params_sync(sql, &[s(id)])?;
-            }
-            Ok(())
-        })
+        self.in_transaction(|conn| delete_device_rows(conn, id))
     }
 
     fn upsert_app(&self, a: &AppRow) -> Result<(), StoreError> {

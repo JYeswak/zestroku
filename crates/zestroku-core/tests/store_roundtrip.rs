@@ -320,9 +320,12 @@ fn identity_move_rolls_back_when_target_upsert_aborts() {
     conn.close_sync().unwrap();
 
     let st = SqliteStore::open(&path).unwrap();
+    let err = st
+        .move_device_identity(old_id, &new_device, "key-device-a")
+        .expect_err("target upsert abort must fail the move");
     assert!(
-        st.move_device_identity(old_id, &new_device, "key-device-a")
-            .is_err()
+        err.to_string().contains("injected target upsert failure"),
+        "move must fail at the injected target upsert stage, got: {err}"
     );
     assert_eq!(st.get_device(old_id).unwrap(), Some(old_device));
     assert_eq!(st.get_device(new_id).unwrap(), None);
