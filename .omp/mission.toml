@@ -2,36 +2,37 @@
 # Approval records scope, not executed acceptance. Missing checks remain UNREGISTERED.
 identity = "Make zestroku a complete, installed, resident control system that Joshua can use from his Mac terminal, local agents, authorized tailnet agents, HTTP clients, and browser/phone remote to discover, inspect, and safely control his own supported Roku devices."
 stage = "implementation"
+stage_exit_bead = "zestroku-owner-local-usability-1r4"
 approved_by = "Joshua"
 approved_at = "2026-10-15"
 approval_quote = "yes I approve this"
-done_rule = "Every required README Mission surface and capability has independent current-source positive and negative acceptance, actual applicable device/tier and tailnet witnesses, bounded timing/freshness, truthful side effects and outcomes, and no unmet required live leg. Simulator results do not replace physical or tailnet proof."
+done_rule = "StormyKnoll or another non-author independently executes all four registered scripts/mission-check.ts pillar commands and causal planted negatives at pinned source/artifact/check identities. Every required README Mission surface/capability must have actual applicable positive and negative device/tier and tailnet witnesses, truthful side effects/audit outcomes, and no missing live leg. Metadata integrity, historical closes, test-name/receipt presence, simulator results and author agreement never replace current wired physical/tailnet proof. Negative evidence and discrepancies are recorded in native .14/stage bead comments and existing docs/evidence/receipts/."
 not_in_mission = ["Other people's devices or accounts", "Firmware flashing", "Production approval minting by agents", "Silent direct-LAN fallback", "Automatic mutation retries", "Unapproved scenes or schedules", "Sonos-only DJ, grouping, playback transfer or announcements", "Ecosystem-only tracker and skill releases as substitutes for local usability"]
-product_paths = ["crates", "README.md", "docs"]
+product_paths = ["crates", "scripts", "README.md", "docs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "vendor", "bin", ".github"]
 pillar_ids = ["installed-resident", "surface-parity", "safe-control", "recovery-live"]
 
 [cadence]
-daily = "Review actual acceptance and blockers against the approved surfaces; preserve missing/failed evidence."
-weekly = "Reconcile local and tailnet user journeys with exact-source independent acceptance."
-exit = "All required positive and negative acceptance witnessed; no self-close or simulator-to-live promotion."
+daily = "Run omp-kit heavy -- bun scripts/mission-check.ts --pillar installed-resident; omp-kit heavy -- bun scripts/mission-check.ts --pillar surface-parity; omp-kit heavy -- bun scripts/mission-check.ts --pillar safe-control; omp-kit heavy -- bun scripts/mission-check.ts --pillar recovery-live. Record actual per-case outcomes and input identities in the stage bead/receipt surface."
+weekly = "Repeat all four daily pillar commands and obtain StormyKnoll's non-author disposition in zestroku-owner-local-usability-1r4; review unresolved .14 discrepancies and required live legs. No fictional automated grade command."
+exit = "Proposed administrative rule sent to chief in AM54048: two consecutive daily all-green four-pillar runs at the same source/artifact/check identities, with current required live witnesses and non-author sign-off; FAIL/UNKNOWN, missing day or identity change resets. This N is proposed, not owner-quoted or measurement-derived, until the chief rules. No self-close or simulator-to-live promotion."
 
 [blast_radius]
 binaries = ["zestroku"]
-paths = ["crates", "README.md", "docs", ".omp/mission.toml"]
+paths = ["crates", "scripts", "README.md", "docs", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "vendor", "bin", ".github", ".omp/mission.toml"]
 sessions = ["zestroku"]
 
 [[pillar]]
 id = "installed-resident"
-clause = "Fresh-shell installation, first-run empty-store setup and supported resident service work in Joshua's environment, with explicit startup, store, bind and restart failures."
+clause = "Claim class live-witness, evidence tier live on Joshua's Mac; fixture/simulated process negatives stay separately typed. Fresh-shell installation, first-run empty-store setup and resident service must reach usable state and persistence, refusing invalid configuration/store/bind/restart behavior. Covers README surfaces CLI, setup, resident service, configuration/store and diagnostics; presence/health alone never establishes these workflows."
 
 [[pillar]]
 id = "surface-parity"
-clause = "CLI, HTTP, initialized MCP stdio and streamable HTTP, resources, SSE, browser/phone and authorized tailnet workflows implement the README surface and capability contract with shared authority and truthful errors."
+clause = "Claim class live-witness, evidence tier live for wired HTTP, initialized MCP stdio/HTTP, resources, SSE, browser and authorized off-LAN tailnet behavior; simulated consumer assertions stay simulated. Implements README discovery/info/apps/state/error parity with shared authority and actual execution; rejects unknown/ambiguous/malformed/unavailable/backend-override cases without silent direct fallback, foreign-origin effects or false success."
 
 [[pillar]]
 id = "safe-control"
-clause = "Per-operation human-only approvals, exact action/target binding, tier and principal policy, zero-dispatch denial/replay negatives, completed audit and approved bounded undo hold across applicable surfaces."
+clause = "Claim class invariant with enforcement and causal fixture/simulated negatives, plus separate live-witness tier live for owner-approved physical effects. Human-only per-operation approvals, exact action/target binding, tier/principal policy, zero-dispatch denial/replay, completed audit and approved bounded undo must hold for keys, launch/input, sideload, history, undo and policy. Approval text, unconsumed/pending audit or simulated dispatch is never physical execution proof."
 
 [[pillar]]
 id = "recovery-live"
-clause = "Identity/address/tier/suspend recovery, bounded polling and freshness, responsive concurrent health/shutdown, runnable simulator faults and actual applicable physical-device/tailnet witnesses meet the README acceptance contract."
+clause = "Claim class live-witness, evidence tier live for applicable physical-device and real off-LAN recovery; simulated identity/suspend/fault assertions remain simulated. Runnable simulator, identity/defaults, address/tier/suspend recovery, cache/poll/freshness and concurrent health/shutdown must meet README positives/negatives, including no lost associations, stale-state concealment, polling storm, executor blocking or automatic mutation retry. Timing is an empirical slo only under a measured, explicit workload/bound; checker containment deadlines are not product SLOs."

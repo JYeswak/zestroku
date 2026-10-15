@@ -412,7 +412,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
     rchA,
     ["sideload_requires_confirmation_then_authenticates_and_audits_on_installer_port"],
     `unconfirmed sideload refused before installer HTTP; confirmed install authenticated and audited (remote mutation_cli @${rev})`,
-    ["cap.install.positive", "cap.install.negative"],
+    ["cap.install.negative"],
   ));
 
   const rchB = await rchSuite(ctx, RCH_B_TARGETS, RCH_B_FILTERS);
@@ -451,7 +451,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
     rchC,
     ["real_http_mutations_use_inventory_bound_approval_snapshot_and_audit"],
     `real daemon plus SimDevice: approved launch then key each dispatched exactly once with completed audit rows carrying true before-states (tier_source=recorded snapshots), failure recorded as failure, tokens absent from every surface (remote mutation_api @${rev})`,
-    ["cap.key.positive", "cap.launch.positive", "cap.history.positive", "cap.policy.positive"],
+    ["cap.key.positive", "cap.launch.positive", "cap.history.positive"],
   ));
 
   cases.push(await approvalBoundary(ctx, versionOk));

@@ -217,34 +217,52 @@ export function validInfoView(v: unknown): string | null {
 }
 
 export function validDevicesView(v: unknown): string[] | null {
-  const devices = fieldOf(v, "devices");
-  if (!Array.isArray(devices)) return null;
+  if (!Array.isArray(v)) return null;
   const hosts: string[] = [];
-  for (const row of devices) {
+  for (const row of v) {
     const host = fieldOf(row, "host");
     const lastSeen = fieldOf(row, "last_seen");
-    if (typeof host !== "string" || host.length === 0) return null;
-    if (typeof lastSeen !== "number") return null;
+    if (typeof host !== "string" || host.length === 0 ||
+      typeof lastSeen !== "number" || !Number.isSafeInteger(lastSeen) ||
+      typeof fieldOf(row, "name") !== "string" ||
+      typeof fieldOf(row, "model") !== "string" ||
+      typeof fieldOf(row, "model_number") !== "string" ||
+      typeof fieldOf(row, "software_version") !== "string" ||
+      !isKnownTier(fieldOf(row, "access_tier"))) return null;
     hosts.push(host);
   }
   return hosts;
 }
 
-export function openapiHasAppsPath(v: unknown): boolean {
-  const paths = fieldOf(v, "paths");
-  if (paths === null || typeof paths !== "object" || Array.isArray(paths)) return false;
-  return "/v1/devices/{host}/apps" in (paths as Record<string, unknown>);
+function mcpSuccessText(value: unknown): string | null {
+  const failed = fieldOf(value, "isError");
+  if (failed !== undefined && failed !== false) return null;
+  const content = fieldOf(value, "content");
+  if (!Array.isArray(content) || content.length !== 1 ||
+    fieldOf(content[0], "type") !== "text") return null;
+  const text = fieldOf(content[0], "text");
+  return typeof text === "string" ? text : null;
 }
+
+export function mcpInventoryHosts(value: unknown): string[] | null {
+  const text = mcpSuccessText(value);
+  return text === null ? null : validDevicesView(parseJson(text));
+}
+
 
 export function validAppsView(v: unknown): Array<Record<string, unknown>> | null {
   const apps = fieldOf(v, "apps");
-  if (!Array.isArray(apps)) return null;
+  if (typeof fieldOf(v, "host") !== "string" || !Array.isArray(apps)) return null;
   for (const a of apps) {
     if (a === null || typeof a !== "object") return null;
     const id = fieldOf(a, "id");
     const name = fieldOf(a, "name");
-    if (typeof id !== "number" && typeof id !== "string") return null;
-    if (typeof name !== "string" || name.length === 0) return null;
+    if (typeof id !== "string" || id.length === 0 || typeof name !== "string" ||
+      typeof fieldOf(a, "type") !== "string") return null;
+    for (const key of ["subtype", "version"]) {
+      const optional = fieldOf(a, key);
+      if (optional !== null && typeof optional !== "string") return null;
+    }
   }
   return apps as Array<Record<string, unknown>>;
 }
@@ -265,34 +283,21 @@ export function openapiHasAppsPath(v: unknown): boolean {
   return "/v1/devices/{host}/apps" in (paths as Record<string, unknown>);
 }
 
-/** Origin precedence evaluator on exact error codes (routes.rs:200,659):
- * the foreign-Origin probe is 403 UNTRUSTED_ORIGIN while the well-formed
- * matching-Origin control reaches 403 confirmation_required. Same-code on
- * both sides means the guard is absent (causal broken variant -> false). */
-export function originRefusalDistinct(
-  probeStatus: number,
-  probeBody: string,
-  controlStatus: number,
-  controlBody: string,
-): boolean {
-  const probeGuard =
-    probeStatus === 403 && errorField(probeBody) === "UNTRUSTED_ORIGIN";
-  const controlLive =
-    controlStatus === 403 && errorField(controlBody) === "confirmation_required";
-  return probeGuard && controlLive;
-}
 /** RCH suite green evaluator: the exact named test line plus a nonzero pass
  * count must appear; a clean exit without them is a zero-run (false). */
 export function rchSuiteGreen(stdout: string, testName: string): boolean {
-  const lines = stdout.split("\n");
-  const namedLine = lines.some(
-    (l) => l.includes(testName) && (l.includes(" ok") || l.includes("... ok")),
-  );
-  const countLine = lines.find((l) => /test result:\s*ok\./.test(l));
-  if (!namedLine || !countLine) return false;
-  const m = /(\d+)\s+passed/.exec(countLine);
-  if (!m) return false;
-  return Number(m[1]) > 0 && !/0\s+passed/.test(countLine);
+  const lines = stdout.split("\n").map(line => line.trim());
+  if (!lines.includes(`test ${testName} ... ok`)) return false;
+  const prefix = "test result: ok. ";
+  return lines.some(line => {
+    if (!line.startsWith(prefix)) return false;
+    const fields = line.slice(prefix.length).split("; ");
+    const [count, label] = (fields[0] ?? "").split(" ");
+    return label === "passed" && fields[1] === "0 failed" &&
+      count !== undefined && count.length > 0 &&
+      [...count].every(character => "0123456789".includes(character)) &&
+      Number.isSafeInteger(Number(count)) && Number(count) > 0;
+  });
 }
 
 export const MCP_EXPECTED_TOOLS = [
@@ -459,18 +464,36 @@ async function fetchBounded(
   init: RequestInit,
   timeoutMs: number,
 ): Promise<Response> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: ctrl.signal });
-  } finally {
-    clearTimeout(t);
-  }
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const signal = init.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
+  // Keep the deadline attached through body consumption, not just headers.
+  return fetch(url, { ...init, signal });
 }
 
 async function readBodyBounded(res: Response, limit = 65536): Promise<string> {
-  const text = await res.text();
-  return text.length > limit ? text.slice(0, limit) : text;
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let bytes = 0;
+  const streamSample = (res.headers.get("content-type") ?? "").toLowerCase().includes("text/event-stream");
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value.byteLength > limit - bytes) throw new Error("CHECKER_RESPONSE_BYTE_LIMIT");
+      bytes += value.byteLength;
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+  } catch (error) {
+    // A finite SSE sample is not a complete stream or a delta/freshness proof.
+    const aborted = error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+    if (!streamSample || !aborted) throw error;
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  chunks.push(decoder.decode());
+  return chunks.join("");
 }
 
 /** UNKNOWN builders (one lockstep shape per tier for every
@@ -673,8 +696,10 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
         readBodyBounded(appsR),
         readBodyBounded(openR),
       ]);
-      const tier = infoR.status === 200 ? validInfoView(parseJson(infoB)) : null;
-      const apps = appsR.status === 200 ? validAppsView(parseJson(appsB)) : null;
+      const infoView = parseJson(infoB);
+      const appsView = parseJson(appsB);
+      const tier = infoR.status === 200 && fieldOf(infoView, "host") === firstHost ? validInfoView(infoView) : null;
+      const apps = appsR.status === 200 && fieldOf(appsView, "host") === firstHost ? validAppsView(appsView) : null;
       const openOk =
         openR.status === 200 && openapiHasAppsPath(parseJson(openB));
       if (tier !== null && apps !== null && openOk) {
@@ -1041,18 +1066,24 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
       const mcp = await mcpCallOnce(ctx, daemon, binaryOk, isolatedEnv, "info", {
         host: 42,
       });
-      const mcpRefuses =
-        !!mcp &&
-        (mcp.error !== undefined || mcpToolErrorText(mcp.result) !== null);
+      const mcpStructuredError =
+        !!mcp && (mcp.error !== undefined || mcpToolErrorText(mcp.result) !== null);
+      const mcpRefuses = !!mcp && typeof mcp.error === "object" &&
+        mcp.error !== null && "code" in mcp.error && mcp.error.code === -32602;
       if (cliRefuses && httpRefuses && mcpRefuses) {
         cases.push({
           id: "error-trio-malformed",
           outcome: "PASS",
-          detail: `malformed input refused loudly on CLI (usage exit 2), HTTP ${http.status}/${errorField(httpB) ?? "untyped"}, MCP arg-shape refusal; no silent error or generic success.`,
+          detail: `malformed input refused on CLI (usage exit 2), HTTP ${http.status}/${errorField(httpB) ?? "untyped"}, and MCP InvalidParams (-32602); no generic error substituted for argument validation.`,
           claim: "invariant",
           tier: "simulated",
           covers: ["cap.errors.negative"],
         });
+      } else if (cliRefuses && httpRefuses && mcpStructuredError) {
+        cases.push(unknownCase(
+          "error-trio-malformed",
+          "CLI and HTTP refuse malformed input; MCP returns a structured error but its argument-validation classification is not established. No malformed-input coverage claimed.",
+        ));
       } else {
         cases.push({
           id: "error-trio-malformed",
@@ -1241,133 +1272,40 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
     }
   }
 
-  // -- 12. SSE honesty: a heartbeat-only/empty stream must never become a
-  // delta claim. PASS records the refusal to manufacture proof (no covers:
-  // honesty about absence proves no product facet).
-  if (!daemonUp || !daemon) {
-    cases.push(
-      unknownCase(
-        "sse-no-fabrication",
-        "Daemon absent; fabrication-honesty has no stream to evaluate (prerequisite absent).",
-      ),
-    );
+
+  // A faulty guard must never turn a checker negative into a physical keypress.
+  // The real API fixture owns its backend and observes zero dispatch/token effects.
+  if (ctx.env.ZESTROKU_MISSION_RUN_RCH !== "1") {
+    cases.push(unknownCase("browser-origin-precedence", "Explicit partial run omits isolated remote API guard acceptance; no mutation sent to the configured daemon."));
   } else {
+    const names = [
+      "foreign_origin_and_non_json_posts_never_consume_confirmation",
+      "browser_safety_guards_precede_reads_and_reject_dns_host_rebinding",
+    ];
     try {
-      const res = await fetchBounded(
-        `${daemon}/v1/events`,
-        { headers: { accept: "text/event-stream" } },
-        5000,
+      const checked = await ctx.exec(
+        ["rch", "exec", "--base", ctx.source, "--clean-overlay", "--no-overlay", "--",
+          "cargo", "test", "--locked", "-j1", "-p", "zestroku-api",
+          "--test", "mutation_gate_contract", "--", "--test-threads=1"],
+        { env: { RCH_REQUIRE_REMOTE: "1" }, timeoutMs: 1_500_000 },
       );
-      if (res.status === 404) {
-        cases.push(
-          unknownCase(
-            "sse-no-fabrication",
-            "No SSE route; nothing to evaluate for fabrication (prerequisite absent).",
-          ),
-        );
-      } else {
-        const ctype = (res.headers.get("content-type") ?? "").toLowerCase();
-        const { events } = parseSseChunk(await readBodyBounded(res, 16384));
-        const fabricated = events.length === 0 && res.status === 200;
-        cases.push({
-          id: "sse-no-fabrication",
-          outcome: "PASS",
-          detail: fabricated
-            ? `Zero-data stream correctly yields no delta claim (ctype ${ctype.slice(0, 40)}); heartbeats uncounted.`
-            : `${events.length} data events observed; fabrication check passes vacuously with real events present.`,
-          claim: "invariant",
-          tier: "simulated",
-        });
-      }
-    } catch (err) {
+      const output = `${checked.stdout}\n${checked.stderr}`;
+      const complete = checked.code === 0 && !checked.timedOut && names.every(name => rchSuiteGreen(output, name));
       cases.push({
-        id: "sse-no-fabrication",
-        outcome: "FAIL",
-        detail: `SSE honesty transport ${classifyFetchError(err)}.`,
-        claim: "invariant",
-        tier: "simulated",
+        id: "browser-origin-precedence", outcome: complete ? "PASS" : "FAIL",
+        detail: complete
+          ? "Immutable-source real API fixture passes both exact Origin/Host/confirmation-before-effects tests; no physical target used."
+          : `Isolated API acceptance non-green: exit=${checked.code} timedOut=${checked.timedOut}; both exact named tests and nonzero results required.`,
+        claim: "invariant", tier: "simulated",
+        covers: complete ? ["surface.web.negative"] : [],
       });
+    } catch {
+      cases.push(unknownCase("browser-origin-precedence", "Isolated remote API guard consumer could not execute; no mutation sent to the configured daemon."));
     }
   }
 
-  // -- 13. Browser origin precedence (causal pair): the same blank-confirm
-  // key POST is CONFIRMATION-class under matching Origin and a distinct
-  // browser-safety refusal under foreign Origin. Same-code means the guard
-  // is absent -> FAIL. Dispatch-log observation has no read surface, so no
-  // covers: before-effects remains an explicitly missing witness.
-  if (!daemonUp || !daemon) {
-    cases.push(
-      unknownCase(
-        "browser-origin-precedence",
-        "Daemon absent; Origin/Host guard contract not exercisable (prerequisite absent).",
-      ),
-    );
-  } else if (!firstHost) {
-    cases.push(
-      unknownCase(
-        "browser-origin-precedence",
-        "No seeded inventoried target; the precedence pair needs a known target so the control reaches confirmation logic instead of target resolution (missing witness).",
-      ),
-    );
-  } else {
-    try {
-      const target = firstHost;
-      const body = JSON.stringify({ key: "Home", confirm: "" });
-      const control = await fetchBounded(
-        `${daemon}/v1/devices/${encodeURIComponent(target)}/key`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json", Origin: "http://127.0.0.1", Host: "127.0.0.1" },
-          body,
-        },
-        3000,
-      );
-      const controlB = await readBodyBounded(control);
-      const probe = await fetchBounded(
-        `${daemon}/v1/devices/${encodeURIComponent(target)}/key`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            Origin: "http://evil.example",
-            Host: "127.0.0.1",
-          },
-          body,
-        },
-        3000,
-      );
-      const probeB = await readBodyBounded(probe);
-      if (originRefusalDistinct(probe.status, probeB, control.status, controlB)) {
-        cases.push({
-          id: "browser-origin-precedence",
-          outcome: "PASS",
-          detail: `matching-Origin -> ${control.status} confirmation-class, foreign-Origin -> ${probe.status} browser-safety refusal (observed: foreign_origin_and_non_json_posts_never_consume_confirmation, browser_safety_guards_precede_reads_and_reject_dns_host_rebinding). Zero tokens used. Missing witness: dispatch-log read surface for before-effects proof (not annotated).`,
-          claim: "invariant",
-          tier: "simulated",
-        });
-      } else {
-        cases.push({
-          id: "browser-origin-precedence",
-          outcome: "FAIL",
-          detail: `control -> ${control.status} ${redact(controlB).slice(0, 120)}; probe -> ${probe.status} ${redact(probeB).slice(0, 120)}; Origin guard does not decide distinctly.`,
-          claim: "invariant",
-          tier: "simulated",
-        });
-      }
-    } catch (err) {
-      cases.push({
-        id: "browser-origin-precedence",
-        outcome: "FAIL",
-        detail: `browser probe transport ${classifyFetchError(err)}.`,
-        claim: "invariant",
-        tier: "simulated",
-      });
-    }
-  }
-
-  // -- 14. Browser product surface: a real device/state browser remote is
-  // backlog (sse-web-remote-b5u); absent route is UNKNOWN, static HTML
-  // without state would be FAIL (the exact proxy).
+  // HTTP content type is neither proof of a functioning remote nor evidence
+  // that a legitimate HTML application is broken. Interactive proof is separate.
   if (!daemonUp || !daemon) {
     cases.push(
       unknownCase(
@@ -1392,10 +1330,10 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
       ) {
         cases.push({
           id: "browser-product-surface",
-          outcome: "FAIL",
-          detail: "GET / serves text/html where a device/state browser remote is required (static-HTML proxy: content-type verdict, no body keywords).",
-          claim: "invariant",
-          tier: "simulated",
+          outcome: "UNKNOWN",
+          detail: "HTML is reachable; actual device selection, state refresh, keyboard/touch controls, refusal and zero-effect behavior require an interactive browser witness. Content type proves none of those.",
+          claim: "live-witness",
+          tier: "live",
         });
       } else {
         cases.push(
@@ -1561,7 +1499,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
           detail: `remote-only RCH mcp_stdio gate green at pinned source with the exact named test line and nonzero pass count (detail capped).`,
           claim: "invariant",
           tier: "simulated",
-          covers: ["surface.mcp-stdio.positive", "surface.mcp-stdio.negative"],
+          covers: [],
         });
       } else {
         cases.push({
@@ -1792,19 +1730,18 @@ async function mcpStdioCase(
       names.includes("echo")
         ? await session.ask(mcpToolsCall(3, "echo", { text: "mission-parity-probe" }), 3)
         : null;
-    const echoOk =
-      !!echo &&
-      echo.result !== undefined &&
-      JSON.stringify(echo.result).includes("mission-parity-probe");
+    const echoOk = !!echo &&
+      (mcpSuccessText(echo.result)?.includes("mission-parity-probe") ?? false);
     const devices = names.includes("list_devices")
       ? await session.ask(mcpToolsCall(4, "list_devices", {}), 4)
       : null;
     const devicesText = redact(JSON.stringify(devices?.result ?? devices?.error ?? null));
-    const devicesOk = !!devices && devices.result !== undefined && !looksLikeDirectFallback(devicesText);
+    const mcpHosts = devices ? mcpInventoryHosts(devices.result) : null;
+    const devicesOk = mcpHosts !== null;
     // Shared-authority parity: the MCP inventory names the HTTP inventoried host.
     const firstHost = deviceHosts.length > 0 ? deviceHosts[0] : null;
     const agrees =
-      firstHost !== null && devicesOk && devicesText.includes(firstHost);
+      firstHost !== null && devicesOk && mcpHosts.includes(firstHost);
     const resources = await session.ask(mcpLine("resources/list", 5, {}), 5);
     const resourcesNote = resources
       ? `resources/list answered (${resources.error !== undefined ? "error" : "result"}; honesty recorded)`
@@ -1823,8 +1760,7 @@ async function mcpStdioCase(
           const cText = redact(JSON.stringify(cList?.result ?? cList?.error ?? null));
           closedHonest =
             !!cList &&
-            cList.error !== undefined &&
-            !looksLikeDirectFallback(cText);
+            (cList.error !== undefined || mcpToolErrorText(cList.result) !== null);
         }
       } finally {
         closed.close();
@@ -1834,10 +1770,10 @@ async function mcpStdioCase(
       return {
         id,
         outcome: "PASS",
-        detail: `initialize zestroku + 8/8 tools + echo round-trip + list_devices agreeing with HTTP inventory (${devicesText.slice(0, 120)}) + closed-port honest error with zero direct dial; ${resourcesNote} (observed: mcp_stdio_routes_reads_through_daemon_and_preserves_gate; never list-only).`,
+        detail: `Observed initialization, required tool names, echo text and typed inventory agreeing with HTTP, plus a structured closed-daemon error; ${resourcesNote}. Direct-dial counts, resource reads and approved effect dispatch are not proved by this observation; no full MCP-surface coverage claimed.`,
         claim: "invariant",
         tier: "simulated",
-        covers: ["surface.mcp-stdio.positive", "surface.mcp-stdio.negative"],
+        covers: [],
       };
     }
     if (!daemon || deviceHosts.length === 0) {

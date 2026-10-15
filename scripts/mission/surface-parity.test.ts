@@ -15,7 +15,6 @@ import {
   mcpToolNames,
   mcpToolsCall,
   openapiHasAppsPath,
-  originRefusalDistinct,
   isZestrokuVersion,
   parseHealthBody,
   parseMcpFrame,
@@ -28,7 +27,10 @@ import {
   validAppsView,
   validDevicesView,
   validInfoView,
+  mcpInventoryHosts,
+  run,
 } from "./surface-parity";
+describe("error-domain distinction", () => {
   test("404 device_not_found is unknown-target, 400 closed-set codes malformed", () => {
     expect(isUnknownTarget(404, '{"error":"device_not_found"}')).toBe(true);
     expect(isMalformed(400, '{"error":"invalid_device_target"}')).toBe(true);
@@ -66,6 +68,9 @@ describe("errorField", () => {
     expect(errorField("not json")).toBeNull();
   });
 });
+describe("health response semantics", () => {
+  test("a reachable but unhealthy daemon never passes liveness", () => {
+    expect(parseHealthBody('{"status":"ok"}')).toBe(true);
     expect(parseHealthBody('{"status":"degraded"}')).toBe(false);
     expect(parseHealthBody("not json")).toBe(false);
     expect(parseHealthBody("")).toBe(false);
@@ -130,17 +135,29 @@ describe("structured view validators", () => {
     expect(validInfoView(null)).toBeNull();
   });
 
-  test("device/app/state views typed positive and negative", () => {
-    expect(
-      validDevicesView({ devices: [{ host: "a", last_seen: 7 }] }),
-    ).toEqual(["a"]);
-    expect(validDevicesView({ devices: [{ host: "a" }] })).toBeNull();
-    expect(validDevicesView({ devices: "nope" })).toBeNull();
-    expect(
-      validAppsView({ apps: [{ id: 1, name: "x", type: "appl" }] }),
-    ).not.toBeNull();
-    expect(validAppsView({ apps: [{ id: 1 }] })).toBeNull();
-    expect(validAppsView({ apps: "nope" })).toBeNull();
+  const device = {
+    name: "Fixture", host: "192.0.2.82", model: "SIM", model_number: "X",
+    software_version: "1", access_tier: "Permissive", last_seen: 7,
+  };
+  test("API inventory is an array of complete device summaries", () => {
+    expect(validDevicesView([device])).toEqual(["192.0.2.82"]);
+    expect(validDevicesView({ devices: [device] })).toBeNull();
+    expect(validDevicesView([{ ...device, last_seen: "7" }])).toBeNull();
+    expect(validDevicesView([{ host: device.host, last_seen: 7 }])).toBeNull();
+  });
+  test("MCP error text cannot masquerade as a device inventory", () => {
+    const content = [{ type: "text", text: JSON.stringify([device]) }];
+    expect(mcpInventoryHosts({ content })).toEqual(["192.0.2.82"]);
+    expect(mcpInventoryHosts({ isError: true, content })).toBeNull();
+    expect(mcpInventoryHosts({ content: [{ type: "text", text: '{"error":"192.0.2.82"}' }] })).toBeNull();
+  });
+  test("installed-app IDs stay strings and preserve leading zeroes", () => {
+    const app = { id: "00042", name: "Fixture", type: "appl", subtype: null, version: null };
+    expect(validAppsView({ host: "192.0.2.82", apps: [app] })).toEqual([app]);
+    expect(validAppsView({ host: "192.0.2.82", apps: [{ ...app, id: 42 }] })).toBeNull();
+    expect(validAppsView({ apps: [app] })).toBeNull();
+  });
+  test("active-app absence is distinct from a mistyped ID", () => {
     expect(validActiveAppView({ host: "a", app_id: null, name: "home" })).toBe(true);
     expect(validActiveAppView({ host: "a", app_id: "1", name: "home" })).toBe(false);
     expect(validActiveAppView({ host: "a" })).toBe(false);
@@ -156,41 +173,6 @@ describe("structured view validators", () => {
   });
 });
 
-// -- origin precedence evaluator on exact codes: 403 UNTRUSTED_ORIGIN probe
-// vs 403 confirmation_required control; same-code means broken guard --
-describe("originRefusalDistinct", () => {
-  test("distinct guard refusal passes with live control", () => {
-    expect(
-      originRefusalDistinct(
-        403,
-        '{"error":"UNTRUSTED_ORIGIN"}',
-        403,
-        '{"error":"confirmation_required"}',
-      ),
-    ).toBe(true);
-  });
-
-  test("planted negative: same-code probe means absent guard", () => {
-    expect(
-      originRefusalDistinct(
-        403,
-        '{"error":"confirmation_required"}',
-        403,
-        '{"error":"confirmation_required"}',
-      ),
-    ).toBe(false);
-    expect(originRefusalDistinct(200, '{"ok":true}', 200, '{"ok":true}')).toBe(false);
-    expect(originRefusalDistinct(500, "boom", 403, '{"error":"confirmation_required"}')).toBe(false);
-    expect(
-      originRefusalDistinct(
-        403,
-        '{"error":"forbidden_origin"}',
-        403,
-        '{"error":"confirmation_required"}',
-      ),
-    ).toBe(false);
-  });
-});
 
 // -- structured MCP tool-error text mirrors the accepted suite accessor --
 describe("mcpToolErrorText", () => {
@@ -217,6 +199,12 @@ describe("rchSuiteGreen", () => {
 
   test("exact named line plus nonzero count is green", () => {
     expect(rchSuiteGreen(green, name)).toBe(true);
+  });
+  test("ten successes are not mistaken for a zero-test run", () => {
+    expect(rchSuiteGreen(`test ${name} ... ok\ntest result: ok. 10 passed; 0 failed; 0 ignored`, name)).toBe(true);
+  });
+  test("a similarly named test cannot stand in for the required consumer", () => {
+    expect(rchSuiteGreen(`test ${name}_unrelated ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored`, name)).toBe(false);
   });
 
   test("planted negatives: clean exit without proof is a zero-run", () => {
@@ -351,85 +339,71 @@ describe("redact", () => {
   });
 });
 
-// -- real loopback evaluator fixture (fixture tier): typed reads, distinct
-// refusals, origin precedence pair, unknown-body leakage check --
-describe("loopback daemon evaluator fixture", () => {
-  test("reads agree, refusals distinct, guard decides, unknown leaks nothing", async () => {
-    const server = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch(req) {
-        const u = new URL(req.url);
-        if (u.pathname === "/health")
-          return new Response('{"status":"ok"}', {
-            headers: { "content-type": "application/json" },
-          });
-        if (u.pathname === "/v1/devices")
-          return new Response(
-            JSON.stringify({ devices: [{ host: "known", last_seen: 7 }] }),
-            { headers: { "content-type": "application/json" } },
-          );
-        if (u.pathname === "/v1/devices/known/info")
-          return new Response(
-            JSON.stringify({
-              host: "known",
-              model_name: "Sim",
-              model_number: "0000",
-              software_version: "1.0",
-              is_tv: false,
-              access_tier: "Permissive",
-            }),
-            { headers: { "content-type": "application/json" } },
-          );
-        if (u.pathname === "/v1/devices/known/key" && req.method === "POST")
-          return req.headers.get("origin") === "http://127.0.0.1"
-            ? new Response('{"error":"confirmation_required"}', { status: 403 })
-            : new Response('{"error":"UNTRUSTED_ORIGIN"}', { status: 403 });
-        if (u.pathname.startsWith("/v1/devices/__mission"))
-          return new Response('{"error":"device_not_found"}', { status: 404 });
-        return new Response('{"error":"invalid_device_target"}', { status: 400 });
-      },
-    });
-    try {
-      const base = `http://127.0.0.1:${server.port}`;
-      const health = await fetch(`${base}/health`);
-      expect(health.status).toBe(200);
-      expect(parseHealthBody(await health.text())).toBe(true);
 
-      const devs = await (await fetch(`${base}/v1/devices`)).json();
-      expect(validDevicesView(devs)).toEqual(["known"]);
+function httpFixtureContext(url: string) {
+  const scratch = process.env.TMPDIR;
+  if (!scratch || !scratch.includes("/var/agent-tmp/")) throw new Error("Owned TMPDIR required");
+  return {
+    repo: process.cwd(), binary: "/nonexistent/zestroku", source: "0".repeat(40), scratch,
+    env: { ZESTROKU_DAEMON_URL: url, ZESTROKU_MISSION_RUN_RCH: "0" },
+    exec: async () => ({ code: 127, stdout: "", stderr: "CLI intentionally absent in HTTP checker fixture", timedOut: false }),
+  };
+}
 
-      const info = await (await fetch(`${base}/v1/devices/known/info`)).json();
-      expect(validInfoView(info)).toBe("Permissive");
-
-      const unk = await fetch(`${base}/v1/devices/__mission_nope__/info`);
-      const unkBody = await unk.text();
-      expect(isUnknownTarget(unk.status, unkBody)).toBe(true);
-      expect(unkBody).not.toContain('"apps"');
-
-      const bad = await fetch(`${base}/v1/devices/%FF%FE/info`);
-      expect(isMalformed(bad.status, await bad.text())).toBe(true);
-
-      const control = await fetch(`${base}/v1/devices/known/key`, {
-        method: "POST",
-        headers: { "content-type": "application/json", origin: "http://127.0.0.1" },
-        body: JSON.stringify({ key: "Home", confirm: "" }),
-      });
-      const probe = await fetch(`${base}/v1/devices/known/key`, {
-        method: "POST",
-        headers: { "content-type": "application/json", origin: "http://evil.example" },
-        body: JSON.stringify({ key: "Home", confirm: "" }),
-      });
-      expect(
-        originRefusalDistinct(
-          probe.status,
-          await probe.text(),
-          control.status,
-          await control.text(),
-        ),
-      ).toBe(true);
-    } finally {
-      server.stop(true);
-    }
+test("never probes a configured device mutation by assuming its guard will refuse", async () => {
+  let mutationPosts = 0;
+  let selectedHostRead = false;
+  const host = "192.0.2.82";
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (request.method === "POST" && path.startsWith("/v1/devices/")) {
+        mutationPosts++;
+        return Response.json({ outcome: "completed" });
+      }
+      if (path === "/health") return Response.json({ status: "ok" });
+      if (path === "/v1/devices") return Response.json([{
+        host, name: "Fixture", model: "SIM", model_number: "X",
+        software_version: "1", access_tier: "Permissive", last_seen: 7,
+      }]);
+      if (path === `/v1/devices/${host}/info`) selectedHostRead = true;
+      if (path === "/") return new Response("<html><button>Remote</button></html>", { headers: { "content-type": "text/html" } });
+      return Response.json({ error: "not_found" }, { status: 404 });
+    },
   });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    // Positive control: the isolated counter really observes mutation requests.
+    await fetch(`${base}/v1/devices/${host}/key`, { method: "POST" });
+    expect(mutationPosts).toBe(1);
+    const cases = await run(httpFixtureContext(base));
+    expect(selectedHostRead).toBe(true);
+    expect(mutationPosts).toBe(1);
+    expect(cases.find(item => item.id === "browser-product-surface")?.outcome).toBe("UNKNOWN");
+  } finally { server.stop(true); }
 });
+
+test("bounds a never-ending SSE body after headers", async () => {
+  let forcedClose = false;
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/health") return Response.json({ status: "ok" });
+      if (path === "/v1/devices") return Response.json([]);
+      if (path === "/v1/events") return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode(": heartbeat\n\n")); },
+      }), { headers: { "content-type": "text/event-stream" } });
+      return Response.json({ error: "not_found" }, { status: 404 });
+    },
+  });
+  // Real fetch-engine deadline integration: fake JS timers cannot advance its I/O.
+  // This safety stop bounds the deliberately broken, headers-only deadline variant.
+  const safety = setTimeout(() => { forcedClose = true; server.stop(true); }, 9_000);
+  try {
+    const cases = await run(httpFixtureContext(`http://127.0.0.1:${server.port}`));
+    expect(forcedClose).toBe(false);
+    expect(cases.find(item => item.id === "sse-deltas")?.outcome).toBe("UNKNOWN");
+  } finally { clearTimeout(safety); server.stop(true); }
+}, 12_000);
