@@ -82,13 +82,19 @@ fn sweep_to_returns_both_replies_within_mx_window() {
         sweep
             .endpoints
             .iter()
-            .any(|e| e.host == "127.0.0.1" && e.port == 9001)
+            .any(|e| e.endpoint.host == "127.0.0.1" && e.endpoint.port == 9001)
     );
     assert!(
         sweep
             .endpoints
             .iter()
-            .any(|e| e.host == "127.0.0.1" && e.port == 9002)
+            .any(|e| e.endpoint.host == "127.0.0.1" && e.endpoint.port == 9002)
+    );
+    assert!(
+        sweep
+            .endpoints
+            .iter()
+            .all(|endpoint| endpoint.responder.ip().is_loopback())
     );
 }
 
@@ -119,7 +125,7 @@ fn sweep_to_refuses_non_roku_st_and_keeps_valid_one() {
         "only roku:ecp endpoints pass: {:?}",
         sweep.endpoints
     );
-    assert_eq!(sweep.endpoints[0].port, 9004);
+    assert_eq!(sweep.endpoints[0].endpoint.port, 9004);
     assert_eq!(
         sweep.refused.len(),
         1,
