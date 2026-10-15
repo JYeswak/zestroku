@@ -92,6 +92,24 @@ fn execute(host: &str, port: u16, access_tier: AccessTier, json: bool) -> ExitCo
         return ExitCode::from(3);
     }
 
+    if std::env::var("ZESTROKU_DIRECT").as_deref() != Ok("1") {
+        let target = zestroku_core::tier::device_id(host, port);
+        return match crate::daemon_client::apps(&target) {
+            Ok(apps) => print_apps(apps, json),
+            Err(error) => {
+                eprintln!("zestroku: [{}] {error}", error.code());
+                if matches!(
+                    error,
+                    crate::daemon_client::ReadError::DaemonRequestFailed { status: 403, .. }
+                ) {
+                    ExitCode::from(3)
+                } else {
+                    ExitCode::FAILURE
+                }
+            }
+        };
+    }
+
     let runtime = match create_reactor()
         .map_err(|error| error.to_string())
         .and_then(|reactor| {
@@ -124,16 +142,7 @@ fn execute(host: &str, port: u16, access_tier: AccessTier, json: bool) -> ExitCo
     });
 
     match result {
-        Ok(apps) => match render_apps(apps, json) {
-            Ok(output) => {
-                println!("{output}");
-                ExitCode::SUCCESS
-            }
-            Err(error) => {
-                eprintln!("zestroku: could not encode apps as JSON: {error}");
-                ExitCode::FAILURE
-            }
-        },
+        Ok(apps) => print_apps(apps, json),
         Err(error) => {
             eprintln!("zestroku: {error}");
             if matches!(error, Error::TierRefused { .. }) {
@@ -141,6 +150,19 @@ fn execute(host: &str, port: u16, access_tier: AccessTier, json: bool) -> ExitCo
             } else {
                 ExitCode::FAILURE
             }
+        }
+    }
+}
+
+fn print_apps(apps: Vec<InstalledApp>, json: bool) -> ExitCode {
+    match render_apps(apps, json) {
+        Ok(output) => {
+            println!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("zestroku: could not encode apps as JSON: {error}");
+            ExitCode::FAILURE
         }
     }
 }

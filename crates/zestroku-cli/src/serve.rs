@@ -18,7 +18,7 @@ use asupersync::signal::{SignalKind, signal};
 use fastapi::{ServerConfig, TcpServer};
 
 use crate::store_db;
-use crate::transport::AsupersyncTransport;
+use crate::transport::SelectedTransport;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8070";
 
@@ -127,7 +127,7 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let app = zestroku_api::build_app(Arc::new(Mutex::new(store)), Arc::new(AsupersyncTransport));
+    let app = zestroku_api::build_app(Arc::new(Mutex::new(store)), Arc::new(SelectedTransport));
     let bind_addr = addr.to_string();
     let mut config = ServerConfig::new(bind_addr.clone());
     if !addr.ip().is_unspecified() {

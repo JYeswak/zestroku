@@ -189,7 +189,7 @@ fn run_daemon_cli(db: &std::path::Path, daemon_url: &str, args: &[&str]) -> std:
 }
 
 #[test]
-fn info_and_active_app_use_the_running_daemon_for_simulator_reads() {
+fn info_apps_and_active_app_use_the_running_daemon_for_simulator_reads() {
     let sim = zestroku_sim::SimDevice::start(zestroku_sim::SimConfig {
         kind: zestroku_sim::DeviceKind::Express,
         tier: zestroku_sim::SimTier::Permissive,
@@ -223,6 +223,22 @@ fn info_and_active_app_use_the_running_daemon_for_simulator_reads() {
         "stdout={stdout} stderr={stderr}"
     );
     assert!(stdout.contains("Roku"), "{stdout}");
+
+    let apps = run_daemon_cli(&db, &daemon_url, &["apps", &target, "--json"]);
+    let stdout = String::from_utf8_lossy(&apps.stdout);
+    let stderr = String::from_utf8_lossy(&apps.stderr);
+    assert_eq!(
+        apps.status.code(),
+        Some(0),
+        "stdout={stdout} stderr={stderr}"
+    );
+    let document: serde_json::Value = serde_json::from_str(&stdout).expect("CLI apps JSON");
+    let rows = document["apps"].as_array().expect("installed app rows");
+    assert!(
+        rows.iter()
+            .any(|app| app["id"] == "1001" && app["name"] == "Streaming One"),
+        "{document}"
+    );
 }
 
 #[test]
@@ -237,18 +253,22 @@ fn missing_daemon_fails_fast_without_falling_back_to_the_live_simulator() {
     seed_sim_device(&db, &target);
 
     let daemon_url = format!("http://127.0.0.1:{}", free_port());
-    let started = Instant::now();
-    let output = run_daemon_cli(&db, &daemon_url, &["info", &target]);
-    let elapsed = started.elapsed();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_ne!(output.status.code(), Some(0), "{output:?}");
-    assert!(stderr.contains("DAEMON_UNAVAILABLE"), "{stderr}");
-    assert!(elapsed < Duration::from_secs(2), "elapsed={elapsed:?}");
-    assert!(
-        sim.received_requests().is_empty(),
-        "{:?}",
-        sim.received_requests()
-    );
+    for verb in ["info", "apps"] {
+        let started = Instant::now();
+        let output = run_daemon_cli(&db, &daemon_url, &[verb, &target]);
+        let elapsed = started.elapsed();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_ne!(output.status.code(), Some(0), "{verb}: {output:?}");
+        assert!(stderr.contains("DAEMON_UNAVAILABLE"), "{verb}: {stderr}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "{verb}: elapsed={elapsed:?}"
+        );
+        assert!(
+            sim.received_requests().is_empty(),
+            "{verb} fell back to direct ECP while its daemon was unavailable"
+        );
+    }
 }
 
 fn probe_health_status(port: u16, host: &str) -> Option<u16> {

@@ -71,7 +71,7 @@ fn scan_refuses_public_and_too_wide_ranges() {
 }
 
 #[test]
-fn apps_lists_sim_installed_apps() {
+fn explicit_direct_apps_lists_sim_installed_apps() {
     let sim = SimDevice::start(SimConfig {
         kind: DeviceKind::Express,
         tier: SimTier::Permissive,
@@ -82,6 +82,7 @@ fn apps_lists_sim_installed_apps() {
     let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
         .env("ZESTROKU_DB", &db)
         .env("ZESTROKU_TIER", "permissive")
+        .env("ZESTROKU_DIRECT", "1")
         .args(["apps", target.as_str()])
         .output()
         .expect("run zestroku apps");

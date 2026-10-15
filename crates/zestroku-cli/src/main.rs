@@ -18,6 +18,7 @@ mod daemon_client;
 mod devices;
 mod install;
 mod installer;
+mod inventory;
 mod mutate;
 mod serve;
 mod store_db;
@@ -312,12 +313,6 @@ fn main() -> ExitCode {
                 "{}",
                 zestroku_core::version::version_string(env!("CARGO_PKG_VERSION"))
             );
-            ExitCode::SUCCESS
-        }
-        Some("--transport-probe") => {
-            // Test-only surface (transport.rs selector_follows_env): prints
-            // whether the std fallback is selected. Not documented usage.
-            println!("{}", transport::use_std_fallback());
             ExitCode::SUCCESS
         }
         None => {

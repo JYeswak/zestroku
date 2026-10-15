@@ -71,6 +71,21 @@ pub struct ActiveApp {
     pub name: String,
 }
 
+#[derive(serde::Deserialize)]
+struct InstalledAppsResponse {
+    apps: Vec<InstalledAppResponse>,
+}
+
+#[derive(serde::Deserialize)]
+struct InstalledAppResponse {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    app_type: String,
+    subtype: Option<String>,
+    version: Option<String>,
+}
+
 #[derive(Debug)]
 struct Endpoint {
     host: String,
@@ -105,6 +120,24 @@ pub fn active_app(target: &str) -> Result<ActiveApp, ReadError> {
     let response = daemon_get(&path)?;
     serde_json::from_str(&response.body)
         .map_err(|error| ReadError::InvalidResponse(format!("daemon JSON: {error}")))
+}
+
+pub fn apps(target: &str) -> Result<Vec<zestroku_proto::InstalledApp>, ReadError> {
+    let path = device_path(target, "apps")?;
+    let response = daemon_get(&path)?;
+    let response: InstalledAppsResponse = serde_json::from_str(&response.body)
+        .map_err(|error| ReadError::InvalidResponse(format!("daemon JSON: {error}")))?;
+    Ok(response
+        .apps
+        .into_iter()
+        .map(|app| zestroku_proto::InstalledApp {
+            id: app.id,
+            name: app.name,
+            app_type: app.app_type,
+            subtype: app.subtype,
+            version: app.version,
+        })
+        .collect())
 }
 
 /// Direct ECP GET is only selected by the CLI's explicit ZESTROKU_DIRECT=1 mode.

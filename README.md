@@ -65,8 +65,14 @@ leave this SSH session attached:
 
 ```
 ssh -o BatchMode=yes localhost \
-  'exec ./target/aarch64-apple-darwin/release/zestroku serve --bind 127.0.0.1:8070'
+  'exec env ZESTROKU_TRANSPORT=std "$HOME/Developer/zestroku/target/aarch64-apple-darwin/release/zestroku" serve --bind 127.0.0.1:8070'
 ```
+
+Discovery and the daemon share `ZESTROKU_TRANSPORT`: `std` selects the existing
+macOS LAN workaround; unset or `asupersync` selects the normal client. Unknown
+values produce a diagnostic and deterministically use asupersync. The selector
+does not grant LAN permission: run discovery in the same permitted process tree
+to populate the shared inventory before starting the daemon.
 
 For MCP, the default endpoint is `http://127.0.0.1:8070`; `ZESTROKU_DAEMON_URL`
 may override it only with `http://<loopback-ip>:<nonzero-port>`. Invalid MCP
@@ -114,6 +120,9 @@ requires a recorded Permissive tier from `info`, or an explicit
 `ZESTROKU_TIER=permissive` override. Limited or unknown tier is refused
 locally before `/query/apps` is sent (exit 3). `--json` emits an `apps` array
 with `id`, `name`, `type`, `subtype`, and `version`.
+Like `info`, it uses the configured daemon by default and reports
+`DAEMON_UNAVAILABLE` instead of silently falling back to direct ECP.
+`ZESTROKU_DIRECT=1` retains explicit direct access for owner-led diagnosis.
 App names and versions are not stable across firmware.
 `zestroku alias set <alias> <device>`, `zestroku alias rm <alias>`, and
 `zestroku alias ls` manage local device labels. Host arguments accept exact
