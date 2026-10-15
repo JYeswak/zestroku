@@ -315,9 +315,13 @@ fn main() -> ExitCode {
             );
             ExitCode::SUCCESS
         }
+        Some("--help") | Some("-h") => {
+            println!("{}", usage());
+            ExitCode::SUCCESS
+        }
         None => {
             println!("{}", usage());
-            ExitCode::from(2)
+            ExitCode::SUCCESS
         }
         Some("info") | Some("active-app") if args.len() == 2 => {
             run_read_command(&args[0], &args[1])
