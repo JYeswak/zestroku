@@ -1,0 +1,24 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_c157cd95b85486d39c278381e862f50e628ba6003359d5b05fd3861837f9efe1",
+ "limitations": [
+  "Real CLI against SimDevice on Contabo Linux; no physical-device genuineness, installed Mac, pending042 or whole-working-tree runtime claim.",
+  "Identifier script passed on tracked current working-tree/index content; untracked files are outside that script scan. No source-tree equivalence inferred."
+ ],
+ "operation": "zestroku.identity-independent-review",
+ "parameters": {
+  "bead": "zestroku-self-healing-identity-7ac",
+  "command": "RCH_REQUIRE_REMOTE=1 RCH_VISIBILITY=verbose nice -n 10 rch exec --base 65ca080b692bdf6d12354bc66d488e4a99d95f86 --clean-overlay --no-overlay -- cargo test --locked -j 2 -p zestroku-cli --test devices_store -- --nocapture --test-threads=1",
+  "source": "65ca080b692bdf6d12354bc66d488e4a99d95f86",
+  "subject_encoding": "source-identity-manifest-v1",
+  "subject_manifest": "{\"overlay_fingerprint\":\"fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195\",\"source_commit\":\"65ca080b692bdf6d12354bc66d488e4a99d95f86\",\"source_tree\":\"db93e5e63c51c173133367d1a02b393edc40930b\"}",
+  "subject_sha256": "adcde9cdbcadbea645945427e839fed6a479597b2f6d3a3a63850d32d9c7896a"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 865,
+  "decisive_output": "Selected worker: contabo-4\nrunning 6 tests\ntest cli_output_never_emits_fixture_identifiers ... ok\ntest devices_persists_one_row_per_discovered_device ... ok\ntest moved_device_keeps_one_row_and_aliases_follow ... ok\ntest real_devices_json_reports_an_unreachable_seed ... ok\ntest same_model_different_identities_never_merge ... ok\ntest unknown_identity_same_model_devices_never_merge ... ok\ntest result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.95s\nRemote command finished: exit=0 in 534682ms\nclean-overlay receipt: base=65ca080b692bdf6d12354bc66d488e4a99d95f86 overlay-fingerprint=fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195 tree=db93e5e63c51c173133367d1a02b393edc40930b\nbash scripts/check-identifiers.sh: exit=0, stdout/stderr empty, wall=1.57s; tracked working-tree/index scan, not an immutable-source scan\n",
+  "sha256": "e81dbd41369b65439e2292fe2e929083af2f8795ecf9e9ff8dc3b4764a18d165"
+ }
+}
