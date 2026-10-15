@@ -12,6 +12,92 @@ so an agent that guesses launches the wrong app on the owner's TV. Every
 mutation here is human-led: one approval per operation, audited, with no
 standing blanket.
 
+## Mission
+
+Make zestroku a complete, installed, resident control system that Joshua can use
+from his Mac terminal, local agents, authorized tailnet agents, HTTP clients,
+and browser/phone remote to discover, inspect, and safely control his own
+supported Roku devices. Every required capability has an explicit positive
+result, negative/boundary behavior, applicable device/tier matrix, and
+independently witnessed current-source acceptance. First-run setup, persistence,
+recovery, diagnostics, policy, audit, and truthful partial failure are part of
+usability, not later ecosystem hardening. Per-operation owner approval remains
+mandatory for device mutations. Simulator proof never substitutes for
+physical-device or real-tailnet proof.
+
+Approved by Joshua on 2026-10-15: "yes I approve this", in response to the
+surface and negative-acceptance proposal; approval recorded in Agent Mail
+AM53952. October 18, 2026 is the selected target, not evidence of completion.
+The requirements below describe the approved destination, not shipped behavior.
+
+### Required surfaces
+
+| Surface | Positive acceptance | Negative acceptance |
+|---|---|---|
+| Installed Mac CLI | Stable command path, source-bound version, root/subcommand help, JSON and completions from a fresh shell. | Wrong-platform/stale/dirty artifacts are not current proof; invalid input fails; diagnostics never contaminate JSON. |
+| First-run setup | Empty-store setup reaches discovery and a usable first read, explaining required owner actions. | No developer-seeded DB as first-run proof; no silent permission, tier, or device-state changes. |
+| Resident macOS service | Supported launchd deployment in a LAN-permitted context; persistence, restart and crash recovery. | Empty healthy daemon is not readiness; duplicate instance, occupied port, invalid config and store errors fail explicitly. |
+| Local HTTP API | Documented operations reach shared core and authoritative inventory; OpenAPI matches execution. | Unknown target, invalid body, approval refusal and device failure remain distinct; no placeholder success. |
+| MCP stdio | Real agent initialize, tool/resource discovery, reads and approved control through daemon. | Listing/echo is not execution; daemon failure never falls back to LAN; approval-only text is not mutation success. |
+| MCP streamable HTTP | Real client exercises supported capabilities with stdio-equivalent semantics. | No weaker approval/policy/target rules; cancellation or disconnect must not duplicate mutations. |
+| Tailnet access | Authorized off-LAN client reaches daemon and completes intended workflow; devices remain LAN-only. | Public/wildcard exposure and Funnel refused under deployment contract; unknown principal never becomes owner. |
+| SSE | Real subscribers observe state/reachability deltas with documented reconnect behavior. | No fabricated unchanged-state events, silent stale state, or unbounded slow-client buffering. |
+| Browser/phone remote | Real devices/current state and owner-approved controls on intended local/tailnet browser. | Foreign Host/Origin and invalid write types rejected before effects; no tokens in URLs or premature success. |
+| Configuration/store | Documented seeds, aliases, defaults, policy, tiers, inventory, caches and history survive intended restarts. | Invalid config is actionable; migrations preserve data; interrupted identity moves do not lose associations. |
+| Diagnostics/operator controls | Doctor, service status, logs and errors identify failure and remedy. | Doctor never mutates devices; failed prerequisites skip honestly; no false health or secrets in evidence. |
+| Runnable simulator | `zestroku sim --scenario two-devices` exercises documented commands with real sockets/store. | Explicit simulator classification; no household traffic/credentials; injected faults exercise actual consumers. |
+
+### Required capabilities and negative controls
+
+Each applicable CLI, HTTP, MCP and browser entry point must reach the same
+authoritative implementation and policy. Human approval minting remains
+interactive-owner-only; it must not be exposed as a remote approval endpoint.
+
+| Capability | Positive acceptance | Negative/boundary acceptance |
+|---|---|---|
+| Discovery/inventory | Both owner devices persisted through supported SSDP, seeds and explicit scans; report mechanism. | Off-scope SSDP probes refused before I/O; duplicates reconciled; seed success is not multicast proof. |
+| Identity/aliases/defaults | Stable identity, aliases/class targets and per-client defaults follow address changes. | Distinct devices never merge; ambiguity/typos never select mutation targets; defaults do not redirect explicit targets. |
+| Information/capabilities/tier | Current firmware/class/capabilities and observed tier with freshness/provenance. | Unknown is not Permissive or unsupported; optional absent fields remain distinguishable. |
+| Installed apps/search | Actual app IDs/names, safe selection and useful suggestions. | Missing/ambiguous apps cause zero mutation; never guess IDs or override daemon authority with stale client state. |
+| Active app/media/TV state | Typed supported state with freshness and device-class applicability. | Distinguish tier refusal, unsupported/absent resource, malformed response and unreachable device. |
+| Keys/control | Approved supported action reaches intended device exactly once with completed audit. | Wrong device/action, invalid/expired/replayed token, tier/policy refusal and invalid key cause zero mutation; preserve case-sensitive text semantics. |
+| Launch/input/deep links | Selected installed app and explicitly supported input/deep-link behavior. | No uncertain fuzzy launch, backend override, silent fan-out or invented support; bind approvals to actual action. |
+| Developer sideload | Owner archive/credentials use actual installer endpoint with meaningful result verification. | Wrong approval/port, invalid archive, Digest failure and HTTP-200 error pages fail; no secret/archive leakage. |
+| Action history | Completed/denied actions expose target, principal/surface, intent, before-state and truthful result. | Approval is not completion; device/transport/audit-finalization failure cannot masquerade as fully recorded success. |
+| Undo | Fresh approved restoration of supported prior state, itself audited. | Never undo denied/pending history; missing prior app/device or unrestorable focus reported honestly. |
+| Policy/principals | Shared allowlists/rates/quiet hours checked before dispatch and approval consumption. | No surface bypass; unknown principal is not owner; denied actions dispatch zero and preserve unused approval. |
+| Cache/poll/recovery | Documented warm-read latency/freshness; bounded suspend/address-change recovery and backoff. | Label stale data; no blocking executor network work or polling storms; bounded read retry only, never automatic mutation retries. |
+| Errors/machine output | Stable semantic codes, hints, suggestions and structured results across surfaces. | No silent error or generic success on partial failure; exit classes may represent multiple semantic codes. |
+
+For keys, input/deep links, icons and device-specific capabilities, record
+required, device-dependent, deferred or unsupported explicitly. Do not infer
+support from a protocol name or silently lose it between documentation and
+implementation.
+
+Acceptance evidence names the entry point, device/tier, setup, positive result,
+negative case, side-effect count, timing/freshness bound, source/artifact,
+independent verifier and disposition. Real-device mutations require fresh
+point-of-use approval; an unavailable device leaves its live acceptance open.
+
+### Scope decisions requiring reconciliation
+
+- Default clients use the authoritative daemon without silent direct fallback;
+  retain explicit direct diagnosis, not the old automatic-fallback recipe.
+- Define permitted listeners per deployment mode; historical owner-LAN,
+  loopback/tailnet and unsafe-bind descriptions are not interchangeable.
+- Resident product operation supersedes the old on-demand-only exclusion;
+  agent watchers remain separate.
+- Roku has no Sonos topology/UPnP-800 recovery path. Preserve Roku-specific
+  address-change, suspend and tier-change recovery instead.
+- State what can actually be snapshotted/restored; do not promise unobservable
+  focus restoration.
+- Enumerate intended parity rather than exposing human approval minting or
+  service administration as agent tools.
+- Scenes/schedules remain owner-gated deferred; DJ, feedback, grouping,
+  playback transfer and announcements have no accepted Roku analogue.
+- Ecosystem tracker releases and skill admissions remain backlog obligations,
+  not substitutes for or blanket prerequisites to local product capability.
+
 ## Build and run on the owner's Mac
 
 Preferred route (no rch worker needed): `gh workflow run darwin.yml --ref main`

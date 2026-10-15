@@ -1,0 +1,37 @@
+# Human text: README.md
+# Approval records scope, not executed acceptance. Missing checks remain UNREGISTERED.
+identity = "Make zestroku a complete, installed, resident control system that Joshua can use from his Mac terminal, local agents, authorized tailnet agents, HTTP clients, and browser/phone remote to discover, inspect, and safely control his own supported Roku devices."
+stage = "implementation"
+approved_by = "Joshua"
+approved_at = "2026-10-15"
+approval_quote = "yes I approve this"
+done_rule = "Every required README Mission surface and capability has independent current-source positive and negative acceptance, actual applicable device/tier and tailnet witnesses, bounded timing/freshness, truthful side effects and outcomes, and no unmet required live leg. Simulator results do not replace physical or tailnet proof."
+not_in_mission = ["Other people's devices or accounts", "Firmware flashing", "Production approval minting by agents", "Silent direct-LAN fallback", "Automatic mutation retries", "Unapproved scenes or schedules", "Sonos-only DJ, grouping, playback transfer or announcements", "Ecosystem-only tracker and skill releases as substitutes for local usability"]
+product_paths = ["crates", "README.md", "docs"]
+pillar_ids = ["installed-resident", "surface-parity", "safe-control", "recovery-live"]
+
+[cadence]
+daily = "Review actual acceptance and blockers against the approved surfaces; preserve missing/failed evidence."
+weekly = "Reconcile local and tailnet user journeys with exact-source independent acceptance."
+exit = "All required positive and negative acceptance witnessed; no self-close or simulator-to-live promotion."
+
+[blast_radius]
+binaries = ["zestroku"]
+paths = ["crates", "README.md", "docs", ".omp/mission.toml"]
+sessions = ["zestroku"]
+
+[[pillar]]
+id = "installed-resident"
+clause = "Fresh-shell installation, first-run empty-store setup and supported resident service work in Joshua's environment, with explicit startup, store, bind and restart failures."
+
+[[pillar]]
+id = "surface-parity"
+clause = "CLI, HTTP, initialized MCP stdio and streamable HTTP, resources, SSE, browser/phone and authorized tailnet workflows implement the README surface and capability contract with shared authority and truthful errors."
+
+[[pillar]]
+id = "safe-control"
+clause = "Per-operation human-only approvals, exact action/target binding, tier and principal policy, zero-dispatch denial/replay negatives, completed audit and approved bounded undo hold across applicable surfaces."
+
+[[pillar]]
+id = "recovery-live"
+clause = "Identity/address/tier/suspend recovery, bounded polling and freshness, responsive concurrent health/shutdown, runnable simulator faults and actual applicable physical-device/tailnet witnesses meet the README acceptance contract."
