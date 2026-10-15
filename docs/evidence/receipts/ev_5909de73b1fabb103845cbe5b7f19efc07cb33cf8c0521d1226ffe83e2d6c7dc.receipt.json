@@ -1,0 +1,24 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_5909de73b1fabb103845cbe5b7f19efc07cb33cf8c0521d1226ffe83e2d6c7dc",
+ "limitations": [
+  "Linux real CLI/SimDevice tests only; no installed Mac, physical device or pending042 equivalence.",
+  "Original acceptance[a] historical causal attribution, [c] executed injected broken variants and [d] entire strict gate rerun are not established by these9 tests. Keep review open, no full-close claim."
+ ],
+ "operation": "zestroku.drain-independent-replay",
+ "parameters": {
+  "bead": "zestroku-m7c-serve-inq.1.1",
+  "command": "RCH_REQUIRE_REMOTE=1 RCH_VISIBILITY=verbose nice -n 10 rch exec --base 65ca080b692bdf6d12354bc66d488e4a99d95f86 --clean-overlay --no-overlay -- cargo test --locked -j 2 -p zestroku-cli --test serve --test serve_drain_controls -- --nocapture --test-threads=1",
+  "source": "65ca080b692bdf6d12354bc66d488e4a99d95f86",
+  "subject_manifest": "{\"overlay_fingerprint\":\"fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195\",\"source_commit\":\"65ca080b692bdf6d12354bc66d488e4a99d95f86\",\"source_tree\":\"db93e5e63c51c173133367d1a02b393edc40930b\"}",
+  "subject_sha256": "adcde9cdbcadbea645945427e839fed6a479597b2f6d3a3a63850d32d9c7896a"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 1012,
+  "decisive_output": "Selected worker contabo-3: source-authority lock had an unfinished owner; no test verdict there. Native RCH retried contabo-4.\nPinned clean-overlay/no-overlay base 65ca080b692bdf6d12354bc66d488e4a99d95f86.\nserve: 5 passed; 0 failed (includes original sigterm_stops_admission_and_drains_an_admitted_info_read).\nserve_drain_controls: 4 passed; 0 failed: C1 no TERM baseline, C2 held proxy across TERM, C3 original ab-before-TERM/cd-after-admission-stop, C4 partial body without TERM.\nC3 admission_stopped at451.955956ms; sent_cd Ok; read Ok(256), HTTP200, SIMX1, Connection close, Content-Length165/body165, simulator GET device-info/apps/tv-active-channel, child exit0 and listener closed.\nRemote command finished: exit=0 in32492ms; base65ca, overlay fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195, tree db93e5e63c51c173133367d1a02b393edc40930b.\nSeveral diagnostic lines say source_sha=unavailable; source binding here is the RCH immutable receipt, not an independently hashed installed binary.\n",
+  "full_output": "artifact://457",
+  "sha256": "7c6ec10ce7caaf942a012cd03cd6d42df48c16a0237706baa1a39f304c1471e3"
+ }
+}
