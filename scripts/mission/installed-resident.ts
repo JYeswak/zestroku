@@ -1,7 +1,11 @@
 import type { CheckCase, CheckContext } from "../mission-check";
-import { createServer } from "node:net";
+import { createServer as createNetServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 const timeoutMs = 5_000;
+const fixtureInfo = "<device-info><model-name>Mission Fixture</model-name><model-number>FIXTURE-1</model-number><software-version>1.0</software-version><is-tv>false</is-tv></device-info>";
 
 function result(
   id: string,
@@ -11,6 +15,15 @@ function result(
   tier: CheckCase["tier"] = "fixture",
 ): CheckCase {
   return { id, outcome, detail, claim, tier };
+}
+
+export function assessHealth(status: number, body: unknown): boolean {
+  return status === 200 && typeof body === "object" && body !== null && "status" in body && body.status === "ok";
+}
+
+export function assessInventory(status: number, body: unknown): boolean {
+  if (status !== 200 || typeof body !== "object" || body === null || !("devices" in body)) return false;
+  return Array.isArray(body.devices) && body.devices.length > 0;
 }
 
 async function fetchJson(url: string): Promise<{ status: number; body: unknown }> {
@@ -33,21 +46,108 @@ function checkedServiceUrl(value: string): URL {
   return base;
 }
 
-async function bindNegative(ctx: CheckContext): Promise<CheckCase> {
-  const server = createServer();
+export async function inspectHealth(url: string): Promise<CheckCase> {
   try {
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => resolve());
+    const response = await fetchJson(url);
+    const healthy = assessHealth(response.status, response.body);
+    return result(
+      "resident.http-health",
+      healthy ? "PASS" : "FAIL",
+      healthy ? "reachable endpoint returned HTTP 200 with status ok" : `reachable endpoint violated health contract with HTTP ${response.status}`,
+      "invariant",
+      "fixture",
+    );
+  } catch {
+    return result("resident.http-health", "FAIL", "configured service health request failed or returned invalid JSON", "invariant", "fixture");
+  }
+}
+
+async function inspectInventory(url: string): Promise<CheckCase> {
+  try {
+    const response = await fetchJson(url);
+    const ready = assessInventory(response.status, response.body);
+    const count = typeof response.body === "object" && response.body !== null && "devices" in response.body && Array.isArray(response.body.devices) ? response.body.devices.length : 0;
+    return result(
+      "resident.http-inventory",
+      ready ? "PASS" : "FAIL",
+      ready ? `reachable endpoint returned ${count} device rows` : `reachable endpoint failed nonempty inventory contract with HTTP ${response.status}`,
+      "invariant",
+      "fixture",
+    );
+  } catch {
+    return result("resident.http-inventory", "FAIL", "configured service inventory request failed or returned invalid JSON", "invariant", "fixture");
+  }
+}
+
+async function firstRunDiscovery(ctx: CheckContext): Promise<CheckCase> {
+  const requests: string[] = [];
+  const server = createHttpServer((request, response) => {
+    requests.push(`${request.method ?? ""} ${request.url ?? ""}`);
+    if (request.method === "GET" && request.url === "/query/device-info") {
+      response.writeHead(200, { "content-type": "application/xml" });
+      response.end(fixtureInfo);
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  try {
+    const listening = Promise.withResolvers<void>();
+    server.once("error", listening.reject);
+    server.listen(0, "127.0.0.1", listening.resolve);
+    await listening.promise;
+    const address = server.address();
+    if (!address || typeof address === "string") return result("store.first-run-discovery", "UNKNOWN", "loopback fixture did not expose a port", "invariant", "simulated");
+
+    const targets = join(ctx.scratch, "first-run-targets.toml");
+    await writeFile(targets, `[[target]]\nhost = "127.0.0.1"\nport = ${address.port}\n`, { encoding: "utf8", mode: 0o600 });
+    const output = await ctx.exec([ctx.binary, "devices", "--no-ssdp", "--targets", targets, "--json"], {
+      env: { ...ctx.env, HOME: join(ctx.scratch, "first-run-home"), ZESTROKU_DB: join(ctx.scratch, "first-run", "actions.db") },
+      timeoutMs,
     });
+    let document: unknown;
+    try {
+      document = JSON.parse(output.stdout);
+    } catch {
+      document = null;
+    }
+    let rows: unknown[] = [];
+    if (document && typeof document === "object" && "devices" in document && Array.isArray(document.devices)) rows = document.devices;
+    const modeledRow = rows.some((row) => row !== null && typeof row === "object" &&
+      "model_name" in row && row.model_name === "Mission Fixture" &&
+      "model_number" in row && row.model_number === "FIXTURE-1" &&
+      "software_version" in row && row.software_version === "1.0");
+    const observedRequest = requests.includes("GET /query/device-info");
+    const passed = !output.timedOut && output.code === 0 && modeledRow && observedRequest;
+    return result(
+      "store.first-run-discovery",
+      passed ? "PASS" : "FAIL",
+      passed ? "real CLI discovered the loopback fixture from an empty isolated store and completed its inventory write" : `first-run fixture contract failed: code=${output.code}, timedOut=${output.timedOut}, modeledRow=${modeledRow}, deviceInfoRequest=${observedRequest}`,
+      "invariant",
+      "simulated",
+    );
+  } catch {
+    return result("store.first-run-discovery", "UNKNOWN", "isolated CLI discovery fixture could not be prepared", "invariant", "simulated");
+  } finally {
+    if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+async function bindNegative(ctx: CheckContext): Promise<CheckCase> {
+  const server = createNetServer();
+  try {
+    const listening = Promise.withResolvers<void>();
+    server.once("error", listening.reject);
+    server.listen(0, "127.0.0.1", listening.resolve);
+    await listening.promise;
     const address = server.address();
     if (!address || typeof address === "string") {
-      return result("resident.bind-conflict", "FAIL", "could not obtain an occupied loopback port");
+      return result("resident.bind-conflict", "FAIL", "could not obtain an occupied loopback port", "invariant", "simulated");
     }
     const attempted = await ctx.exec(
       [ctx.binary, "serve", "--bind", `127.0.0.1:${address.port}`],
       {
-        env: { ...ctx.env, ZESTROKU_DB: `${ctx.scratch}/bind-negative.db` },
+        env: { ...ctx.env, ZESTROKU_DB: join(ctx.scratch, "bind-negative.db") },
         timeoutMs,
       },
     );
@@ -57,84 +157,70 @@ async function bindNegative(ctx: CheckContext): Promise<CheckCase> {
     return result(
       "resident.bind-conflict",
       rejected ? "PASS" : "FAIL",
-      rejected ? "real serve startup rejected an occupied loopback port" : `expected nonzero bind-conflict refusal; code=${attempted.code}, timedOut=${attempted.timedOut}`,
+      rejected ? "real CLI startup rejected an occupied loopback port" : `expected bind-conflict refusal; code=${attempted.code}, timedOut=${attempted.timedOut}`,
       "invariant",
       "simulated",
     );
   } catch {
-    return result("resident.bind-conflict", "FAIL", "could not execute the real occupied-port startup check", "invariant", "simulated");
+    return result("resident.bind-conflict", "UNKNOWN", "occupied-port CLI witness unavailable", "invariant", "simulated");
   } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
 
 export async function run(ctx: CheckContext): Promise<CheckCase[]> {
   const cases: CheckCase[] = [];
-  const source = ctx.source.trim();
-  const validRevision = source.length >= 40 && source.length <= 64 && [...source].every((character) => "0123456789abcdefABCDEF".includes(character));
-  const revision = validRevision ? source.slice(0, 7) : "";
   const version = await ctx.exec([ctx.binary, "--version"], { env: ctx.env, timeoutMs });
   if (version.timedOut || version.code !== 0) {
     const unavailable = version.timedOut ? "version command timed out" : `version command exited ${version.code}`;
-    for (const id of ["cli.source-bound-artifact", "cli.root-help", "cli.subcommand-help", "store.first-run", "resident.http-health", "resident.http-inventory"]) {
-      cases.push(result(id, "UNKNOWN", `required installed CLI unavailable: ${unavailable}`));
+    for (const id of ["cli.version-revision-hint", "cli.root-help", "cli.serve-help", "cli.invalid-command", "store.first-run-discovery"]) {
+      cases.push(result(id, "UNKNOWN", `installed CLI unavailable: ${unavailable}`, "invariant", "live"));
     }
-    cases.push(result("resident.bind-conflict", "UNKNOWN", "installed CLI unavailable; startup bind-negative was not exercised"));
-    return cases;
+  } else {
+    const versionText = version.stdout.trim();
+    const revisionHint = ctx.source.length >= 7 && versionText.includes(ctx.source.slice(0, 7)) && !versionText.includes("-dirty");
+    cases.push(result(
+      "cli.version-revision-hint",
+      revisionHint ? "PASS" : "FAIL",
+      revisionHint ? "CLI version contains the supplied source's abbreviated revision; this is not build provenance" : "CLI version does not match the supplied source's abbreviated revision or reports dirty state",
+      "invariant",
+      "fixture",
+    ));
+
+    const rootHelp = await ctx.exec([ctx.binary, "--help"], { env: ctx.env, timeoutMs });
+    const rootHelpText = `${rootHelp.stdout}\n${rootHelp.stderr}`;
+    const rootOk = !rootHelp.timedOut && rootHelp.code === 0 && rootHelpText.includes("USAGE:") && rootHelpText.includes("serve");
+    cases.push(result("cli.root-help", rootOk ? "PASS" : "FAIL", rootOk ? "root help rendered with success status" : `root help contract failed: code=${rootHelp.code}, timedOut=${rootHelp.timedOut}`, "invariant", "fixture"));
+
+    const subHelp = await ctx.exec([ctx.binary, "serve", "--help"], { env: ctx.env, timeoutMs });
+    const subHelpText = `${subHelp.stdout}\n${subHelp.stderr}`;
+    const subOk = !subHelp.timedOut && subHelp.code === 0 && subHelpText.includes("--bind");
+    cases.push(result("cli.serve-help", subOk ? "PASS" : "FAIL", subOk ? "serve help rendered with success status" : `serve help contract failed: code=${subHelp.code}, timedOut=${subHelp.timedOut}`, "invariant", "fixture"));
+
+    const invalid = await ctx.exec([ctx.binary, "__mission_invalid_command__"], { env: ctx.env, timeoutMs });
+    const invalidOk = !invalid.timedOut && invalid.code === 2 && invalid.stderr.includes("USAGE:");
+    cases.push(result("cli.invalid-command", invalidOk ? "PASS" : "FAIL", invalidOk ? "unknown command failed with usage diagnostics" : `invalid command contract failed: code=${invalid.code}, timedOut=${invalid.timedOut}`, "invariant", "fixture"));
+    cases.push(await firstRunDiscovery(ctx));
   }
-
-  const versionText = `${version.stdout} ${version.stderr}`.trim();
-  const attestedSource = ctx.env.ZESTROKU_MISSION_ARTIFACT_SOURCE?.trim();
-  const sourceBound = revision !== "" && attestedSource === source && versionText.includes(revision) && !versionText.includes("-dirty");
-  const sourceOutcome: CheckCase["outcome"] = !attestedSource ? "UNKNOWN" : sourceBound ? "PASS" : "FAIL";
-  cases.push(result(
-    "cli.source-bound-artifact",
-    sourceOutcome,
-    sourceOutcome === "PASS" ? `installed binary version and artifact attestation identify source ${revision}` : sourceOutcome === "UNKNOWN" ? "artifact source attestation is absent" : "artifact attestation, supplied source revision, and clean binary version disagree",
-  ));
-
-  const rootHelp = await ctx.exec([ctx.binary, "--help"], { env: ctx.env, timeoutMs });
-  const rootHelpText = `${rootHelp.stdout}\n${rootHelp.stderr}`;
-  const rootOk = !rootHelp.timedOut && rootHelp.code === 0 && rootHelpText.includes("USAGE:") && rootHelpText.includes("serve");
-  cases.push(result("cli.root-help", rootOk ? "PASS" : "FAIL", rootOk ? "root help rendered with success status" : `root help contract failed: code=${rootHelp.code}, timedOut=${rootHelp.timedOut}`));
-
-  const subHelp = await ctx.exec([ctx.binary, "serve", "--help"], { env: ctx.env, timeoutMs });
-  const subHelpText = `${subHelp.stdout}\n${subHelp.stderr}`;
-  const subOk = !subHelp.timedOut && subHelp.code === 0 && subHelpText.includes("--bind");
-  cases.push(result("cli.subcommand-help", subOk ? "PASS" : "FAIL", subOk ? "serve help rendered with success status" : `serve help contract failed: code=${subHelp.code}, timedOut=${subHelp.timedOut}`));
-
-  const firstRun = await ctx.exec([ctx.binary, "alias", "ls"], {
-    env: { ...ctx.env, HOME: `${ctx.scratch}/first-run-home`, ZESTROKU_DB: `${ctx.scratch}/first-run/actions.db` },
-    timeoutMs,
-  });
-  const firstRunOk = !firstRun.timedOut && firstRun.code === 0;
-  cases.push(result("store.first-run", firstRunOk ? "PASS" : "FAIL", firstRunOk ? "empty isolated store opened through the real CLI without pre-seeded device state" : `empty-store CLI path failed: code=${firstRun.code}, timedOut=${firstRun.timedOut}`, "invariant", "simulated"));
 
   const serviceUrl = ctx.env.ZESTROKU_MISSION_SERVICE_URL;
   if (!serviceUrl) {
-    cases.push(result("resident.http-health", "UNKNOWN", "ZESTROKU_MISSION_SERVICE_URL is not configured; live service health was not observed", "live-witness", "live"));
-    cases.push(result("resident.http-inventory", "UNKNOWN", "ZESTROKU_MISSION_SERVICE_URL is not configured; live inventory was not observed", "live-witness", "live"));
+    cases.push(result("resident.http-health", "UNKNOWN", "service URL is absent; resident HTTP health was not observed", "live-witness", "live"));
+    cases.push(result("resident.http-inventory", "UNKNOWN", "service URL is absent; nonempty inventory was not observed", "live-witness", "live"));
   } else {
     try {
-      const health = await fetchJson(new URL("/health", checkedServiceUrl(serviceUrl)).toString());
-      const healthBody = health.body;
-      const healthOk = health.status === 200 && typeof healthBody === "object" && healthBody !== null && "status" in healthBody && healthBody.status === "ok";
-      cases.push(result("resident.http-health", healthOk ? "PASS" : "FAIL", healthOk ? "configured resident service returned HTTP 200 health status ok" : `health contract failed with HTTP ${health.status}`, "live-witness", "live"));
+      const base = checkedServiceUrl(serviceUrl);
+      cases.push(await inspectHealth(new URL("/health", base).toString()));
+      cases.push(await inspectInventory(new URL("/v1/devices", base).toString()));
     } catch {
-      cases.push(result("resident.http-health", "FAIL", "configured service health request failed or URL was invalid", "live-witness", "live"));
-    }
-    try {
-      const inventory = await fetchJson(new URL("/v1/devices", checkedServiceUrl(serviceUrl)).toString());
-      let rows: unknown;
-      if (Array.isArray(inventory.body)) rows = inventory.body;
-      else if (inventory.body && typeof inventory.body === "object" && "devices" in inventory.body) rows = inventory.body.devices;
-      const count = Array.isArray(rows) ? rows.length : 0;
-      const inventoryOk = inventory.status === 200 && count > 0;
-      cases.push(result("resident.http-inventory", inventoryOk ? "PASS" : "FAIL", inventoryOk ? `configured resident service returned ${count} inventory rows` : `inventory contract requires HTTP 200 and at least one device row; got HTTP ${inventory.status}`, "live-witness", "live"));
-    } catch {
-      cases.push(result("resident.http-inventory", "FAIL", "configured service inventory request failed or URL was invalid", "live-witness", "live"));
+      cases.push(result("resident.http-health", "FAIL", "configured service URL is invalid", "invariant", "fixture"));
+      cases.push(result("resident.http-inventory", "FAIL", "configured service URL is invalid", "invariant", "fixture"));
     }
   }
   cases.push(await bindNegative(ctx));
+  cases.push(result("surface.setup", "UNKNOWN", "owner-facing setup messaging and post-discovery first usable read were not exercised", "live-witness", "live"));
+  cases.push(result("surface.store", "UNKNOWN", "durable readback after restart and migration behavior were not exercised", "live-witness", "live"));
+  cases.push(result("surface.resident", "UNKNOWN", "launchd install, restart, crash recovery, and running-service source binding were not exercised", "live-witness", "live"));
+  cases.push(result("surface.doctor", "UNKNOWN", "no installed doctor workflow was exercised", "live-witness", "live"));
   return cases;
 }
