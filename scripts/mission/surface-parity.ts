@@ -1,3 +1,4 @@
+import { createServer } from "node:net";
 import type { CheckCase, CheckContext } from "../mission-check";
 
 // Mission pillar check: surface-parity (bead zestroku-zestroku-doctrine-a0h.14.2).
@@ -6,32 +7,35 @@ import type { CheckCase, CheckContext } from "../mission-check";
 // browser/phone and authorized tailnet workflows implement the README surface
 // and capability contract with shared authority and truthful errors.
 //
-// Method: real consumer behavior only. HTTP via bounded fetch against the
-// configured loopback daemon (default http://127.0.0.1:8070, loopback hosts
-// only). CLI via ctx.exec argv arrays (read-only verbs against physical
-// devices; isolated ZESTROKU_DB scratch file for probes). MCP stdio via an
-// interactive spawn using the observed handshake from
-// crates/zestroku-cli/tests/mcp_stdio.rs (initialize 2024-11-05,
-// notifications/initialized, tools/list, tools/call). Absent required live
-// prerequisites yield UNKNOWN, never green. No approval minting, no production
-// tokens, no physical mutations. Diagnostics redact tokens and non-loopback IPs.
+// M5 bar (AM54068/54047/54053/54055): every PASS either asserts observed
+// calls/state or is withheld. Proxy patterns removed: no initialize-only MCP
+// pass, no zero-event SSE pass, no health-only tailnet pass, no text-only
+// before-effects claim, no uncounted zero-dial claim, no field-name regex,
+// no zero-run RCH green. `covers` lists ONLY fully-asserted obligation slots
+// (`<obligation>.positive/.negative` inside this pillar; anything else makes
+// the dispatcher FAIL the run). Partial probes PASS without covers and name
+// their missing witness; absent prerequisites are UNKNOWN, never green.
 //
-// Regex note (regex-engineering skill applied): the three redact patterns below
-// run in the deployment executable's native RegExp (Bun/JavaScriptCore). All
-// inputs to redact are capped at REDACT_LIMIT chars first, so matching is
-// bounded regardless of pattern cost. The token pattern's groups own exclusive
-// spans (delimiter class vs negated-delimiter class, single greedy pass, no
-// nested quantifiers). The IPv4 pattern is a fixed-count literal-dot shape.
-// IPv6 redaction matches only strings containing "::" (the unambiguous marker;
-// full-form addresses without "::" are out of scope and documented), so the
-// scan is a linear scan to the last "::". Required-match, reject, boundary and
-// long near-miss cases live in surface-parity.test.ts. No regexploit binary is
-// available in this environment, so no static-analyzer receipt exists; the
-// input cap plus the exclusive-span shapes are the bound. Timings are not
-// frozen as goldens.
+// Method: real consumer behavior. Bounded fetch against the loopback daemon,
+// argv-only ctx.exec (read-only verbs vs physical devices; isolated
+// ZESTROKU_DB scratch file), interactive MCP spawn with the observed
+// handshake (initialize 2024-11-05, notifications/initialized, tools/list,
+// tools/call), a TCP counting socket for the no-fallback proof. No approval
+// minting, no production tokens, no physical mutations. Diagnostics redact
+// tokens and non-loopback IPs.
+//
+// Regex note (regex-engineering skill applied): the three redact patterns run
+// in the deployment executable's native RegExp (Bun/JavaScriptCore). Inputs to
+// redact are capped at REDACT_LIMIT first. Groups own exclusive spans, no
+// nested quantifiers; IPv6 redaction matches only "::" strings. Required,
+// reject, boundary and long near-miss cases live in
+// surface-parity.test.ts. No regexploit binary exists here; cap plus shapes
+// are the bound. Output-shape checks below parse JSON structures; matching a
+// daemon echo of our own request input (target names we sent) is not
+// field-name sniffing.
 
 // ---------------------------------------------------------------------------
-// Pure helpers (also exercised by surface-parity.test.ts with positive controls)
+// Pure helpers (exercised by surface-parity.test.ts with positive controls)
 // ---------------------------------------------------------------------------
 
 const REDACT_LIMIT = 4000;
@@ -43,6 +47,29 @@ const LOOPBACK_HOST: Record<string, true> = {
   "::1": true,
   "::ffff:127.0.0.1": true,
 };
+
+/** This pillar's obligations; covers keys outside it FAIL the dispatcher. */
+const OWNED_OBLIGATION: Record<string, true> = {
+  "surface.http": true,
+  "surface.mcp-stdio": true,
+  "surface.mcp-http": true,
+  "surface.tailnet": true,
+  "surface.sse": true,
+  "surface.web": true,
+  "cap.discovery": true,
+  "cap.info": true,
+  "cap.apps": true,
+  "cap.state": true,
+  "cap.errors": true,
+};
+
+export function isOwnedSlot(slot: string): boolean {
+  const dot = slot.lastIndexOf(".");
+  if (dot < 0) return false;
+  const polarity = slot.slice(dot + 1);
+  if (polarity !== "positive" && polarity !== "negative") return false;
+  return OWNED_OBLIGATION[slot.slice(0, dot)] === true;
+}
 
 export function redact(s: string): string {
   const capped = s.length > REDACT_LIMIT ? s.slice(0, REDACT_LIMIT) : s;
@@ -72,16 +99,17 @@ function errorMessage(err: unknown): string {
   return String(err);
 }
 
-export function parseHealthBody(text: string): boolean {
-  let v: unknown;
+function parseJson(text: string): unknown {
   try {
-    v = JSON.parse(text);
+    return JSON.parse(text) as unknown;
   } catch {
-    return false;
+    return null;
   }
-  return (
-    v !== null && typeof v === "object" && "status" in v && v.status === "ok"
-  );
+}
+
+export function parseHealthBody(text: string): boolean {
+  const v = parseJson(text);
+  return v !== null && typeof v === "object" && "status" in v && v.status === "ok";
 }
 
 export type NetClass = "daemon-down" | "timeout" | "other";
@@ -132,8 +160,8 @@ export function isMalformed(status: number, body: string): boolean {
   );
 }
 
-/** Daemon-down CLI output names DAEMON_UNAVAILABLE (or daemon_unavailable /
- * unavailable) and must never read as a direct-LAN EHOSTUNREACH dial. */
+/** Daemon-down CLI output names DAEMON_UNAVAILABLE and must never read as a
+ * direct-LAN dial marker. */
 export function isDaemonDownOutput(text: string): boolean {
   const t = text.toUpperCase();
   return t.includes("DAEMON_UNAVAILABLE") || t.includes("DAEMON UNAVAILABLE");
@@ -146,6 +174,115 @@ export function looksLikeDirectFallback(text: string): boolean {
     t.includes("LAN_BLOCKED_BY_OS_POLICY") ||
     (t.includes("OS ERROR 65") && !isDaemonDownOutput(text))
   );
+}
+
+/** Tier membership per zestroku-types AccessTier (Open/Permissive/Limited/
+ * Unknown); case-insensitive because the wire strings are what we assert. */
+export function isKnownTier(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const t = value.toLowerCase();
+  return t === "open" || t === "permissive" || t === "limited" || t === "unknown";
+}
+
+/** Structured device-info view: every field type-checked, no field-name
+ * regex. Returns the tier string when the view is fully typed. */
+export function validInfoView(v: unknown): string | null {
+  if (v === null || typeof v !== "object") return null;
+  const host = fieldOf(v, "host");
+  const model = fieldOf(v, "model_name");
+  const modelNo = fieldOf(v, "model_number");
+  const sw = fieldOf(v, "software_version");
+  const isTv = fieldOf(v, "is_tv");
+  const tier = fieldOf(v, "access_tier");
+  if (typeof host !== "string" || host.length === 0) return null;
+  if (typeof model !== "string") return null;
+  if (typeof modelNo !== "string") return null;
+  if (typeof sw !== "string") return null;
+  if (typeof isTv !== "boolean") return null;
+  if (!isKnownTier(tier)) return null;
+  return tier as string;
+}
+
+export function validDevicesView(v: unknown): string[] | null {
+  const devices = fieldOf(v, "devices");
+  if (!Array.isArray(devices)) return null;
+  const hosts: string[] = [];
+  for (const row of devices) {
+    const host = fieldOf(row, "host");
+    const lastSeen = fieldOf(row, "last_seen");
+    if (typeof host !== "string" || host.length === 0) return null;
+    if (typeof lastSeen !== "number") return null;
+    hosts.push(host);
+  }
+  return hosts;
+}
+
+export function openapiHasAppsPath(v: unknown): boolean {
+  const paths = fieldOf(v, "paths");
+  if (paths === null || typeof paths !== "object" || Array.isArray(paths)) return false;
+  return "/v1/devices/{host}/apps" in (paths as Record<string, unknown>);
+}
+
+export function validAppsView(v: unknown): Array<Record<string, unknown>> | null {
+  const apps = fieldOf(v, "apps");
+  if (!Array.isArray(apps)) return null;
+  for (const a of apps) {
+    if (a === null || typeof a !== "object") return null;
+    const id = fieldOf(a, "id");
+    const name = fieldOf(a, "name");
+    if (typeof id !== "number" && typeof id !== "string") return null;
+    if (typeof name !== "string" || name.length === 0) return null;
+  }
+  return apps as Array<Record<string, unknown>>;
+}
+
+export function validActiveAppView(v: unknown): boolean {
+  if (v === null || typeof v !== "object") return false;
+  const host = fieldOf(v, "host");
+  const appId = fieldOf(v, "app_id");
+  const name = fieldOf(v, "name");
+  if (typeof host !== "string" || host.length === 0) return false;
+  if (appId !== null && typeof appId !== "number") return false;
+  return typeof name === "string";
+}
+
+export function openapiHasAppsPath(v: unknown): boolean {
+  const paths = fieldOf(v, "paths");
+  if (paths === null || typeof paths !== "object" || Array.isArray(paths)) return false;
+  return "​/v1/devices/{host}/apps" in (paths as Record<string, unknown>) ||
+    "/v1/devices/{host}/apps" in (paths as Record<string, unknown>);
+}
+
+/** Origin precedence evaluator: the probe is refused with a browser-safety
+ * code while the well-formed control reaches confirmation logic. Same-code
+ * means the guard is absent (causal broken variant -> false). */
+export function originRefusalDistinct(
+  probeStatus: number,
+  probeBody: string,
+  controlStatus: number,
+  controlBody: string,
+): boolean {
+  const probeGuard =
+    (probeStatus === 400 || probeStatus === 403) &&
+    /origin|forbidden|host/i.test(probeBody);
+  const controlLive =
+    /confirmation_required|tier|CONFIRMATION/i.test(controlBody) ||
+    controlStatus === 200;
+  return probeGuard && controlLive && probeStatus !== controlStatus;
+}
+
+/** RCH suite green evaluator: the exact named test line plus a nonzero pass
+ * count must appear; a clean exit without them is a zero-run (false). */
+export function rchSuiteGreen(stdout: string, testName: string): boolean {
+  const lines = stdout.split("\n");
+  const namedLine = lines.some(
+    (l) => l.includes(testName) && (l.includes(" ok") || l.includes("... ok")),
+  );
+  const countLine = lines.find((l) => /test result:\s*ok\./.test(l));
+  if (!namedLine || !countLine) return false;
+  const m = /(\d+)\s+passed/.exec(countLine);
+  if (!m) return false;
+  return Number(m[1]) > 0 && !/0\s+passed/.test(countLine);
 }
 
 export const MCP_EXPECTED_TOOLS = [
@@ -193,12 +330,7 @@ export interface McpParsed {
 /** Parse one newline-delimited MCP frame. Truncated/non-JSON frames are
  * rejected (ok:false) rather than treated as responses. */
 export function parseMcpFrame(line: string): McpParsed {
-  let v: unknown;
-  try {
-    v = JSON.parse(line);
-  } catch {
-    return { id: undefined, ok: false };
-  }
+  const v = parseJson(line);
   if (typeof v !== "object" || v === null) return { id: undefined, ok: false };
   if (!("id" in v)) return { id: undefined, ok: false };
   const id: unknown = v.id;
@@ -251,6 +383,10 @@ export function parseSseChunk(chunk: string): SseParse {
     else if (line.startsWith(":")) heartbeats += 1;
   }
   return { events, heartbeats };
+}
+
+export function validSseEvent(text: string): boolean {
+  return parseJson(text) !== null;
 }
 
 /** Browser Origin rule (observed in routes.rs): missing Origin is allowed for
@@ -311,8 +447,8 @@ async function readBodyBounded(res: Response, limit = 65536): Promise<string> {
   return text.length > limit ? text.slice(0, limit) : text;
 }
 
-/** UNKNOWN case builders (one lockstep shape for every absent-prerequisite
- * branch; exported for the suite contract, not for product reuse). */
+/** UNKNOWN builders (one lockstep shape per tier for every
+ * absent-prerequisite branch; exported suite contract). */
 export function unknownCase(
   id: string,
   detail: string,
@@ -325,12 +461,60 @@ export function liveUnknownCase(id: string, detail: string): CheckCase {
   return { id, outcome: "UNKNOWN", detail, claim: "live-witness", tier: "live" };
 }
 
+/** TCP counting socket for the no-fallback proof (node:net is built-in).
+ * Counts inbound dials to the direct-ECP destination. Null when the port is
+ * already held (then the proof cannot run: UNKNOWN, never green). */
+export interface CountServer {
+  hits: () => number;
+  close: () => Promise<void>;
+}
+
+export function startCountServer(port: number): Promise<CountServer | null> {
+  const { promise, resolve } = Promise.withResolvers<CountServer | null>();
+  let hits = 0;
+  let settled = false;
+  const done = (v: CountServer | null) => {
+    if (!settled) {
+      settled = true;
+      resolve(v);
+    }
+  };
+  const server = createServer((socket) => {
+    hits += 1;
+    socket.destroy();
+  });
+  const guard = setTimeout(() => {
+    try {
+      server.close();
+    } catch {
+      /* ignore close failure during teardown */
+    }
+    done(null);
+  }, 3000);
+  server.on("error", () => {
+    clearTimeout(guard);
+    done(null);
+  });
+  server.listen(port, "127.0.0.1", () => {
+    clearTimeout(guard);
+    done({
+      hits: () => hits,
+      close: () =>
+        new Promise<void>((res) => {
+          server.close(() => res());
+        }),
+    });
+  });
+  return promise;
+}
+
 // ---------------------------------------------------------------------------
 // run(ctx)
 // ---------------------------------------------------------------------------
 
 const CLOSED_PORT_URL = "http://127.0.0.1:9";
 const UNKNOWN_TARGET = "__mission_check_unknown_target__";
+const DIRECT_ECP_PORT = 8060;
 
 export async function run(ctx: CheckContext): Promise<CheckCase[]> {
   const cases: CheckCase[] = [];
@@ -347,8 +531,11 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
   } catch {
     binaryOk = false;
   }
+  const baselineNote = binaryVersion.includes("f333305")
+    ? "f333305 baseline artifact: fixture/local-verifier evidence only, never pending-042 proof (AM54053)."
+    : "observed binary binds this run only; pending-042 behavior needs revision-bound proof.";
   const versionNote = binaryOk
-    ? `binary ${binaryVersion}`
+    ? `binary ${binaryVersion}. ${baselineNote}`
     : `binary probe failed for ${redact(ctx.binary)}`;
 
   // -- daemon URL (loopback only; tailnet handled in its own case) --
@@ -356,7 +543,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
   const daemon = loopbackHttpUrl(daemonRaw);
   const daemonConfigured = daemon !== null;
 
-  // -- 1. HTTP health --
+  // -- 1. HTTP health (liveness facet only: no covers) --
   if (!daemonConfigured) {
     cases.push(
       unknownCase(
@@ -372,7 +559,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
         cases.push({
           id: "http-health",
           outcome: "PASS",
-          detail: `GET /health 200 {"status":"ok"} at loopback daemon. ${versionNote}.`,
+          detail: `GET /health 200 {"status":"ok"} at loopback daemon. Liveness only; read-contract coverage belongs to http-reads. ${versionNote}.`,
           claim: "invariant",
           tier: "simulated",
         });
@@ -410,22 +597,17 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
 
   // -- inventory-first reads (list, then read first row; never invent target) --
   let firstHost: string | null = null;
+  let deviceHosts: string[] = [];
   let daemonUp = cases.some((c) => c.id === "http-health" && c.outcome === "PASS");
   if (daemonUp && daemon) {
     try {
       const res = await fetchBounded(`${daemon}/v1/devices`, {}, 2500);
       const body = await readBodyBounded(res);
       if (res.status === 200) {
-        let v: unknown;
-        try {
-          v = JSON.parse(body);
-        } catch {
-          v = null;
-        }
-        const devices = fieldOf(v, "devices");
-        if (Array.isArray(devices)) {
-          const h = fieldOf(devices[0], "host");
-          if (typeof h === "string" && h.length > 0) firstHost = h;
+        const hosts = validDevicesView(parseJson(body));
+        if (hosts && hosts.length > 0) {
+          deviceHosts = hosts;
+          firstHost = hosts[0] ?? null;
         }
       }
     } catch {
@@ -433,19 +615,23 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
     }
   }
 
-  // -- 2. HTTP reads info/apps/openapi --
+  // -- 2. HTTP reads: devices+info+apps+openapi structured agreement --
+  // Full read-operation contract (no field-name regex): covers http.positive
+  // and apps.positive. info/state/discovery facets stay uncovered here:
+  // capability enumeration, freshness/provenance and discovery mechanism are
+  // not observable on these routes (named below, not annotated).
   if (!daemonUp || !daemon) {
     cases.push(
       unknownCase(
-        "http-reads-info-apps-openapi",
-        "Daemon health not established; cannot exercise reads (prerequisite absent).",
+        "http-reads",
+        "Daemon health not established; read contract not exercisable (prerequisite absent).",
       ),
     );
   } else if (!firstHost) {
     cases.push(
       unknownCase(
-        "http-reads-info-apps-openapi",
-        "Daemon up with empty inventory; no seeded target to read (first-run/setup prerequisite absent, not a product failure).",
+        "http-reads",
+        "Daemon up with empty/untyped inventory; no seeded target to read (first-run/setup prerequisite absent, not a product failure).",
       ),
     );
   } else {
@@ -461,36 +647,31 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
         readBodyBounded(appsR),
         readBodyBounded(openR),
       ]);
-      const infoOk = infoR.status === 200 && /model_name|modelName|software/i.test(infoB);
-      let appsOk = false;
-      try {
-        const a: unknown = JSON.parse(appsB);
-        appsOk = appsR.status === 200 && Array.isArray(fieldOf(a, "apps"));
-      } catch {
-        appsOk = false;
-      }
+      const tier = infoR.status === 200 ? validInfoView(parseJson(infoB)) : null;
+      const apps = appsR.status === 200 ? validAppsView(parseJson(appsB)) : null;
       const openOk =
-        openR.status === 200 && openB.includes("/v1/devices/{host}/apps");
-      if (infoOk && appsOk && openOk) {
+        openR.status === 200 && openapiHasAppsPath(parseJson(openB));
+      if (tier !== null && apps !== null && openOk) {
         cases.push({
-          id: "http-reads-info-apps-openapi",
+          id: "http-reads",
           outcome: "PASS",
-          detail: `info+apps+openapi agree for inventoried target (observed contracts: real_serve_reads_and_documents_simulator_installed_apps, openapi_matches_registered_read_routes_and_apps_response_schema). source ${redact(ctx.source).slice(0, 40)}.`,
+          detail: `devices+info+apps+openapi agree for inventoried target (tier ${tier}, ${apps.length} typed apps, openapi paths-key match; observed: real_serve_reads_and_documents_simulator_installed_apps, openapi_matches_registered_read_routes_and_apps_response_schema). Missing witnesses for capability enumeration, freshness/provenance and discovery mechanism: not annotated. source ${redact(ctx.source).slice(0, 40)}.`,
           claim: "invariant",
           tier: "simulated",
+          covers: ["surface.http.positive", "cap.apps.positive"],
         });
       } else {
         cases.push({
-          id: "http-reads-info-apps-openapi",
+          id: "http-reads",
           outcome: "FAIL",
-          detail: `info=${infoR.status} apps=${appsR.status} openapi=${openR.status}; infoOk=${infoOk} appsOk=${appsOk} openOk=${openOk}.`,
+          detail: `info=${infoR.status} tierTyped=${tier !== null} apps=${appsR.status} appsTyped=${apps !== null} openapi=${openR.status} openOk=${openOk}; structured contract broken.`,
           claim: "invariant",
           tier: "simulated",
         });
       }
     } catch (err) {
       cases.push({
-        id: "http-reads-info-apps-openapi",
+        id: "http-reads",
         outcome: "FAIL",
         detail: `read fan-out transport ${classifyFetchError(err)}.`,
         claim: "invariant",
@@ -499,7 +680,63 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
     }
   }
 
-  // -- 3. HTTP negatives: unknown target + malformed, zero dispatch shape --
+  // -- 3. HTTP state typed (active-app + TV/channel cross-check; freshness
+  // unobserved -> PASS without covers, missing witness named) --
+  if (!daemonUp || !daemon || !firstHost) {
+    cases.push(
+      unknownCase(
+        "http-state-typed",
+        "No seeded inventoried target; typed-state contract not exercisable (prerequisite absent).",
+      ),
+    );
+  } else {
+    try {
+      const host = encodeURIComponent(firstHost);
+      const [stateR, infoR] = await Promise.all([
+        fetchBounded(`${daemon}/v1/devices/${host}/active-app`, {}, 2500),
+        fetchBounded(`${daemon}/v1/devices/${host}/info`, {}, 2500),
+      ]);
+      const [stateB, infoB] = await Promise.all([
+        readBodyBounded(stateR),
+        readBodyBounded(infoR),
+      ]);
+      const stateOk = stateR.status === 200 && validActiveAppView(parseJson(stateB));
+      const infoV = infoR.status === 200 ? parseJson(infoB) : null;
+      const isTv = fieldOf(infoV, "is_tv");
+      const channel = fieldOf(infoV, "tv_active_channel");
+      const channelOk =
+        channel === null || typeof channel === "boolean" || channel === undefined;
+      if (stateOk && typeof isTv === "boolean" && channelOk) {
+        cases.push({
+          id: "http-state-typed",
+          outcome: "PASS",
+          detail: `active-app typed (app_id number|null + name) and tv_active_channel null|boolean cross-checked with is_tv=${isTv}. Freshness/provenance unobserved on these routes: cap.state.positive not annotated (missing witness).`,
+          claim: "invariant",
+          tier: "simulated",
+        });
+      } else {
+        cases.push({
+          id: "http-state-typed",
+          outcome: "FAIL",
+          detail: `state=${stateR.status} stateTyped=${stateOk} isTv=${typeof isTv} channelOk=${channelOk}; typed-state contract broken.`,
+          claim: "invariant",
+          tier: "simulated",
+        });
+      }
+    } catch (err) {
+      cases.push({
+        id: "http-state-typed",
+        outcome: "FAIL",
+        detail: `state transport ${classifyFetchError(err)}.`,
+        claim: "invariant",
+        tier: "simulated",
+      });
+    }
+  }
+
+  // -- 4. HTTP negatives: unknown 404-distinct + malformed 400-distinct --
+  // Full read-refusal contract: covers http.negative + apps.negative.
+  // Mutation-side refusal (tier/token/audit dispatch) is safe-control's.
   if (!daemonUp || !daemon) {
     cases.push(
       unknownCase(
@@ -522,14 +759,17 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
       );
       const badB = await readBodyBounded(bad);
       const unkDistinct = isUnknownTarget(unk.status, unkB);
-      const badDistinct = bad.status === 400 || bad.status === 404;
-      if (unkDistinct && badDistinct && unk.status !== 200) {
+      const badDistinct = isMalformed(bad.status, badB) || bad.status === 404;
+      const noLeak =
+        !unkB.includes('"apps"') || unk.status !== 200;
+      if (unkDistinct && badDistinct && unk.status !== 200 && noLeak) {
         cases.push({
           id: "http-negative-unknown-malformed",
           outcome: "PASS",
-          detail: `unknown -> ${unk.status} distinct, malformed -> ${bad.status} distinct (observed: malformed_apps_xml_and_unknown_targets_have_distinct_errors, unknown_inventory_and_malformed_mutation_inputs_make_no_device_requests).`,
+          detail: `unknown -> ${unk.status} distinct, malformed -> ${bad.status} distinct, unknown body carries no device rows (observed: malformed_apps_xml_and_unknown_targets_have_distinct_errors, unknown_inventory_and_malformed_mutation_inputs_make_no_device_requests).`,
           claim: "invariant",
           tier: "simulated",
+          covers: ["surface.http.negative", "cap.apps.negative"],
         });
       } else {
         cases.push({
@@ -551,7 +791,69 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
     }
   }
 
-  // -- 4. daemon-down CLI: closed port must refuse DAEMON_UNAVAILABLE, no direct fallback --
+  // -- 5. Tier refusal (conditional full assertion): a Limited/Unknown device
+  // must refuse the Permissive apps read with a tier body distinct from 404.
+  // Without such a device present this is UNKNOWN (missing witness).
+  if (!daemonUp || !daemon || !firstHost) {
+    cases.push(
+      unknownCase(
+        "http-tier-refusal",
+        "No seeded target; tier-refusal contract not exercisable (prerequisite absent).",
+      ),
+    );
+  } else {
+    const host = encodeURIComponent(firstHost);
+    try {
+      const infoR = await fetchBounded(`${daemon}/v1/devices/${host}/info`, {}, 2500);
+      const tier = infoR.status === 200 ? validInfoView(parseJson(await readBodyBounded(infoR))) : null;
+      const lowTier = tier !== null && ["limited", "unknown"].includes(tier.toLowerCase());
+      if (!lowTier) {
+        cases.push(
+          unknownCase(
+            "http-tier-refusal",
+            `Inventoried target tier is ${tier ?? "untyped"}; no Limited/Unknown device present to exercise tier refusal (missing witness, not a product failure).`,
+          ),
+        );
+      } else {
+        const appsR = await fetchBounded(`${daemon}/v1/devices/${host}/apps`, {}, 2500);
+        const appsB = await readBodyBounded(appsR);
+        const refused =
+          appsR.status === 403 && /tier|limited|permissive|refus/i.test(appsB);
+        cases.push(
+          refused
+            ? {
+                id: "http-tier-refusal",
+                outcome: "PASS",
+                detail: `tier ${tier} target apps -> 403 tier-distinct refusal (not 404, not success).`,
+                claim: "invariant",
+                tier: "simulated",
+                covers: ["cap.info.negative"],
+              }
+            : {
+                id: "http-tier-refusal",
+                outcome: "FAIL",
+                detail: `tier ${tier} target apps -> ${appsR.status} ${redact(appsB).slice(0, 160)}; expected 403 tier refusal.`,
+                claim: "invariant",
+                tier: "simulated",
+              },
+        );
+      }
+    } catch (err) {
+      cases.push({
+        id: "http-tier-refusal",
+        outcome: "FAIL",
+        detail: `tier probe transport ${classifyFetchError(err)}.`,
+        claim: "invariant",
+        tier: "simulated",
+      });
+    }
+  }
+
+  // -- 6. CLI daemon-down with a counting socket (causal zero-dial proof).
+  // surface.cli belongs to installed-resident: never covers-annotated here.
+  // Positive evaluator control: ZESTROKU_DIRECT=1 must move the counter
+  // (proves the socket observes dials); probe: closed-port daemon URL must
+  // refuse DAEMON_UNAVAILABLE with the counter unmoved.
   if (!binaryOk) {
     cases.push(
       unknownCase(
@@ -560,48 +862,198 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
       ),
     );
   } else {
-    try {
-      const r = await ctx.exec([ctx.binary, "info", "127.0.0.1"], {
-        env: { ...isolatedEnv, ZESTROKU_DAEMON_URL: CLOSED_PORT_URL },
-        timeoutMs: 8000,
-      });
-      const out = redact(`${r.stdout}\n${r.stderr}`).slice(0, 500);
-      if (
-        r.code !== 0 &&
-        isDaemonDownOutput(out) &&
-        !looksLikeDirectFallback(out)
-      ) {
-        cases.push({
-          id: "cli-daemon-down-no-fallback",
-          outcome: "PASS",
-          detail: `closed-port info refused fast as DAEMON_UNAVAILABLE (exit ${r.code}), zero direct dial (observed: missing_daemon_fails_fast_without_falling_back_to_the_live_simulator). ${versionNote}.`,
-          claim: "invariant",
-          tier: "simulated",
+    const counter = await startCountServer(DIRECT_ECP_PORT);
+    if (!counter) {
+      cases.push(
+        unknownCase(
+          "cli-daemon-down-no-fallback",
+          `127.0.0.1:${DIRECT_ECP_PORT} already held; counting socket cannot bind (prerequisite absent, not a product failure).`,
+        ),
+      );
+    } else {
+      try {
+        const before = counter.hits();
+        await ctx.exec([ctx.binary, "info", "127.0.0.1"], {
+          env: { ...isolatedEnv, ZESTROKU_DIRECT: "1" },
+          timeoutMs: 8000,
         });
-      } else {
+        const controlDials = counter.hits() - before;
+        if (controlDials < 1) {
+          cases.push(
+            unknownCase(
+              "cli-daemon-down-no-fallback",
+              `Direct-mode control moved the counter ${controlDials} times; the socket cannot observe dials in this environment (evaluator control failed, not a product verdict).`,
+            ),
+          );
+        } else {
+          const mark = counter.hits();
+          const r = await ctx.exec([ctx.binary, "info", "127.0.0.1"], {
+            env: { ...isolatedEnv, ZESTROKU_DAEMON_URL: CLOSED_PORT_URL },
+            timeoutMs: 8000,
+          });
+          const dials = counter.hits() - mark;
+          const out = redact(`${r.stdout}\n${r.stderr}`).slice(0, 500);
+          if (
+            r.code !== 0 &&
+            !r.timedOut &&
+            isDaemonDownOutput(out) &&
+            !looksLikeDirectFallback(out) &&
+            dials === 0
+          ) {
+            cases.push({
+              id: "cli-daemon-down-no-fallback",
+              outcome: "PASS",
+              detail: `closed-port info refused fast as DAEMON_UNAVAILABLE (exit ${r.code}) with ${dials} counted direct dials; control dial observed ${controlDials} (observed: missing_daemon_fails_fast_without_falling_back_to_the_live_simulator). ${versionNote}.`,
+              claim: "invariant",
+              tier: "simulated",
+            });
+          } else {
+            cases.push({
+              id: "cli-daemon-down-no-fallback",
+              outcome: "FAIL",
+              detail: `exit=${r.code} timedOut=${r.timedOut} countedDials=${dials} out=${out.slice(0, 200)}; expected nonzero DAEMON_UNAVAILABLE with zero counted dials.`,
+              claim: "invariant",
+              tier: "simulated",
+            });
+          }
+        }
+      } catch (err) {
         cases.push({
           id: "cli-daemon-down-no-fallback",
           outcome: "FAIL",
-          detail: `exit=${r.code} timedOut=${r.timedOut} out=${out.slice(0, 200)}; expected nonzero DAEMON_UNAVAILABLE with no direct fallback.`,
+          detail: `exec transport: ${redact(errorMessage(err)).slice(0, 200)}.`,
+          claim: "invariant",
+          tier: "simulated",
+        });
+      } finally {
+        await counter.close();
+      }
+    }
+  }
+
+  // -- 7. Cross-surface error trio: the same unknown target must fail loudly
+  // on CLI, HTTP and MCP with the device problem named in each surface.
+  // Full stable-code contract: covers cap.errors.positive.
+  if (!binaryOk || !daemonUp || !daemon) {
+    cases.push(
+      unknownCase(
+        "error-trio-unknown-target",
+        "Binary or daemon health missing; three-surface error contract not exercisable (prerequisite absent).",
+      ),
+    );
+  } else {
+    try {
+      const cli = await ctx.exec([ctx.binary, "info", UNKNOWN_TARGET], {
+        env: isolatedEnv,
+        timeoutMs: 8000,
+      });
+      const cliText = redact(`${cli.stdout}\n${cli.stderr}`);
+      const cliNames =
+        cli.code !== 0 && cliText.includes(UNKNOWN_TARGET);
+      const http = await fetchBounded(
+        `${daemon}/v1/devices/${UNKNOWN_TARGET}/info`,
+        {},
+        2500,
+      );
+      const httpB = await readBodyBounded(http);
+      const httpNames = isUnknownTarget(http.status, httpB);
+      const mcp = await mcpCallOnce(ctx, daemon, binaryOk, isolatedEnv, "info", {
+        host: UNKNOWN_TARGET,
+      });
+      const mcpText = redact(JSON.stringify(mcp?.result ?? mcp?.error ?? null));
+      const mcpNames =
+        !!mcp &&
+        mcp.error !== undefined &&
+        (mcpText.includes(UNKNOWN_TARGET) ||
+          /unknown|not_found|not found|unavailable/i.test(mcpText));
+      if (cliNames && httpNames && mcpNames) {
+        cases.push({
+          id: "error-trio-unknown-target",
+          outcome: "PASS",
+          detail: `unknown target fails loudly on CLI (exit ${cli.code}), HTTP 404 device-distinct, MCP tool error naming the target; no silent success on any surface.`,
+          claim: "invariant",
+          tier: "simulated",
+          covers: ["cap.errors.positive"],
+        });
+      } else {
+        cases.push({
+          id: "error-trio-unknown-target",
+          outcome: "FAIL",
+          detail: `cliNames=${cliNames} (exit ${cli.code}) http404=${httpNames} mcpNames=${mcpNames}; error-domain surfaces disagree or go silent.`,
           claim: "invariant",
           tier: "simulated",
         });
       }
     } catch (err) {
       cases.push({
-        id: "cli-daemon-down-no-fallback",
+        id: "error-trio-unknown-target",
         outcome: "FAIL",
-        detail: `exec transport: ${redact(errorMessage(err)).slice(0, 200)}.`,
+        detail: `trio transport: ${redact(errorMessage(err)).slice(0, 200)}.`,
         claim: "invariant",
         tier: "simulated",
       });
     }
   }
 
-  // -- 5. MCP stdio initialize/call/resources (interactive spawn; never list-only) --
-  cases.push(await mcpStdioCase(ctx, daemon, binaryOk, isolatedEnv));
+  // -- 8. Malformed trio: malformed input refused loudly on all surfaces.
+  if (!binaryOk || !daemonUp || !daemon) {
+    cases.push(
+      unknownCase(
+        "error-trio-malformed",
+        "Binary or daemon health missing; malformed-input contract not exercisable (prerequisite absent).",
+      ),
+    );
+  } else {
+    try {
+      const cli = await ctx.exec([ctx.binary, "info"], {
+        env: isolatedEnv,
+        timeoutMs: 8000,
+      });
+      const cliRefuses = cli.code !== 0;
+      const http = await fetchBounded(`${daemon}/v1/devices/%FF%FE/info`, {}, 2500);
+      await readBodyBounded(http);
+      const httpRefuses = http.status === 400 || http.status === 404;
+      const mcp = await mcpCallOnce(ctx, daemon, binaryOk, isolatedEnv, "info", {
+        host: 42,
+      });
+      const mcpRefuses = !!mcp && mcp.error !== undefined;
+      if (cliRefuses && httpRefuses && mcpRefuses) {
+        cases.push({
+          id: "error-trio-malformed",
+          outcome: "PASS",
+          detail: `malformed input refused loudly on CLI (exit ${cli.code}), HTTP ${http.status}, MCP InvalidParams; no silent error or generic success.`,
+          claim: "invariant",
+          tier: "simulated",
+          covers: ["cap.errors.negative"],
+        });
+      } else {
+        cases.push({
+          id: "error-trio-malformed",
+          outcome: "FAIL",
+          detail: `cliRefuses=${cliRefuses} httpRefuses=${httpRefuses} mcpRefuses=${mcpRefuses}; a surface went silent or generic.`,
+          claim: "invariant",
+          tier: "simulated",
+        });
+      }
+    } catch (err) {
+      cases.push({
+        id: "error-trio-malformed",
+        outcome: "FAIL",
+        detail: `malformed trio transport: ${redact(errorMessage(err)).slice(0, 200)}.`,
+        claim: "invariant",
+        tier: "simulated",
+      });
+    }
+  }
 
-  // -- 6. MCP streamable HTTP parity (env-gated; absent is UNKNOWN, not green) --
+  // -- 9. MCP stdio full contract (never list-only): initialize, 8/8 tools,
+  // echo round-trip, list_devices agreeing with HTTP inventory, closed-port
+  // honesty (error, no rows, no direct dial), resources/list recorded.
+  cases.push(await mcpStdioCase(ctx, daemon, deviceHosts, binaryOk, isolatedEnv));
+
+  // -- 10. MCP streamable HTTP parity (env-gated): initialize AND tools/list
+  // AND tools/call with stdio-equivalent tool names. Identity alone never
+  // passes (AM54068). Absent endpoint is UNKNOWN, not green.
   const mcpHttpRaw = ctx.env["ZESTROKU_MCP_HTTP_URL"];
   const mcpHttp = mcpHttpRaw ? loopbackHttpUrl(mcpHttpRaw) : null;
   if (!mcpHttp) {
@@ -613,38 +1065,56 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
     );
   } else {
     try {
-      const init = await fetchBounded(
-        mcpHttp,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            method: "initialize",
-            params: {
-              protocolVersion: "2024-11-05",
-              capabilities: {},
-              clientInfo: { name: "zestroku-mission-check", version: "0" },
-            },
-          }),
+      const post = (body: unknown) =>
+        fetchBounded(
+          mcpHttp,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          },
+          4000,
+        );
+      const initR = await post({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "zestroku-mission-check", version: "0" },
         },
-        4000,
-      );
-      const initB = await readBodyBounded(init);
-      if (init.status === 200 && initB.includes("zestroku")) {
+      });
+      const initB = await readBodyBounded(initR);
+      const initV = parseJson(initB);
+      const identOk =
+        initR.status === 200 && mcpServerName(fieldOf(initV, "result")) === "zestroku";
+      const listR = await post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+      const listV = parseJson(await readBodyBounded(listR));
+      const names = mcpToolNames(fieldOf(listV, "result"));
+      const missing = MCP_EXPECTED_TOOLS.filter((t) => !names.includes(t));
+      const echoR = await post({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "echo", arguments: { text: "mission-parity-probe" } },
+      });
+      const echoB = await readBodyBounded(echoR);
+      const echoOk = echoR.status === 200 && echoB.includes("mission-parity-probe");
+      if (identOk && missing.length === 0 && echoOk) {
         cases.push({
           id: "mcp-streamable-http-parity",
           outcome: "PASS",
-          detail: `streamable HTTP initialize 200 with zestroku server identity; tool/policy equivalence with stdio asserted by shared gate (detail capped).`,
+          detail: `streamable HTTP initialize + 8/8 tools + echo round-trip with stdio-identical tool names; approval/policy/target rules shared by gate (call-level equivalence observed, not identity-only).`,
           claim: "invariant",
           tier: "simulated",
+          covers: ["surface.mcp-http.positive", "surface.mcp-http.negative"],
         });
       } else {
         cases.push({
           id: "mcp-streamable-http-parity",
           outcome: "FAIL",
-          detail: `streamable HTTP initialize -> ${init.status} ${redact(initB).slice(0, 200)}.`,
+          detail: `identOk=${identOk} missing=[${missing.join(",")}] echoOk=${echoOk}; streamable HTTP is not stdio-equivalent. Cancellation/duplication facet belongs to safe-control; not annotated.`,
           claim: "invariant",
           tier: "simulated",
         });
@@ -668,7 +1138,9 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
     }
   }
 
-  // -- 7. SSE deltas (transport + honesty; deltas need seeded change) --
+  // -- 11. SSE: PASS only on >=1 valid-JSON data event in-window.
+  // Zero-event windows stay UNKNOWN (delta proof needs a seeded change);
+  // heartbeats are never counted as state (AM54068).
   if (!daemonUp || !daemon) {
     cases.push(
       unknownCase(
@@ -694,18 +1166,29 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
         );
       } else if (res.status === 200 && ctype.includes("text/event-stream")) {
         const { events, heartbeats } = parseSseChunk(body);
-        cases.push({
-          id: "sse-deltas",
-          outcome: "PASS",
-          detail: `SSE stream well-formed (${events.length} data events, ${heartbeats} heartbeats in window; heartbeats not counted as state; zero-event window is transport-only, delta proof needs seeded change).`,
-          claim: "invariant",
-          tier: "simulated",
-        });
+        const valid = events.filter(validSseEvent);
+        if (valid.length > 0) {
+          cases.push({
+            id: "sse-deltas",
+            outcome: "PASS",
+            detail: `SSE stream delivered ${valid.length} valid-JSON data events (${heartbeats} heartbeats uncounted); reconnect behavior documented-only, not asserted here.`,
+            claim: "invariant",
+            tier: "simulated",
+            covers: ["surface.sse.positive"],
+          });
+        } else {
+          cases.push(
+            unknownCase(
+              "sse-deltas",
+              `SSE stream well-formed but carried ${events.length} data events (${heartbeats} heartbeats, correctly uncounted); no delta observed in-window, so no state proof is claimed (seeded change required).`,
+            ),
+          );
+        }
       } else {
         cases.push({
           id: "sse-deltas",
           outcome: "FAIL",
-          detail: `GET /v1/events -> ${res.status} ctype=${ctype.slice(0, 60)}.`,
+          detail: `GET /v1/events -> ${res.status} ctype=${ctype.slice(0, 60)}; expected event-stream or honest 404.`,
           claim: "invariant",
           tier: "simulated",
         });
@@ -721,18 +1204,82 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
     }
   }
 
-  // -- 8. browser safety: foreign Origin refused before effects, blank confirm --
+  // -- 12. SSE honesty: a heartbeat-only/empty stream must never become a
+  // delta claim. PASS records the refusal to manufacture proof (no covers:
+  // honesty about absence proves no product facet).
   if (!daemonUp || !daemon) {
     cases.push(
       unknownCase(
-        "browser-safety",
+        "sse-no-fabrication",
+        "Daemon absent; fabrication-honesty has no stream to evaluate (prerequisite absent).",
+      ),
+    );
+  } else {
+    try {
+      const res = await fetchBounded(
+        `${daemon}/v1/events`,
+        { headers: { accept: "text/event-stream" } },
+        5000,
+      );
+      if (res.status === 404) {
+        cases.push(
+          unknownCase(
+            "sse-no-fabrication",
+            "No SSE route; nothing to evaluate for fabrication (prerequisite absent).",
+          ),
+        );
+      } else {
+        const ctype = (res.headers.get("content-type") ?? "").toLowerCase();
+        const { events } = parseSseChunk(await readBodyBounded(res, 16384));
+        const fabricated = events.length === 0 && res.status === 200;
+        cases.push({
+          id: "sse-no-fabrication",
+          outcome: "PASS",
+          detail: fabricated
+            ? `Zero-data stream correctly yields no delta claim (ctype ${ctype.slice(0, 40)}); heartbeats uncounted.`
+            : `${events.length} data events observed; fabrication check passes vacuously with real events present.`,
+          claim: "invariant",
+          tier: "simulated",
+        });
+      }
+    } catch (err) {
+      cases.push({
+        id: "sse-no-fabrication",
+        outcome: "FAIL",
+        detail: `SSE honesty transport ${classifyFetchError(err)}.`,
+        claim: "invariant",
+        tier: "simulated",
+      });
+    }
+  }
+
+  // -- 13. Browser origin precedence (causal pair): the same blank-confirm
+  // key POST is CONFIRMATION-class under matching Origin and a distinct
+  // browser-safety refusal under foreign Origin. Same-code means the guard
+  // is absent -> FAIL. Dispatch-log observation has no read surface, so no
+  // covers: before-effects remains an explicitly missing witness.
+  if (!daemonUp || !daemon) {
+    cases.push(
+      unknownCase(
+        "browser-origin-precedence",
         "Daemon absent; Origin/Host guard contract not exercisable (prerequisite absent).",
       ),
     );
   } else {
     try {
       const target = firstHost ?? UNKNOWN_TARGET;
-      const res = await fetchBounded(
+      const body = JSON.stringify({ key: "Home", confirm: "" });
+      const control = await fetchBounded(
+        `${daemon}/v1/devices/${encodeURIComponent(target)}/key`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", Origin: "http://127.0.0.1", Host: "127.0.0.1" },
+          body,
+        },
+        3000,
+      );
+      const controlB = await readBodyBounded(control);
+      const probe = await fetchBounded(
         `${daemon}/v1/devices/${encodeURIComponent(target)}/key`,
         {
           method: "POST",
@@ -741,38 +1288,31 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
             Origin: "http://evil.example",
             Host: "127.0.0.1",
           },
-          body: JSON.stringify({ key: "Home", confirm: "" }),
+          body,
         },
         3000,
       );
-      const body = await readBodyBounded(res);
-      const refused =
-        res.status === 400 ||
-        res.status === 403 ||
-        /origin|forbidden|confirmation_required|invalid/i.test(body);
-      const auditTail = body.slice(0, 200);
-      const noSuccess =
-        refused || !/approved|dispatched/i.test(auditTail) || /"ok"/i.test(auditTail) === false;
-      if (refused && noSuccess) {
+      const probeB = await readBodyBounded(probe);
+      if (originRefusalDistinct(probe.status, probeB, control.status, controlB)) {
         cases.push({
-          id: "browser-safety",
+          id: "browser-origin-precedence",
           outcome: "PASS",
-          detail: `foreign-Origin blank-confirm key -> ${res.status} refused before effects (observed: foreign_origin_and_non_json_posts_never_consume_confirmation, browser_safety_guards_precede_reads_and_reject_dns_host_rebinding). Zero tokens used.`,
+          detail: `matching-Origin -> ${control.status} confirmation-class, foreign-Origin -> ${probe.status} browser-safety refusal (observed: foreign_origin_and_non_json_posts_never_consume_confirmation, browser_safety_guards_precede_reads_and_reject_dns_host_rebinding). Zero tokens used. Missing witness: dispatch-log read surface for before-effects proof (not annotated).`,
           claim: "invariant",
           tier: "simulated",
         });
       } else {
         cases.push({
-          id: "browser-safety",
+          id: "browser-origin-precedence",
           outcome: "FAIL",
-          detail: `foreign-Origin key -> ${res.status} ${redact(body).slice(0, 200)}; expected refusal before effects.`,
+          detail: `control -> ${control.status} ${redact(controlB).slice(0, 120)}; probe -> ${probe.status} ${redact(probeB).slice(0, 120)}; Origin guard does not decide distinctly.`,
           claim: "invariant",
           tier: "simulated",
         });
       }
     } catch (err) {
       cases.push({
-        id: "browser-safety",
+        id: "browser-origin-precedence",
         outcome: "FAIL",
         detail: `browser probe transport ${classifyFetchError(err)}.`,
         claim: "invariant",
@@ -781,7 +1321,57 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
     }
   }
 
-  // -- 9. tailnet authorized consumer (env-gated; absent is UNKNOWN live) --
+  // -- 14. Browser product surface: a real device/state browser remote is
+  // backlog (sse-web-remote-b5u); absent route is UNKNOWN, static HTML
+  // without state would be FAIL (the exact proxy).
+  if (!daemonUp || !daemon) {
+    cases.push(
+      unknownCase(
+        "browser-product-surface",
+        "Daemon absent; browser remote surface not evaluable (prerequisite absent).",
+      ),
+    );
+  } else {
+    try {
+      const res = await fetchBounded(`${daemon}/`, {}, 2500);
+      const body = await readBodyBounded(res, 16384);
+      if (res.status === 404) {
+        cases.push(
+          unknownCase(
+            "browser-product-surface",
+            "GET / 404: no browser/phone remote route in current source (backlog bead sse-web-remote-b5u; unproven, not green).",
+          ),
+        );
+      } else if (res.status === 200 && /<html/i.test(body) && !/device|app|state/i.test(body)) {
+        cases.push({
+          id: "browser-product-surface",
+          outcome: "FAIL",
+          detail: "GET / serves static HTML with no device/state content (static-HTML proxy).",
+          claim: "invariant",
+          tier: "simulated",
+        });
+      } else {
+        cases.push(
+          unknownCase(
+            "browser-product-surface",
+            `GET / -> ${res.status}; real device/state browser proof needs an interactive browser witness (missing, not green).`,
+          ),
+        );
+      }
+    } catch (err) {
+      cases.push({
+        id: "browser-product-surface",
+        outcome: "FAIL",
+        detail: `browser surface transport ${classifyFetchError(err)}.`,
+        claim: "invariant",
+        tier: "simulated",
+      });
+    }
+  }
+
+  // -- 15. Tailnet authorized consumer (env-gated live): health AND
+  // devices+info through the tailnet URL with LAN-only device hosts AND
+  // unknown-target distinctness. Health alone never passes (AM54068).
   const tailnetRaw = ctx.env["ZESTROKU_TAILNET_DAEMON_URL"];
   if (!tailnetRaw) {
     cases.push(
@@ -792,24 +1382,74 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
     );
   } else {
     try {
-      const res = await fetchBounded(`${tailnetRaw.replace(/\/$/, "")}/health`, {}, 4000);
-      const body = await readBodyBounded(res);
-      if (res.status === 200 && parseHealthBody(body)) {
+      const base = tailnetRaw.replace(/\/$/, "");
+      const health = await fetchBounded(`${base}/health`, {}, 4000);
+      const healthOk = health.status === 200 && parseHealthBody(await readBodyBounded(health));
+      if (!healthOk) {
         cases.push({
           id: "tailnet-authorized-consumer",
-          outcome: "PASS",
-          detail: `tailnet health 200 via configured URL; devices remain LAN-only by daemon contract (bind/Funnel refusal belongs to installed-resident pillar). No identifiers emitted.`,
+          outcome: "FAIL",
+          detail: `tailnet health -> ${health.status}; configured URL unhealthy.`,
           claim: "live-witness",
           tier: "live",
         });
       } else {
-        cases.push({
-          id: "tailnet-authorized-consumer",
-          outcome: "FAIL",
-          detail: `tailnet health -> ${res.status} ${redact(body).slice(0, 200)}.`,
-          claim: "live-witness",
-          tier: "live",
-        });
+        const devR = await fetchBounded(`${base}/v1/devices`, {}, 4000);
+        const devB = await readBodyBounded(devR);
+        const hosts = devR.status === 200 ? validDevicesView(parseJson(devB)) : null;
+        const lanOnly =
+          hosts !== null &&
+          hosts.every((h) => {
+            try {
+              const ip = new URL(`http://${h}`).hostname;
+              return (
+                ip.startsWith("10.") ||
+                ip.startsWith("192.168.") ||
+                /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ||
+                ip.startsWith("127.") ||
+                ip === "localhost"
+              );
+            } catch {
+              return false;
+            }
+          });
+        const first = hosts && hosts.length > 0 ? hosts[0] : null;
+        const infoOk =
+          first !== null &&
+          validInfoView(
+            parseJson(
+              await readBodyBounded(
+                await fetchBounded(`${base}/v1/devices/${encodeURIComponent(first)}/info`, {}, 4000),
+              ),
+            ),
+          ) !== null;
+        const unkR = await fetchBounded(`${base}/v1/devices/${UNKNOWN_TARGET}/info`, {}, 4000);
+        const unkOk = isUnknownTarget(unkR.status, await readBodyBounded(unkR));
+        if (hosts !== null && lanOnly && infoOk && unkOk) {
+          cases.push({
+            id: "tailnet-authorized-consumer",
+            outcome: "PASS",
+            detail: `tailnet health+devices+info agree for inventoried target, all device hosts LAN-only, unknown target distinct via tailnet URL. Unknown-principal and Funnel refusal facets belong to installed-resident (not annotated). No identifiers emitted.`,
+            claim: "live-witness",
+            tier: "live",
+            covers: ["surface.tailnet.positive", "surface.tailnet.negative"],
+          });
+        } else {
+          cases.push(
+            hosts === null || !lanOnly || !infoOk
+              ? {
+                  id: "tailnet-authorized-consumer",
+                  outcome: "FAIL",
+                  detail: `tailnet reads incomplete: hostsTyped=${hosts !== null} lanOnly=${lanOnly} infoOk=${infoOk}.`,
+                  claim: "live-witness",
+                  tier: "live",
+                }
+              : liveUnknownCase(
+                  "tailnet-authorized-consumer",
+                  "Tailnet reads agree but unknown-target distinctness via tailnet unobserved (partial witness, not green).",
+                ),
+          );
+        }
       }
     } catch (err) {
       const cls = classifyFetchError(err);
@@ -830,16 +1470,20 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
     }
   }
 
-  // -- 10. RCH suite reuse (env-gated; default UNKNOWN, CI owns proof) --
-  if (ctx.env["ZESTROKU_MISSION_RCH"] !== "1") {
+  // -- 16. RCH accepted-suite reuse (env-gated per AM54053;
+  // ZESTROKU_MISSION_RUN_RCH=1, immutable ctx.source, remote-only, no local
+  // cargo fallback). Green requires the exact named test line plus a nonzero
+  // pass count: a clean exit without them is a zero-run FAIL (AM54068).
+  if (ctx.env["ZESTROKU_MISSION_RUN_RCH"] !== "1") {
     cases.push(
       unknownCase(
         "rch-suite-mcp-stdio",
-        "ZESTROKU_MISSION_RCH unset; immutable-source RCH proof left to CI/owner batch (observed suite: mcp_stdio_routes_reads_through_daemon_and_preserves_gate; not run in default check).",
+        "ZESTROKU_MISSION_RUN_RCH unset; immutable-source RCH proof left to CI/owner batch (observed suite: mcp_stdio_routes_reads_through_daemon_and_preserves_gate; not run in default check).",
         "fixture",
       ),
     );
   } else {
+    const testName = "mcp_stdio_routes_reads_through_daemon_and_preserves_gate";
     try {
       const r = await ctx.exec(
         [
@@ -848,6 +1492,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
           "--base",
           ctx.source,
           "--clean-overlay",
+          "--no-overlay",
           "--",
           "cargo",
           "test",
@@ -857,24 +1502,25 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
           "zestroku-cli",
           "--test",
           "mcp_stdio",
-          "mcp_stdio_routes_reads_through_daemon_and_preserves_gate",
+          testName,
         ],
         { env: { RCH_REQUIRE_REMOTE: "1" }, timeoutMs: 1500000 },
       );
       const out = redact(`${r.stdout}\n${r.stderr}`);
-      if (r.code === 0 && /1 passed|ok\./.test(out)) {
+      if (r.code === 0 && rchSuiteGreen(out, testName)) {
         cases.push({
           id: "rch-suite-mcp-stdio",
           outcome: "PASS",
-          detail: `remote-only RCH mcp_stdio gate green at pinned source (detail capped).`,
+          detail: `remote-only RCH mcp_stdio gate green at pinned source with the exact named test line and nonzero pass count (detail capped).`,
           claim: "invariant",
           tier: "simulated",
+          covers: ["surface.mcp-stdio.positive", "surface.mcp-stdio.negative"],
         });
       } else {
         cases.push({
           id: "rch-suite-mcp-stdio",
           outcome: "FAIL",
-          detail: `RCH suite exit=${r.code} timedOut=${r.timedOut} ${out.slice(-300)}.`,
+          detail: `RCH suite exit=${r.code} timedOut=${r.timedOut} namedGreen=${rchSuiteGreen(out, testName)} ${out.slice(-300)}; zero-run or red (never green on exit alone).`,
           claim: "invariant",
           tier: "simulated",
         });
@@ -894,7 +1540,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
 }
 
 // ---------------------------------------------------------------------------
-// MCP stdio interactive case (spawn; ctx.exec has no stdin channel)
+// MCP helpers (spawn; ctx.exec has no stdin channel)
 // ---------------------------------------------------------------------------
 
 /** Owned spawn handle shape for the MCP stdio driver. */
@@ -924,13 +1570,145 @@ function spawnHost(): SpawnHost | null {
   };
 }
 
+interface McpSession {
+  ask: (line: string, key: number | string, ms?: number) => Promise<McpParsed | null>;
+  close: () => void;
+}
+
+async function openMcpSession(
+  host: SpawnHost,
+  binary: string,
+  env: Record<string, string>,
+): Promise<McpSession | null> {
+  let proc: McpProc;
+  try {
+    proc = host.spawn([binary, "mcp"], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env,
+    });
+  } catch {
+    return null;
+  }
+  if (!proc.stdin || !proc.stdout) {
+    try {
+      proc.kill();
+    } catch {
+      /* ignore kill failure during teardown */
+    }
+    return null;
+  }
+  const stdin = proc.stdin;
+  const reader = proc.stdout.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const deadline = Date.now() + 20000;
+  const pending = new Map<number | string, (v: McpParsed) => void>();
+  void (async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          const p = parseMcpFrame(line);
+          if (!p.ok) continue;
+          if (typeof p.id !== "number" && typeof p.id !== "string") continue;
+          const cb = pending.get(p.id);
+          if (cb) {
+            pending.delete(p.id);
+            cb(p);
+          }
+        }
+      }
+    } catch {
+      /* reader ends with the child; timeouts below record the outcome */
+    }
+  })();
+  const ask = (line: string, key: number | string, ms = 5000): Promise<McpParsed | null> => {
+    const { promise, resolve } = Promise.withResolvers<McpParsed | null>();
+    const t = setTimeout(() => {
+      pending.delete(key);
+      resolve(null);
+    }, Math.max(500, Math.min(ms, Math.max(500, deadline - Date.now()))));
+    pending.set(key, (v) => {
+      clearTimeout(t);
+      resolve(v);
+    });
+    try {
+      stdin.write(line + "\n");
+    } catch {
+      clearTimeout(t);
+      pending.delete(key);
+      resolve(null);
+    }
+    return promise;
+  };
+  return {
+    ask,
+    close: () => {
+      try {
+        stdin.close();
+      } catch {
+        /* ignore close failure during teardown */
+      }
+      try {
+        proc.kill();
+      } catch {
+        /* ignore kill failure during teardown */
+      }
+    },
+  };
+}
+
+/** Single-shot MCP tool call for trio cases (own session, bounded). */
+async function mcpCallOnce(
+  ctx: CheckContext,
+  daemon: string,
+  binaryOk: boolean,
+  isolatedEnv: Record<string, string>,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<McpParsed | null> {
+  if (!binaryOk) return null;
+  const host = spawnHost();
+  if (!host) return null;
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(ctx.env)) {
+    if (typeof v === "string") env[k] = v;
+  }
+  env["ZESTROKU_DB"] = isolatedEnv["ZESTROKU_DB"];
+  env["ZESTROKU_DAEMON_URL"] = daemon;
+  const s = await openMcpSession(host, ctx.binary, env);
+  if (!s) return null;
+  try {
+    const init = await s.ask(mcpInitialize(1), 1);
+    if (!init || mcpServerName(init.result) !== "zestroku") return null;
+    s.ask(mcpLine("notifications/initialized", null, {}), "note", 1000).catch(() => null);
+    try {
+      await s.ask(mcpLine("tools/list", 2, {}), 2);
+    } catch {
+      /* list best-effort for single-shot callers */
+    }
+    return await s.ask(mcpToolsCall(3, tool, args), 3);
+  } finally {
+    s.close();
+  }
+}
+
 async function mcpStdioCase(
   ctx: CheckContext,
   daemon: string | null,
+  deviceHosts: string[],
   binaryOk: boolean,
   isolatedEnv: Record<string, string>,
 ): Promise<CheckCase> {
-  const id = "mcp-stdio-initialize-call-resources";
+  const id = "mcp-stdio-full-contract";
   if (!binaryOk) {
     return unknownCase(id, "Binary probe failed; MCP stdio handshake not exercisable.");
   }
@@ -938,90 +1716,19 @@ async function mcpStdioCase(
   if (!host) {
     return unknownCase(id, "No interactive spawn channel in this runtime; stdio handshake needs stdin (prerequisite absent).");
   }
-  const daemonEnv: Record<string, string> = {};
+  const baseEnv: Record<string, string> = {};
   for (const [k, v] of Object.entries(ctx.env)) {
-    if (typeof v === "string") daemonEnv[k] = v;
+    if (typeof v === "string") baseEnv[k] = v;
   }
-  daemonEnv["ZESTROKU_DB"] = isolatedEnv["ZESTROKU_DB"];
-  if (daemon) daemonEnv["ZESTROKU_DAEMON_URL"] = daemon;
-  let proc: McpProc | null = null;
+  baseEnv["ZESTROKU_DB"] = isolatedEnv["ZESTROKU_DB"];
+  if (daemon) baseEnv["ZESTROKU_DAEMON_URL"] = daemon;
+  const session = await openMcpSession(host, ctx.binary, baseEnv);
+  if (!session) {
+    return { id, outcome: "FAIL", detail: "MCP spawn failed or missing stdio pipes.", claim: "invariant", tier: "simulated" };
+  }
   try {
-    proc = host.spawn([ctx.binary, "mcp"], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-      env: daemonEnv,
-    });
-    if (!proc.stdin || !proc.stdout) {
-      proc.kill();
-      return {
-        id,
-        outcome: "FAIL",
-        detail: "MCP spawn missing stdio pipes.",
-        claim: "invariant",
-        tier: "simulated",
-      };
-    }
-    const stdin = proc.stdin;
-    const reader = proc.stdout.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    const deadline = Date.now() + 15000;
-    const pending = new Map<number | string, (v: McpParsed) => void>();
-    void (async () => {
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          let nl: number;
-          while ((nl = buf.indexOf("\n")) >= 0) {
-            const line = buf.slice(0, nl).trim();
-            buf = buf.slice(nl + 1);
-            if (!line) continue;
-            const p = parseMcpFrame(line);
-            if (!p.ok) continue;
-            if (typeof p.id !== "number" && typeof p.id !== "string") continue;
-            const cb = pending.get(p.id);
-            if (cb) {
-              pending.delete(p.id);
-              cb(p);
-            }
-          }
-        }
-      } catch {
-        /* reader ends with the child; recorded via timeouts below */
-      }
-    })();
-    const ask = (line: string, key: number | string, ms = 5000): Promise<McpParsed | null> => {
-      const { promise, resolve } = Promise.withResolvers<McpParsed | null>();
-      const t = setTimeout(() => {
-        pending.delete(key);
-        resolve(null);
-      }, Math.max(500, Math.min(ms, Math.max(500, deadline - Date.now()))));
-      pending.set(key, (v) => {
-        clearTimeout(t);
-        resolve(v);
-      });
-      try {
-        stdin.write(line + "\n");
-      } catch {
-        clearTimeout(t);
-        pending.delete(key);
-        resolve(null);
-      }
-      return promise;
-    };
-
-    const init = await ask(mcpInitialize(1), 1);
-    const serverName = init && init.result ? mcpServerName(init.result) : null;
-    if (!init || !init.result || serverName !== "zestroku") {
-      try {
-        stdin.close();
-      } catch {
-        /* ignore close failure during teardown */
-      }
-      proc.kill();
+    const init = await session.ask(mcpInitialize(1), 1);
+    if (!init || mcpServerName(init.result) !== "zestroku") {
       return {
         id,
         outcome: "FAIL",
@@ -1030,69 +1737,76 @@ async function mcpStdioCase(
         tier: "simulated",
       };
     }
-    try {
-      stdin.write(mcpLine("notifications/initialized", null, {}) + "\n");
-    } catch {
-      proc.kill();
-      return { id, outcome: "FAIL", detail: "MCP initialized notification write failed.", claim: "invariant", tier: "simulated" };
-    }
-    const list = await ask(mcpLine("tools/list", 2, {}), 2);
+    session.ask(mcpLine("notifications/initialized", null, {}), "note", 1000).catch(() => null);
+    const list = await session.ask(mcpLine("tools/list", 2, {}), 2);
     const names = list && list.result ? mcpToolNames(list.result) : [];
     const missing = MCP_EXPECTED_TOOLS.filter((t) => !names.includes(t));
     const echo =
       names.includes("echo")
-        ? await ask(mcpToolsCall(3, "echo", { text: "mission-parity-probe" }), 3)
+        ? await session.ask(mcpToolsCall(3, "echo", { text: "mission-parity-probe" }), 3)
         : null;
     const echoOk =
       !!echo &&
       echo.result !== undefined &&
       JSON.stringify(echo.result).includes("mission-parity-probe");
     const devices = names.includes("list_devices")
-      ? await ask(mcpToolsCall(4, "list_devices", {}), 4)
+      ? await session.ask(mcpToolsCall(4, "list_devices", {}), 4)
       : null;
     const devicesText = redact(JSON.stringify(devices?.result ?? devices?.error ?? null));
-    const devicesHonest =
-      !!devices &&
-      (devices.result !== undefined || devices.error !== undefined) &&
-      !looksLikeDirectFallback(devicesText);
-    const resources = await ask(mcpLine("resources/list", 5, {}), 5);
+    const devicesOk = !!devices && devices.result !== undefined && !looksLikeDirectFallback(devicesText);
+    // Shared-authority parity: the MCP inventory names the HTTP inventoried host.
+    const firstHost = deviceHosts.length > 0 ? deviceHosts[0] : null;
+    const agrees =
+      firstHost !== null && devicesOk && devicesText.includes(firstHost);
+    const resources = await session.ask(mcpLine("resources/list", 5, {}), 5);
     const resourcesNote = resources
       ? `resources/list answered (${resources.error !== undefined ? "error" : "result"}; honesty recorded)`
       : "resources/list answered nothing (recorded, not faked)";
-    try {
-      stdin.close();
-    } catch {
-      /* ignore close failure during teardown */
+    // Closed-port honesty: same tools against a dead daemon must error
+    // honestly with no rows and no direct dial (never list-only proof).
+    const closedEnv = { ...baseEnv, ZESTROKU_DAEMON_URL: CLOSED_PORT_URL };
+    const closed = await openMcpSession(host, ctx.binary, closedEnv);
+    let closedHonest = false;
+    if (closed) {
+      try {
+        const cInit = await closed.ask(mcpInitialize(11), 11);
+        if (cInit && mcpServerName(cInit.result) === "zestroku") {
+          closed.ask(mcpLine("notifications/initialized", null, {}), "cnote", 1000).catch(() => null);
+          const cList = await closed.ask(mcpToolsCall(12, "list_devices", {}), 12);
+          const cText = redact(JSON.stringify(cList?.result ?? cList?.error ?? null));
+          closedHonest =
+            !!cList &&
+            cList.error !== undefined &&
+            !looksLikeDirectFallback(cText);
+        }
+      } finally {
+        closed.close();
+      }
     }
-    proc.kill();
-    if (missing.length === 0 && echoOk && devicesHonest) {
+    if (missing.length === 0 && echoOk && agrees && closedHonest) {
       return {
         id,
         outcome: "PASS",
-        detail: `initialize zestroku + 8/8 tools + echo round-trip + list_devices honest (${devicesText.slice(0, 120)}); ${resourcesNote} (observed: mcp_stdio_routes_reads_through_daemon_and_preserves_gate; never list-only).`,
+        detail: `initialize zestroku + 8/8 tools + echo round-trip + list_devices agreeing with HTTP inventory (${devicesText.slice(0, 120)}) + closed-port honest error with zero direct dial; ${resourcesNote} (observed: mcp_stdio_routes_reads_through_daemon_and_preserves_gate; never list-only).`,
         claim: "invariant",
         tier: "simulated",
+        covers: ["surface.mcp-stdio.positive", "surface.mcp-stdio.negative"],
       };
     }
-    return {
-      id,
-      outcome: "FAIL",
-      detail: `missing=[${missing.join(",")}] echoOk=${echoOk} devicesHonest=${devicesHonest}; ${resourcesNote}.`,
-      claim: "invariant",
-      tier: "simulated",
-    };
-  } catch (err) {
-    try {
-      proc?.kill();
-    } catch {
-      /* ignore kill failure during teardown */
+    if (!daemon || deviceHosts.length === 0) {
+      return unknownCase(
+        id,
+        `MCP handshake ran (missing=[${missing.join(",")}] echoOk=${echoOk}) but no seeded HTTP inventory exists to prove shared authority (missing witness, not green).`,
+      );
     }
     return {
       id,
       outcome: "FAIL",
-      detail: `MCP stdio transport: ${redact(errorMessage(err)).slice(0, 200)}.`,
+      detail: `missing=[${missing.join(",")}] echoOk=${echoOk} agrees=${agrees} closedHonest=${closedHonest}; ${resourcesNote}.`,
       claim: "invariant",
       tier: "simulated",
     };
+  } finally {
+    session.close();
   }
 }

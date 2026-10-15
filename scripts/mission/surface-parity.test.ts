@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import {
   classifyFetchError,
   isDaemonDownOutput,
+  isKnownTier,
   isMalformed,
   isOriginAllowed,
+  isOwnedSlot,
   isUnknownTarget,
   loopbackHostname,
   loopbackHttpUrl,
@@ -12,19 +14,29 @@ import {
   mcpServerName,
   mcpToolNames,
   mcpToolsCall,
+  openapiHasAppsPath,
+  originRefusalDistinct,
   parseHealthBody,
   parseMcpFrame,
   parseSseChunk,
+  rchSuiteGreen,
   redact,
+  validActiveAppView,
+  validAppsView,
+  validDevicesView,
+  validInfoView,
 } from "./surface-parity";
 
 // Planted-negative suite for the surface-parity pillar check
 // (bead zestroku-zestroku-doctrine-a0h.14.2).
 //
-// Every test below is behavioral with a positive control in the same test:
-// pure-classifier cases plus one real loopback Bun.serve fixture (real
-// sockets, no mocks, no command-echo stubs). No source/file-presence checks,
-// no failure-forcing env flags, no regex-on-source, no zero-assertion green.
+// Mandatory tests are deterministic pure-consumer or real-loopback causal
+// tests, isolated and full-suite-safe: ephemeral ports, no shared store, no
+// Darwin artifact, no RCH, no live credentials, no throws on absent setup
+// (AM54055). Pure response/dispatch-observation evaluator fixtures carry a
+// valid positive plus a causal violating negative at fixture tier; they never
+// stand in for product execution. No source/file-presence checks, no
+// failure-forcing env flags, no regex-on-source, no zero-assertion green.
 
 // -- health body: positive control + negatives in the same test --
 describe("parseHealthBody", () => {
@@ -77,6 +89,128 @@ describe("classifyFetchError", () => {
   });
 });
 
+// -- structured view validators: typed positive, mistyped negatives --
+describe("structured view validators", () => {
+  const info = {
+    host: "loop",
+    model_name: "Sim",
+    model_number: "0000",
+    software_version: "1.0",
+    is_tv: false,
+    access_tier: "Permissive",
+    tv_active_channel: null,
+  };
+
+  test("isKnownTier admits the four wire tiers only", () => {
+    expect(isKnownTier("Open")).toBe(true);
+    expect(isKnownTier("permissive")).toBe(true);
+    expect(isKnownTier("Limited")).toBe(true);
+    expect(isKnownTier("UNKNOWN")).toBe(true);
+    expect(isKnownTier("admin")).toBe(false);
+    expect(isKnownTier(42)).toBe(false);
+    expect(isKnownTier(null)).toBe(false);
+  });
+
+  test("validInfoView returns the tier for typed views", () => {
+    expect(validInfoView(info)).toBe("Permissive");
+    expect(validInfoView({ ...info, access_tier: "Limited" })).toBe("Limited");
+  });
+
+  test("planted negative: mistyped info views rejected without regex", () => {
+    expect(validInfoView({ ...info, host: 42 })).toBeNull();
+    expect(validInfoView({ ...info, is_tv: "yes" })).toBeNull();
+    expect(validInfoView({ ...info, access_tier: "admin" })).toBeNull();
+    expect(validInfoView({ ...info, model_name: null })).toBeNull();
+    expect(validInfoView("garbage")).toBeNull();
+    expect(validInfoView(null)).toBeNull();
+  });
+
+  test("device/app/state views typed positive and negative", () => {
+    expect(
+      validDevicesView({ devices: [{ host: "a", last_seen: 7 }] }),
+    ).toEqual(["a"]);
+    expect(validDevicesView({ devices: [{ host: "a" }] })).toBeNull();
+    expect(validDevicesView({ devices: "nope" })).toBeNull();
+    expect(
+      validAppsView({ apps: [{ id: 1, name: "x", type: "appl" }] }),
+    ).not.toBeNull();
+    expect(validAppsView({ apps: [{ id: 1 }] })).toBeNull();
+    expect(validAppsView({ apps: "nope" })).toBeNull();
+    expect(validActiveAppView({ host: "a", app_id: null, name: "home" })).toBe(true);
+    expect(validActiveAppView({ host: "a", app_id: "1", name: "home" })).toBe(false);
+    expect(validActiveAppView({ host: "a" })).toBe(false);
+  });
+
+  test("openapi paths-key match is structural, not substring", () => {
+    expect(
+      openapiHasAppsPath({ paths: { "/v1/devices/{host}/apps": {} } }),
+    ).toBe(true);
+    expect(openapiHasAppsPath({ paths: {} })).toBe(false);
+    expect(openapiHasAppsPath({ paths: "nope" })).toBe(false);
+    expect(openapiHasAppsPath(null)).toBe(false);
+  });
+});
+
+// -- origin precedence evaluator: same-code means broken guard --
+describe("originRefusalDistinct", () => {
+  test("distinct guard refusal passes with live control", () => {
+    expect(
+      originRefusalDistinct(
+        403,
+        '{"error":"forbidden_origin"}',
+        400,
+        '{"error":"CONFIRMATION_REQUIRED"}',
+      ),
+    ).toBe(true);
+  });
+
+  test("planted negative: same-code probe means absent guard", () => {
+    expect(
+      originRefusalDistinct(
+        400,
+        '{"error":"CONFIRMATION_REQUIRED"}',
+        400,
+        '{"error":"CONFIRMATION_REQUIRED"}',
+      ),
+    ).toBe(false);
+    expect(originRefusalDistinct(200, '{"ok":true}', 200, '{"ok":true}')).toBe(false);
+    expect(originRefusalDistinct(500, "boom", 400, '{"error":"x"}')).toBe(false);
+  });
+});
+
+// -- RCH green evaluator: named line plus nonzero count, else zero-run --
+describe("rchSuiteGreen", () => {
+  const name = "mcp_stdio_routes_reads_through_daemon_and_preserves_gate";
+  const green = [
+    `test ${name} ... ok`,
+    "test result: ok. 1 passed; 0 failed; 0 ignored",
+  ].join("\n");
+
+  test("exact named line plus nonzero count is green", () => {
+    expect(rchSuiteGreen(green, name)).toBe(true);
+  });
+
+  test("planted negatives: clean exit without proof is a zero-run", () => {
+    expect(rchSuiteGreen("test result: ok. 0 passed; 0 failed", name)).toBe(false);
+    expect(rchSuiteGreen("test result: ok. 1 passed; 0 failed", "other_test")).toBe(false);
+    expect(rchSuiteGreen("", name)).toBe(false);
+    expect(rchSuiteGreen(`test ${name} ... FAILED`, name)).toBe(false);
+  });
+});
+
+// -- covers-slot validity: owned pillar slots only --
+describe("isOwnedSlot", () => {
+  test("own pillar slots admitted, foreign and malformed rejected", () => {
+    expect(isOwnedSlot("surface.http.positive")).toBe(true);
+    expect(isOwnedSlot("cap.errors.negative")).toBe(true);
+    expect(isOwnedSlot("surface.cli.positive")).toBe(false);
+    expect(isOwnedSlot("cap.key.positive")).toBe(false);
+    expect(isOwnedSlot("surface.http")).toBe(false);
+    expect(isOwnedSlot("http.positive")).toBe(false);
+    expect(isOwnedSlot("")).toBe(false);
+  });
+});
+
 // -- MCP framing: round-trip positive, truncation negative --
 describe("MCP newline-delimited framing", () => {
   test("built initialize parses with id preserved", () => {
@@ -104,10 +238,7 @@ describe("MCP newline-delimited framing", () => {
     const line = mcpToolsCall(3, "echo", { text: "mission-parity-probe" });
     const p = parseMcpFrame(line);
     expect(p.ok).toBe(true);
-    const params = (p.result ?? {}) as Record<string, unknown>;
-    expect(typeof line).toBe("string");
     expect(line).toContain('"echo"');
-    expect(params).toBeDefined();
   });
 
   test("tool names list positive and missing-tool negative", () => {
@@ -191,9 +322,10 @@ describe("redact", () => {
   });
 });
 
-// -- real loopback fixture: positive reads, distinct negatives, stopped-port down --
-describe("loopback daemon fixture", () => {
-  test("health ok, unknown 404 distinct, malformed 400 distinct, stopped refused", async () => {
+// -- real loopback evaluator fixture (fixture tier): typed reads, distinct
+// refusals, origin precedence pair, unknown-body leakage check --
+describe("loopback daemon evaluator fixture", () => {
+  test("reads agree, refusals distinct, guard decides, unknown leaks nothing", async () => {
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
@@ -203,11 +335,27 @@ describe("loopback daemon fixture", () => {
           return new Response('{"status":"ok"}', {
             headers: { "content-type": "application/json" },
           });
-        if (u.pathname === "/v1/devices/known/info")
+        if (u.pathname === "/v1/devices")
           return new Response(
-            JSON.stringify({ host: "known", model_name: "Sim", apps: [] }),
+            JSON.stringify({ devices: [{ host: "known", last_seen: 7 }] }),
             { headers: { "content-type": "application/json" } },
           );
+        if (u.pathname === "/v1/devices/known/info")
+          return new Response(
+            JSON.stringify({
+              host: "known",
+              model_name: "Sim",
+              model_number: "0000",
+              software_version: "1.0",
+              is_tv: false,
+              access_tier: "Permissive",
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        if (u.pathname === "/v1/devices/known/key" && req.method === "POST")
+          return req.headers.get("origin") === "http://127.0.0.1"
+            ? new Response('{"error":"CONFIRMATION_REQUIRED"}', { status: 400 })
+            : new Response('{"error":"forbidden_origin"}', { status: 403 });
         if (u.pathname.startsWith("/v1/devices/__mission"))
           return new Response('{"error":"device_not_found"}', { status: 404 });
         return new Response('{"error":"invalid_target"}', { status: 400 });
@@ -219,24 +367,40 @@ describe("loopback daemon fixture", () => {
       expect(health.status).toBe(200);
       expect(parseHealthBody(await health.text())).toBe(true);
 
+      const devs = await (await fetch(`${base}/v1/devices`)).json();
+      expect(validDevicesView(devs)).toEqual(["known"]);
+
+      const info = await (await fetch(`${base}/v1/devices/known/info`)).json();
+      expect(validInfoView(info)).toBe("Permissive");
+
       const unk = await fetch(`${base}/v1/devices/__mission_nope__/info`);
-      expect(isUnknownTarget(unk.status, await unk.text())).toBe(true);
+      const unkBody = await unk.text();
+      expect(isUnknownTarget(unk.status, unkBody)).toBe(true);
+      expect(unkBody).not.toContain('"apps"');
 
       const bad = await fetch(`${base}/v1/devices/%FF%FE/info`);
       expect(isMalformed(bad.status, await bad.text())).toBe(true);
+
+      const control = await fetch(`${base}/v1/devices/known/key`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://127.0.0.1" },
+        body: JSON.stringify({ key: "Home", confirm: "" }),
+      });
+      const probe = await fetch(`${base}/v1/devices/known/key`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://evil.example" },
+        body: JSON.stringify({ key: "Home", confirm: "" }),
+      });
+      expect(
+        originRefusalDistinct(
+          probe.status,
+          await probe.text(),
+          control.status,
+          await control.text(),
+        ),
+      ).toBe(true);
     } finally {
       server.stop(true);
     }
-
-    // Planted negative with positive control above: the stopped port refuses.
-    let cls: string | null = null;
-    try {
-      await fetch(`http://127.0.0.1:9/health`);
-    } catch (err) {
-      cls = classifyFetchError(err);
-    }
-    // Port 9 is discard; any transport error here must not read as success.
-    expect(cls === null || cls === "daemon-down" || cls === "other").toBe(true);
-    expect(parseHealthBody("")).toBe(false);
   });
 });
