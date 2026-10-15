@@ -1,0 +1,24 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_a0957f9604448e171f965409e0a7b6d85ca3a1b4237f43360a887f205ec51175",
+ "limitations": [
+  "Remote Linux offline workspace tests; live-device legs outside this bead scope."
+ ],
+ "operation": "zestroku.serve-readiness.1.2-workspace-rerun",
+ "parameters": {
+  "base": "f333305128733eae9cf2a23ce02ceac37c603150",
+  "bead_id": "zestroku-m7c-serve-inq.1.2",
+  "overlay": "none-no-overlay-fe0d5151",
+  "worker": "contabo-2"
+ },
+ "producer": "QuietStream",
+ "result_ref": {
+  "command": "cargo test -j 2 --locked --workspace",
+  "decisive_output": "Remote command finished: exit=0 in 32401ms; every suite green incl serve 5/5, drain-controls 4/4, readiness 2/2, 0 failed workspace-wide",
+  "remote_elapsed_ms": 32401,
+  "remote_exit": 0,
+  "source": "immutable f333305 --clean-overlay --no-overlay",
+  "worker": "contabo-2"
+ }
+}

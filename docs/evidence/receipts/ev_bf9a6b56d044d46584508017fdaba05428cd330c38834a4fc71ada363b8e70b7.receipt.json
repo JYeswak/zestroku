@@ -1,0 +1,25 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_bf9a6b56d044d46584508017fdaba05428cd330c38834a4fc71ada363b8e70b7",
+ "limitations": [
+  "Remote Linux loopback tests; no live-device legs in this bead scope."
+ ],
+ "operation": "zestroku.serve-readiness.1.2-targeted-rerun",
+ "parameters": {
+  "base": "f333305128733eae9cf2a23ce02ceac37c603150",
+  "bead_id": "zestroku-m7c-serve-inq.1.2",
+  "overlay": "none-no-overlay-fe0d5151",
+  "suite": "serve_readiness",
+  "worker": "contabo-2"
+ },
+ "producer": "QuietStream",
+ "result_ref": {
+  "command": "cargo test -j 2 --locked -p zestroku-cli --test serve_readiness",
+  "decisive_output": "Remote command finished: exit=0 in 19868ms; test result: ok. 2 passed; 0 failed",
+  "remote_elapsed_ms": 19868,
+  "remote_exit": 0,
+  "source": "immutable f333305 --clean-overlay --no-overlay",
+  "worker": "contabo-2"
+ }
+}
