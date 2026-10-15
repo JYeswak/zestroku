@@ -1,0 +1,21 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_682aa512798e4ed1570dd6eff8ba09155be98286f9b94ef1c6ff732f0996ac7c",
+ "limitations": [
+  "RCH formatter attempt refused with queue_timeout; formatter was run on exact-commit archive via direct Cargo fmt (format-only, no build).",
+  "No fresh hosted CI, physical Roku, tailnet, or mutation witness."
+ ],
+ "operation": "verify/zestroku-doctrine-a0h.11.1",
+ "parameters": {
+  "clippy": "workspace_all_targets_warnings_denied_exit0",
+  "format": "exact_archive_local_cargo_fmt_exit0",
+  "source": "65ca080b692bdf6d12354bc66d488e4a99d95f86",
+  "targeted_tests": "67_passed"
+ },
+ "producer": "rch-2.1.15",
+ "result_ref": {
+  "bytes": 3246,
+  "sha256": "c61e7eabe85ac40fd39d4686824bd604b2d02c7b14575ac1dd51e75f6c9f21e9"
+ }
+}
