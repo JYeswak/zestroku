@@ -1,8 +1,8 @@
 //! `zestroku mcp` speaks MCP over stdio: spawns the real binary, initializes,
-//! lists tools, round-trips `echo`, reads a seeded device through
-//! `list_devices`, and proves an unconfirmed `key` is refused with
-//! CONFIRMATION_REQUIRED and audited (planted negative: a server that
-//! dispatched without the gate would not refuse).
+//! lists tools, round-trips `echo`, and reads `list_devices`, `info`,
+//! `active_app`, and `apps` through the real daemon and simulator. It checks
+//! unavailable-daemon behavior without fallback and proves an unconfirmed
+//! `key` is refused with CONFIRMATION_REQUIRED and audited.
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
@@ -12,6 +12,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
+use zestroku_core::store::{DeviceRow, SqliteStore, Store};
 
 struct Session {
     child: Child,
@@ -147,6 +148,72 @@ fn seed_device(db: &Path, target: &str, model_number: &str) {
         .expect("seed sim device");
 }
 
+fn seed_mutation_device(db: &Path, target: &str, model_number: &str) {
+    use zestroku_core::store::AccessTierRow;
+
+    seed_device(db, target, model_number);
+    let (host, port) = target
+        .rsplit_once(':')
+        .expect("sim target has host and port");
+    let port = port.parse::<u16>().expect("sim target port");
+    SqliteStore::open(db)
+        .expect("open sim tier store")
+        .upsert_access_tier(&AccessTierRow {
+            device_id: zestroku_core::tier::device_id(host, port),
+            tier: "permissive".to_owned(),
+            probe_at: 1,
+            probe_map: r#"{"query/apps":"open"}"#.to_owned(),
+        })
+        .expect("seed sim access tier");
+}
+
+fn mint_mcp_approval(
+    db: &Path,
+    target: &str,
+    command: &zestroku_proto::Command,
+    issued_at: i64,
+) -> String {
+    use zestroku_core::mutation::issue_approval;
+    use zestroku_types::{AccessTier, Device};
+
+    let (host, port) = target
+        .rsplit_once(':')
+        .expect("sim target has host and port");
+    let port = port.parse::<u16>().expect("sim target port");
+    let store = SqliteStore::open(db).expect("open sim approval store");
+    issue_approval(
+        &store,
+        &Device {
+            host: host.to_owned(),
+            port,
+            model_name: "Sim Express".to_owned(),
+            model_number: "SIMX1".to_owned(),
+            software_version: "15.2.4".to_owned(),
+            is_tv: false,
+            access_tier: AccessTier::Permissive,
+        },
+        command,
+        issued_at,
+    )
+    .expect("mint one-use MCP approval")
+}
+
+fn initialize_session(session: &mut Session) {
+    session.send(&json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "zestroku-mutation-test", "version": "0"}
+        }
+    }));
+    let initialized = session.response(1);
+    assert_eq!(
+        initialized["result"]["serverInfo"]["name"], "zestroku",
+        "{initialized}"
+    );
+    session.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+}
 fn result_json(response: &Value) -> Value {
     let text = response["result"]["content"][0]["text"]
         .as_str()
@@ -166,6 +233,13 @@ fn listed_tool<'a>(list: &'a Value, name: &str) -> &'a Value {
 
 fn is_error(resp: &Value) -> bool {
     resp["error"].is_object() || resp["result"]["isError"] == true
+}
+
+fn tool_error_text(response: &Value) -> &str {
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("tool error omitted readable content: {response}"))
 }
 
 #[test]
@@ -223,13 +297,28 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
         assert!(names.contains(&want), "missing tool {want}: {names:?}");
     }
     let devices_schema = &listed_tool(&list, "list_devices")["inputSchema"];
+    assert_eq!(devices_schema["type"], "object");
     assert_eq!(devices_schema["additionalProperties"], false);
-    assert!(devices_schema["properties"].as_object().unwrap().is_empty());
+    assert_eq!(devices_schema["properties"], json!({}));
+    assert!(
+        !devices_schema.as_object().unwrap().contains_key("required"),
+        "{devices_schema}"
+    );
     for name in ["info", "active_app", "apps"] {
         let schema = &listed_tool(&list, name)["inputSchema"];
+        assert_eq!(schema["type"], "object", "{name}");
+        assert_eq!(
+            schema["properties"],
+            json!({
+                "host": {
+                    "type": "string",
+                    "description": "Inventory host or host:port."
+                }
+            }),
+            "{name}"
+        );
+        assert_eq!(schema["required"], json!(["host"]), "{name}");
         assert_eq!(schema["additionalProperties"], false, "{name}");
-        assert_eq!(schema["required"][0], "host", "{name}");
-        assert_eq!(schema["properties"]["host"]["type"], "string", "{name}");
     }
 
     let echo = s.call(3, "echo", json!({"text": "hello \u{2014} roku"}));
@@ -274,12 +363,25 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
             .any(|app| app["id"] == "1001" && app["name"] == "Streaming One"),
         "{apps}"
     );
+    let read_requests = sim.received_requests();
+    assert!(
+        read_requests.iter().all(|(method, _)| method == "GET"),
+        "MCP read tools must not issue POST requests: {read_requests:?}"
+    );
+
+    for path in ["/query/device-info", "/query/active-app", "/query/apps"] {
+        assert!(
+            read_requests
+                .iter()
+                .any(|(method, request_uri)| method == "GET" && request_uri.as_str() == path),
+            "expected daemon-routed GET {path}; observed {read_requests:?}"
+        );
+    }
 
     let before_unknown = sim.received_requests().len();
     let unknown = s.call(8, "info", json!({"host": "192.0.2.99:8060"}));
-    assert!(is_error(&unknown), "{unknown}");
     assert!(
-        unknown.to_string().contains("device_not_found"),
+        tool_error_text(&unknown).contains("device_not_found"),
         "{unknown}"
     );
     assert_eq!(sim.received_requests().len(), before_unknown);
@@ -290,21 +392,27 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
         "info",
         json!({"host": target, "daemon_url": "http://192.0.2.1:8070"}),
     );
-    assert!(is_error(&extra_backend), "{extra_backend}");
+    assert_eq!(extra_backend["error"]["code"], -32602, "{extra_backend}");
+    assert!(
+        extra_backend["error"]["message"]
+            .as_str()
+            .is_some_and(|message| {
+                message.contains("additional property not allowed: daemon_url")
+            }),
+        "{extra_backend}"
+    );
     assert_eq!(sim.received_requests().len(), before_extra);
 
     sim.set_malformed_apps(true);
     let malformed = s.call(10, "apps", json!({"host": target}));
-    assert!(is_error(&malformed), "{malformed}");
     assert!(
-        malformed.to_string().contains("malformed_apps"),
+        tool_error_text(&malformed).contains("malformed_apps"),
         "{malformed}"
     );
 
     let unreachable = s.call(11, "info", json!({"host": unreachable_target}));
-    assert!(is_error(&unreachable), "{unreachable}");
     assert!(
-        unreachable.to_string().contains("transport_error"),
+        tool_error_text(&unreachable).contains("transport_error"),
         "{unreachable}"
     );
 
@@ -342,11 +450,192 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
 
     let before_shutdown = sim.received_requests().len();
     daemon.stop();
-    let unavailable = s.call(15, "info", json!({"host": target}));
-    assert!(is_error(&unavailable), "{unavailable}");
-    assert!(
-        unavailable.to_string().contains("daemon_unavailable"),
-        "{unavailable}"
-    );
+    for (id, name, arguments) in [
+        (15, "list_devices", json!({})),
+        (16, "info", json!({"host": target})),
+        (17, "active_app", json!({"host": target})),
+        (18, "apps", json!({"host": target})),
+    ] {
+        let unavailable = s.call(id, name, arguments);
+        assert!(
+            tool_error_text(&unavailable).contains("daemon_unavailable"),
+            "{name}: {unavailable}"
+        );
+    }
     assert_eq!(sim.received_requests().len(), before_shutdown);
+}
+
+#[test]
+fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
+    use zestroku_core::store::Store;
+    use zestroku_proto::{keypress_raw, launch};
+    use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
+
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let target = format!("127.0.0.1:{}", sim.port());
+    let dir = tempfile::tempdir().expect("temporary mutation directory");
+    let db = dir.path().join("actions.db");
+    seed_mutation_device(&db, &target, "SIM-1234X");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs() as i64;
+    let launch_token = mint_mcp_approval(&db, &target, &launch(1001), now);
+    let key_token = mint_mcp_approval(&db, &target, &keypress_raw("HOME"), now);
+
+    let daemon_port = free_port();
+    let _daemon = Daemon::start(&db, daemon_port);
+    let mut session = Session::start(&db, &format!("http://127.0.0.1:{daemon_port}"));
+    initialize_session(&mut session);
+
+    let launched = session.call(
+        2,
+        "launch",
+        json!({"host": target, "target": "1001", "confirm": launch_token}),
+    );
+    assert!(!is_error(&launched), "{launched}");
+    assert_eq!(
+        sim.launch_count(),
+        1,
+        "MCP approval must reach the daemon and dispatch exactly once"
+    );
+    let launched_outcome = result_json(&launched);
+    assert_eq!(launched_outcome["surface"], "launch");
+    assert_eq!(launched_outcome["target"], target);
+    assert_eq!(launched_outcome["outcome"], "completed");
+
+    let active_after_launch = session.call(3, "active_app", json!({"host": target}));
+    assert_eq!(
+        result_json(&active_after_launch)["name"],
+        "Streaming One",
+        "{active_after_launch}"
+    );
+
+    let keyed = session.call(
+        4,
+        "key",
+        json!({"host": target, "target": "HOME", "confirm": key_token}),
+    );
+    assert!(!is_error(&keyed), "{keyed}");
+    let keyed_outcome = result_json(&keyed);
+    assert_eq!(keyed_outcome["surface"], "key");
+    assert_eq!(keyed_outcome["target"], target);
+    assert_eq!(keyed_outcome["outcome"], "completed");
+
+    let active_after_key = session.call(5, "active_app", json!({"host": target}));
+    assert_eq!(
+        result_json(&active_after_key)["name"],
+        "Roku",
+        "{active_after_key}"
+    );
+    let posts: Vec<String> = sim
+        .received_requests()
+        .into_iter()
+        .filter(|(method, _)| method == "POST")
+        .map(|(_, path)| path)
+        .collect();
+    assert_eq!(posts, ["/launch/1001", "/keypress/HOME"]);
+
+    let actions = SqliteStore::open(&db)
+        .expect("open shared action store")
+        .list_actions()
+        .expect("list shared actions");
+    assert_eq!(actions.len(), 2, "{actions:?}");
+    let launch_action = actions
+        .iter()
+        .find(|action| action.surface == "launch")
+        .expect("completed launch action");
+    assert_eq!(launch_action.client, "http");
+    assert_eq!(launch_action.decision, "approved");
+    assert_eq!(launch_action.result, "completed");
+    assert!(launch_action.before_state.contains("Roku"));
+    let key_action = actions
+        .iter()
+        .find(|action| action.surface == "key")
+        .expect("completed key action");
+    assert_eq!(key_action.client, "http");
+    assert_eq!(key_action.decision, "approved");
+    assert_eq!(key_action.result, "completed");
+    assert!(key_action.before_state.contains("Streaming One"));
+}
+
+#[test]
+fn mcp_replay_is_refused_without_a_second_device_mutation() {
+    use zestroku_core::store::Store;
+    use zestroku_proto::launch;
+    use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
+
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let target = format!("127.0.0.1:{}", sim.port());
+    let dir = tempfile::tempdir().expect("temporary replay directory");
+    let db = dir.path().join("actions.db");
+    seed_mutation_device(&db, &target, "SIM-1234X");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs() as i64;
+    let token = mint_mcp_approval(&db, &target, &launch(1001), now);
+
+    let daemon_port = free_port();
+    let _daemon = Daemon::start(&db, daemon_port);
+    let mut session = Session::start(&db, &format!("http://127.0.0.1:{daemon_port}"));
+    initialize_session(&mut session);
+    let arguments = json!({"host": target, "target": "1001", "confirm": token});
+
+    let first = session.call(2, "launch", arguments.clone());
+    assert!(!is_error(&first), "{first}");
+    assert_eq!(sim.launch_count(), 1);
+    let replay = session.call(3, "launch", arguments);
+    assert!(
+        is_error(&replay),
+        "replayed approval must be refused: {replay}"
+    );
+    assert_eq!(
+        sim.launch_count(),
+        1,
+        "replayed token must not dispatch another mutation"
+    );
+    let posts: Vec<String> = sim
+        .received_requests()
+        .into_iter()
+        .filter(|(method, _)| method == "POST")
+        .map(|(_, path)| path)
+        .collect();
+    assert_eq!(posts, ["/launch/1001"]);
+
+    let actions = SqliteStore::open(&db)
+        .expect("open shared action store")
+        .list_actions()
+        .expect("list shared actions");
+    assert_eq!(actions.len(), 2, "{actions:?}");
+    assert_eq!(actions[0].result, "completed");
+    assert_eq!(actions[1].decision, "denied");
+}
+#[test]
+fn mcp_rejects_non_loopback_daemon_endpoint_before_startup() {
+    let output = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .arg("mcp")
+        .env("ZESTROKU_DAEMON_URL", "http://198.51.100.7:8070")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run MCP with an out-of-scope daemon endpoint");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("ZESTROKU_DAEMON_URL must be http://<loopback-ip>:<nonzero-port>"),
+        "invalid endpoint must be rejected before the MCP server starts"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "invalid endpoint must not emit an MCP handshake"
+    );
 }
