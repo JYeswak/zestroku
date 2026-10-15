@@ -107,6 +107,13 @@ function parseJson(text: string): unknown {
   }
 }
 
+/** Binary identity: first whitespace-separated word is exactly zestroku
+ * (case-insensitive). No substring match: "not-zestroku 1.0" must fail. */
+export function isZestrokuVersion(output: string): boolean {
+  const first = output.trim().split(" ")[0];
+  return first !== undefined && first.toLowerCase() === "zestroku";
+}
+
 export function parseHealthBody(text: string): boolean {
   const v = parseJson(text);
   return v !== null && typeof v === "object" && "status" in v && v.status === "ok";
@@ -546,7 +553,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
   try {
     const v = await ctx.exec([ctx.binary, "--version"], { timeoutMs: 15000 });
     binaryVersion = redact(`${v.stdout} ${v.stderr}`.trim()).slice(0, 160);
-    binaryOk = v.code === 0 && /zestroku/i.test(`${v.stdout} ${v.stderr}`);
+    binaryOk = v.code === 0 && isZestrokuVersion(`${v.stdout} ${v.stderr}`);
   } catch {
     binaryOk = false;
   }
@@ -778,7 +785,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
       );
       const badB = await readBodyBounded(bad);
       const unkDistinct = isUnknownTarget(unk.status, unkB);
-      const badDistinct = isMalformed(bad.status, badB) || bad.status === 404;
+      const badDistinct = isMalformed(bad.status, badB);
       const noLeak =
         unk.status !== 200 || fieldOf(parseJson(unkB), "apps") === undefined;
       if (unkDistinct && badDistinct && unk.status !== 200 && noLeak) {
@@ -1027,11 +1034,10 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
         env: isolatedEnv,
         timeoutMs: 8000,
       });
-      const cliRefuses = cli.code !== 0;
+      const cliRefuses = cli.code === 2;
       const http = await fetchBounded(`${daemon}/v1/devices/%FF%FE/info`, {}, 2500);
       const httpB = await readBodyBounded(http);
-      const httpRefuses =
-        isMalformed(http.status, httpB) || isUnknownTarget(http.status, httpB);
+      const httpRefuses = isMalformed(http.status, httpB);
       const mcp = await mcpCallOnce(ctx, daemon, binaryOk, isolatedEnv, "info", {
         host: 42,
       });
@@ -1042,7 +1048,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
         cases.push({
           id: "error-trio-malformed",
           outcome: "PASS",
-          detail: `malformed input refused loudly on CLI (exit ${cli.code}), HTTP ${http.status}/${errorField(httpB) ?? "untyped"}, MCP arg-shape refusal; no silent error or generic success.`,
+          detail: `malformed input refused loudly on CLI (usage exit 2), HTTP ${http.status}/${errorField(httpB) ?? "untyped"}, MCP arg-shape refusal; no silent error or generic success.`,
           claim: "invariant",
           tier: "simulated",
           covers: ["cap.errors.negative"],
@@ -1122,11 +1128,21 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
       });
       const echoB = await readBodyBounded(echoR);
       const echoOk = echoR.status === 200 && echoB.includes("mission-parity-probe");
-      if (identOk && missing.length === 0 && echoOk) {
+      const unkR = await post({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: { name: "info", arguments: { host: UNKNOWN_TARGET } },
+      });
+      const unkV = parseJson(await readBodyBounded(unkR));
+      const unkErr =
+        fieldOf(unkV, "error") !== undefined ||
+        mcpToolErrorText(fieldOf(unkV, "result")) !== null;
+      if (identOk && missing.length === 0 && echoOk && unkErr) {
         cases.push({
           id: "mcp-streamable-http-parity",
           outcome: "PASS",
-          detail: `streamable HTTP initialize + 8/8 tools + echo round-trip with stdio-identical tool names; approval/policy/target rules shared by gate (call-level equivalence observed, not identity-only).`,
+          detail: `streamable HTTP initialize + 8/8 stdio-identical tool names + echo round-trip + unknown-target call refused as an error (not success rows). Cancellation/duplication facet belongs to safe-control; not annotated.`,
           claim: "invariant",
           tier: "simulated",
           covers: ["surface.mcp-http.positive", "surface.mcp-http.negative"],
@@ -1135,7 +1151,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
         cases.push({
           id: "mcp-streamable-http-parity",
           outcome: "FAIL",
-          detail: `identOk=${identOk} missing=[${missing.join(",")}] echoOk=${echoOk}; streamable HTTP is not stdio-equivalent. Cancellation/duplication facet belongs to safe-control; not annotated.`,
+          detail: `identOk=${identOk} missing=[${missing.join(",")}] echoOk=${echoOk} unkErr=${unkErr}; streamable HTTP is not stdio-equivalent. Cancellation/duplication facet belongs to safe-control; not annotated.`,
           claim: "invariant",
           tier: "simulated",
         });
@@ -1370,11 +1386,14 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
             "GET / 404: no browser/phone remote route in current source (backlog bead sse-web-remote-b5u; unproven, not green).",
           ),
         );
-      } else if (res.status === 200 && /<html/i.test(body) && !/device|app|state/i.test(body)) {
+      } else if (
+        res.status === 200 &&
+        (res.headers.get("content-type") ?? "").toLowerCase().includes("text/html")
+      ) {
         cases.push({
           id: "browser-product-surface",
           outcome: "FAIL",
-          detail: "GET / serves static HTML with no device/state content (static-HTML proxy).",
+          detail: "GET / serves text/html where a device/state browser remote is required (static-HTML proxy: content-type verdict, no body keywords).",
           claim: "invariant",
           tier: "simulated",
         });

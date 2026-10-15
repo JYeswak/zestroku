@@ -16,6 +16,7 @@ import {
   mcpToolsCall,
   openapiHasAppsPath,
   originRefusalDistinct,
+  isZestrokuVersion,
   parseHealthBody,
   parseMcpFrame,
   parseSseChunk,
@@ -43,6 +44,17 @@ import {
     expect(isMalformed(400, '{"error":"something_else"}')).toBe(false);
     expect(isMalformed(200, '{"devices":[]}')).toBe(false);
     expect(isUnknownTarget(200, '{"devices":[]}')).toBe(false);
+  });
+});
+
+// -- binary identity: first word exactly zestroku, no substring match --
+describe("isZestrokuVersion", () => {
+  test("first-word identity passes, lookalikes fail", () => {
+    expect(isZestrokuVersion("zestroku 0.1.0 f333305\n")).toBe(true);
+    expect(isZestrokuVersion("Zestroku 0.1.0 abc1234")).toBe(true);
+    expect(isZestrokuVersion("not-zestroku 1.0")).toBe(false);
+    expect(isZestrokuVersion("")).toBe(false);
+    expect(isZestrokuVersion("zestroku-helper 2.0")).toBe(false);
   });
 });
 
