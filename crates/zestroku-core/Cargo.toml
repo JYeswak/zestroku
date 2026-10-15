@@ -16,3 +16,4 @@ getrandom = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+zestroku-sim = { path = "../zestroku-sim" }
