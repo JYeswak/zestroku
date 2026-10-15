@@ -1,6 +1,8 @@
 //! Real fsqlite temp-file database; no mocks. Device identifiers below are
 //! synthetic placeholders, never real serials/UDNs/MACs.
 
+use fsqlite::AsyncConnection;
+
 use zestroku_core::store::{
     AccessTierRow, ActionRow, AliasRow, AppRow, DeviceRow, DiffRow, MIGRATIONS, SqliteStore, Store,
     is_contiguous,
@@ -270,5 +272,73 @@ fn different_identities_are_never_merged() {
         Some("127.0.0.1:2222".to_string())
     );
     assert_eq!(st.find_device_id_by_identity("key-unknown").unwrap(), None);
+    st.close().unwrap();
+}
+
+#[test]
+fn identity_move_rolls_back_when_target_upsert_aborts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("identity-rollback.db");
+    let old_id = "127.0.0.1:1111";
+    let new_id = "127.0.0.1:2222";
+    let old_device = device(old_id, "open");
+    let new_device = device(new_id, "open");
+
+    let st = SqliteStore::open(&path).unwrap();
+    st.upsert_device(&old_device).unwrap();
+    st.set_alias(&AliasRow {
+        alias: "living-room".into(),
+        device_id: old_id.into(),
+    })
+    .unwrap();
+    st.record_device_identity(old_id, "key-device-a").unwrap();
+    let app = AppRow {
+        device_id: old_id.into(),
+        app_id: "home".into(),
+        name: "Home".into(),
+        version: "1".into(),
+        fetched_at: 1,
+    };
+    st.upsert_app(&app).unwrap();
+    st.add_capability(old_id, "apps").unwrap();
+    let tier = AccessTierRow {
+        device_id: old_id.into(),
+        tier: "permissive".into(),
+        probe_at: 1,
+        probe_map: "{}".into(),
+    };
+    st.upsert_access_tier(&tier).unwrap();
+    st.close().unwrap();
+
+    let conn = AsyncConnection::open_sync(path.to_string_lossy().into_owned()).unwrap();
+    conn.execute_batch_sync(
+        "CREATE TRIGGER abort_identity_move_target BEFORE INSERT ON devices \
+         WHEN NEW.id = '127.0.0.1:2222' \
+         BEGIN SELECT RAISE(ABORT, 'injected target upsert failure'); END;",
+    )
+    .unwrap();
+    conn.close_sync().unwrap();
+
+    let st = SqliteStore::open(&path).unwrap();
+    assert!(
+        st.move_device_identity(old_id, &new_device, "key-device-a")
+            .is_err()
+    );
+    assert_eq!(st.get_device(old_id).unwrap(), Some(old_device));
+    assert_eq!(st.get_device(new_id).unwrap(), None);
+    assert_eq!(
+        st.list_aliases().unwrap(),
+        vec![AliasRow {
+            alias: "living-room".into(),
+            device_id: old_id.into(),
+        }]
+    );
+    assert_eq!(
+        st.find_device_id_by_identity("key-device-a").unwrap(),
+        Some(old_id.to_string())
+    );
+    assert_eq!(st.list_apps(old_id).unwrap(), vec![app]);
+    assert_eq!(st.list_capabilities(old_id).unwrap(), vec!["apps"]);
+    assert_eq!(st.get_access_tier(old_id).unwrap(), Some(tier));
     st.close().unwrap();
 }
