@@ -136,30 +136,36 @@ export function classifyFetchError(err: unknown): NetClass {
   return "other";
 }
 
-/** Unknown-target responses are 404 with a device/unknown marker, distinct
- * from 400 malformed-input responses. Positive controls in tests. */
+/** Exact `error` field of a JSON error body (routes.rs error_response
+ * contract); null when the body is not a typed error object. */
+export function errorField(body: string): string | null {
+  const v = parseJson(body);
+  if (v === null || typeof v !== "object") return null;
+  const e = fieldOf(v, "error");
+  return typeof e === "string" ? e : null;
+}
+
+/** Exact 400 codes observed in routes.rs (invalid_host, missing_host,
+ * invalid_key, invalid_device_target, invalid_json). A closed set: server
+ * drift to a new code fails loudly instead of passing vaguely. */
+const MALFORMED_CODE: Record<string, true> = {
+  invalid_host: true,
+  missing_host: true,
+  invalid_key: true,
+  invalid_device_target: true,
+  invalid_json: true,
+};
+
+/** Unknown-target refusal is exactly 404 + error device_not_found
+ * (routes.rs:509,613); apps-absent 404s use a different code and never match.
+ * Positive controls in tests. */
 export function isUnknownTarget(status: number, body: string): boolean {
-  if (status !== 404) return false;
-  const b = body.toLowerCase();
-  return (
-    b.includes("device_not_found") ||
-    b.includes("unknown") ||
-    b.includes("not found") ||
-    b.includes("absent")
-  );
+  return status === 404 && errorField(body) === "device_not_found";
 }
 
 export function isMalformed(status: number, body: string): boolean {
-  if (status !== 400) return false;
-  const b = body.toLowerCase();
-  return (
-    b.includes("invalid") ||
-    b.includes("malformed") ||
-    b.includes("bad_request") ||
-    b.includes("bad request")
-  );
+  return status === 400 && MALFORMED_CODE[errorField(body) ?? ""] === true;
 }
-
 /** Daemon-down CLI output names DAEMON_UNAVAILABLE and must never read as a
  * direct-LAN dial marker. */
 export function isDaemonDownOutput(text: string): boolean {
@@ -249,13 +255,13 @@ export function validActiveAppView(v: unknown): boolean {
 export function openapiHasAppsPath(v: unknown): boolean {
   const paths = fieldOf(v, "paths");
   if (paths === null || typeof paths !== "object" || Array.isArray(paths)) return false;
-  return "​/v1/devices/{host}/apps" in (paths as Record<string, unknown>) ||
-    "/v1/devices/{host}/apps" in (paths as Record<string, unknown>);
+  return "/v1/devices/{host}/apps" in (paths as Record<string, unknown>);
 }
 
-/** Origin precedence evaluator: the probe is refused with a browser-safety
- * code while the well-formed control reaches confirmation logic. Same-code
- * means the guard is absent (causal broken variant -> false). */
+/** Origin precedence evaluator on exact error codes (routes.rs:200,659):
+ * the foreign-Origin probe is 403 UNTRUSTED_ORIGIN while the well-formed
+ * matching-Origin control reaches 403 confirmation_required. Same-code on
+ * both sides means the guard is absent (causal broken variant -> false). */
 export function originRefusalDistinct(
   probeStatus: number,
   probeBody: string,
@@ -263,14 +269,11 @@ export function originRefusalDistinct(
   controlBody: string,
 ): boolean {
   const probeGuard =
-    (probeStatus === 400 || probeStatus === 403) &&
-    /origin|forbidden|host/i.test(probeBody);
+    probeStatus === 403 && errorField(probeBody) === "UNTRUSTED_ORIGIN";
   const controlLive =
-    /confirmation_required|tier|CONFIRMATION/i.test(controlBody) ||
-    controlStatus === 200;
-  return probeGuard && controlLive && probeStatus !== controlStatus;
+    controlStatus === 403 && errorField(controlBody) === "confirmation_required";
+  return probeGuard && controlLive;
 }
-
 /** RCH suite green evaluator: the exact named test line plus a nonzero pass
  * count must appear; a clean exit without them is a zero-run (false). */
 export function rchSuiteGreen(stdout: string, testName: string): boolean {
@@ -365,6 +368,22 @@ export function mcpServerName(initResult: unknown): string | null {
   const info: unknown = initResult.serverInfo;
   if (info === null || typeof info !== "object" || !("name" in info)) return null;
   return typeof info.name === "string" ? info.name : null;
+}
+
+/** Structured tool-error text mirroring the accepted suite accessor
+ * (mcp_stdio.rs tool_error_text): result.isError must be true and
+ * result.content[0].text a string. Null when the result carries no tool
+ * error. Callers match exact codes (device_not_found, malformed_apps,
+ * transport_error, daemon_unavailable) or our own request datum, never a
+ * generic keyword class. */
+export function mcpToolErrorText(result: unknown): string | null {
+  if (result === null || typeof result !== "object") return null;
+  if (!("isError" in result) || result.isError !== true) return null;
+  if (!("content" in result)) return null;
+  const content: unknown = result.content;
+  if (!Array.isArray(content) || content.length === 0) return null;
+  const text: unknown = fieldOf(content[0], "text");
+  return typeof text === "string" ? text : null;
 }
 
 export interface SseParse {
@@ -761,7 +780,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
       const unkDistinct = isUnknownTarget(unk.status, unkB);
       const badDistinct = isMalformed(bad.status, badB) || bad.status === 404;
       const noLeak =
-        !unkB.includes('"apps"') || unk.status !== 200;
+        unk.status !== 200 || fieldOf(parseJson(unkB), "apps") === undefined;
       if (unkDistinct && badDistinct && unk.status !== 200 && noLeak) {
         cases.push({
           id: "http-negative-unknown-malformed",
@@ -818,7 +837,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
         const appsR = await fetchBounded(`${daemon}/v1/devices/${host}/apps`, {}, 2500);
         const appsB = await readBodyBounded(appsR);
         const refused =
-          appsR.status === 403 && /tier|limited|permissive|refus/i.test(appsB);
+          appsR.status === 403 && errorField(appsB) === "tier_refused";
         cases.push(
           refused
             ? {
@@ -960,12 +979,11 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
       const mcp = await mcpCallOnce(ctx, daemon, binaryOk, isolatedEnv, "info", {
         host: UNKNOWN_TARGET,
       });
-      const mcpText = redact(JSON.stringify(mcp?.result ?? mcp?.error ?? null));
+      const mcpErrText = mcp ? mcpToolErrorText(mcp.result) : null;
       const mcpNames =
-        !!mcp &&
-        mcp.error !== undefined &&
-        (mcpText.includes(UNKNOWN_TARGET) ||
-          /unknown|not_found|not found|unavailable/i.test(mcpText));
+        mcpErrText !== null &&
+        (mcpErrText.includes("device_not_found") ||
+          mcpErrText.includes(UNKNOWN_TARGET));
       if (cliNames && httpNames && mcpNames) {
         cases.push({
           id: "error-trio-unknown-target",
@@ -1011,17 +1029,20 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
       });
       const cliRefuses = cli.code !== 0;
       const http = await fetchBounded(`${daemon}/v1/devices/%FF%FE/info`, {}, 2500);
-      await readBodyBounded(http);
-      const httpRefuses = http.status === 400 || http.status === 404;
+      const httpB = await readBodyBounded(http);
+      const httpRefuses =
+        isMalformed(http.status, httpB) || isUnknownTarget(http.status, httpB);
       const mcp = await mcpCallOnce(ctx, daemon, binaryOk, isolatedEnv, "info", {
         host: 42,
       });
-      const mcpRefuses = !!mcp && mcp.error !== undefined;
+      const mcpRefuses =
+        !!mcp &&
+        (mcp.error !== undefined || mcpToolErrorText(mcp.result) !== null);
       if (cliRefuses && httpRefuses && mcpRefuses) {
         cases.push({
           id: "error-trio-malformed",
           outcome: "PASS",
-          detail: `malformed input refused loudly on CLI (exit ${cli.code}), HTTP ${http.status}, MCP InvalidParams; no silent error or generic success.`,
+          detail: `malformed input refused loudly on CLI (exit ${cli.code}), HTTP ${http.status}/${errorField(httpB) ?? "untyped"}, MCP arg-shape refusal; no silent error or generic success.`,
           claim: "invariant",
           tier: "simulated",
           covers: ["cap.errors.negative"],
@@ -1265,9 +1286,16 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
         "Daemon absent; Origin/Host guard contract not exercisable (prerequisite absent).",
       ),
     );
+  } else if (!firstHost) {
+    cases.push(
+      unknownCase(
+        "browser-origin-precedence",
+        "No seeded inventoried target; the precedence pair needs a known target so the control reaches confirmation logic instead of target resolution (missing witness).",
+      ),
+    );
   } else {
     try {
-      const target = firstHost ?? UNKNOWN_TARGET;
+      const target = firstHost;
       const body = JSON.stringify({ key: "Home", confirm: "" });
       const control = await fetchBounded(
         `${daemon}/v1/devices/${encodeURIComponent(target)}/key`,

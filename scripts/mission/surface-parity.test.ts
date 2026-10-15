@@ -21,50 +21,43 @@ import {
   parseSseChunk,
   rchSuiteGreen,
   redact,
+  errorField,
+  mcpToolErrorText,
   validActiveAppView,
   validAppsView,
   validDevicesView,
   validInfoView,
 } from "./surface-parity";
+  test("404 device_not_found is unknown-target, 400 closed-set codes malformed", () => {
+    expect(isUnknownTarget(404, '{"error":"device_not_found"}')).toBe(true);
+    expect(isMalformed(400, '{"error":"invalid_device_target"}')).toBe(true);
+    expect(isMalformed(400, '{"error":"missing_host"}')).toBe(true);
+    expect(isMalformed(400, '{"error":"invalid_json"}')).toBe(true);
+  });
 
-// Planted-negative suite for the surface-parity pillar check
-// (bead zestroku-zestroku-doctrine-a0h.14.2).
-//
-// Mandatory tests are deterministic pure-consumer or real-loopback causal
-// tests, isolated and full-suite-safe: ephemeral ports, no shared store, no
-// Darwin artifact, no RCH, no live credentials, no throws on absent setup
-// (AM54055). Pure response/dispatch-observation evaluator fixtures carry a
-// valid positive plus a causal violating negative at fixture tier; they never
-// stand in for product execution. No source/file-presence checks, no
-// failure-forcing env flags, no regex-on-source, no zero-assertion green.
+  test("planted negative: near-miss codes never collapse into each other", () => {
+    expect(isUnknownTarget(404, '{"error":"apps_endpoint_not_found"}')).toBe(false);
+    expect(isUnknownTarget(404, '{"error":"store_error"}')).toBe(false);
+    expect(isUnknownTarget(400, '{"error":"invalid_device_target"}')).toBe(false);
+    expect(isMalformed(404, '{"error":"device_not_found"}')).toBe(false);
+    expect(isMalformed(400, '{"error":"something_else"}')).toBe(false);
+    expect(isMalformed(200, '{"devices":[]}')).toBe(false);
+    expect(isUnknownTarget(200, '{"devices":[]}')).toBe(false);
+  });
+});
 
-// -- health body: positive control + negatives in the same test --
-describe("parseHealthBody", () => {
-  test("accepts exact ok and rejects degraded, non-JSON and empty", () => {
-    expect(parseHealthBody('{"status":"ok"}')).toBe(true);
-    expect(parseHealthBody('{"status":"ok","extra":1}')).toBe(true);
+describe("errorField", () => {
+  test("reads the typed error code, null otherwise", () => {
+    expect(errorField('{"error":"tier_refused"}')).toBe("tier_refused");
+    expect(errorField('{"error":42}')).toBeNull();
+    expect(errorField('{"ok":true}')).toBeNull();
+    expect(errorField("not json")).toBeNull();
+  });
+});
     expect(parseHealthBody('{"status":"degraded"}')).toBe(false);
     expect(parseHealthBody("not json")).toBe(false);
     expect(parseHealthBody("")).toBe(false);
     expect(parseHealthBody('{"status":null}')).toBe(false);
-  });
-});
-
-// -- unknown-target vs malformed discriminator, both directions --
-describe("unknown vs malformed refusal contract", () => {
-  test("404 device marker is unknown-target, 400 invalid is malformed", () => {
-    expect(isUnknownTarget(404, '{"error":"device_not_found"}')).toBe(true);
-    expect(isUnknownTarget(404, "unknown device")).toBe(true);
-    expect(isMalformed(400, '{"error":"invalid_key"}')).toBe(true);
-    expect(isMalformed(400, "malformed body")).toBe(true);
-  });
-
-  test("planted negative: classes never collapse into each other", () => {
-    expect(isUnknownTarget(400, '{"error":"invalid_key"}')).toBe(false);
-    expect(isMalformed(404, '{"error":"device_not_found"}')).toBe(false);
-    expect(isUnknownTarget(200, '{"devices":[]}')).toBe(false);
-    expect(isMalformed(200, '{"devices":[]}')).toBe(false);
-    expect(isUnknownTarget(404, '{"error":"store_error"}')).toBe(false);
   });
 });
 
@@ -151,15 +144,16 @@ describe("structured view validators", () => {
   });
 });
 
-// -- origin precedence evaluator: same-code means broken guard --
+// -- origin precedence evaluator on exact codes: 403 UNTRUSTED_ORIGIN probe
+// vs 403 confirmation_required control; same-code means broken guard --
 describe("originRefusalDistinct", () => {
   test("distinct guard refusal passes with live control", () => {
     expect(
       originRefusalDistinct(
         403,
-        '{"error":"forbidden_origin"}',
-        400,
-        '{"error":"CONFIRMATION_REQUIRED"}',
+        '{"error":"UNTRUSTED_ORIGIN"}',
+        403,
+        '{"error":"confirmation_required"}',
       ),
     ).toBe(true);
   });
@@ -167,14 +161,37 @@ describe("originRefusalDistinct", () => {
   test("planted negative: same-code probe means absent guard", () => {
     expect(
       originRefusalDistinct(
-        400,
-        '{"error":"CONFIRMATION_REQUIRED"}',
-        400,
-        '{"error":"CONFIRMATION_REQUIRED"}',
+        403,
+        '{"error":"confirmation_required"}',
+        403,
+        '{"error":"confirmation_required"}',
       ),
     ).toBe(false);
     expect(originRefusalDistinct(200, '{"ok":true}', 200, '{"ok":true}')).toBe(false);
-    expect(originRefusalDistinct(500, "boom", 400, '{"error":"x"}')).toBe(false);
+    expect(originRefusalDistinct(500, "boom", 403, '{"error":"confirmation_required"}')).toBe(false);
+    expect(
+      originRefusalDistinct(
+        403,
+        '{"error":"forbidden_origin"}',
+        403,
+        '{"error":"confirmation_required"}',
+      ),
+    ).toBe(false);
+  });
+});
+
+// -- structured MCP tool-error text mirrors the accepted suite accessor --
+describe("mcpToolErrorText", () => {
+  test("reads isError content text, null otherwise", () => {
+    expect(
+      mcpToolErrorText({ isError: true, content: [{ text: "device_not_found" }] }),
+    ).toBe("device_not_found");
+    expect(mcpToolErrorText({ isError: false, content: [{ text: "x" }] })).toBeNull();
+    expect(mcpToolErrorText({ content: [{ text: "x" }] })).toBeNull();
+    expect(mcpToolErrorText({ isError: true, content: [] })).toBeNull();
+    expect(mcpToolErrorText({ isError: true, content: [{ text: 42 }] })).toBeNull();
+    expect(mcpToolErrorText(null)).toBeNull();
+    expect(mcpToolErrorText("nope")).toBeNull();
   });
 });
 
@@ -354,11 +371,11 @@ describe("loopback daemon evaluator fixture", () => {
           );
         if (u.pathname === "/v1/devices/known/key" && req.method === "POST")
           return req.headers.get("origin") === "http://127.0.0.1"
-            ? new Response('{"error":"CONFIRMATION_REQUIRED"}', { status: 400 })
-            : new Response('{"error":"forbidden_origin"}', { status: 403 });
+            ? new Response('{"error":"confirmation_required"}', { status: 403 })
+            : new Response('{"error":"UNTRUSTED_ORIGIN"}', { status: 403 });
         if (u.pathname.startsWith("/v1/devices/__mission"))
           return new Response('{"error":"device_not_found"}', { status: 404 });
-        return new Response('{"error":"invalid_target"}', { status: 400 });
+        return new Response('{"error":"invalid_device_target"}', { status: 400 });
       },
     });
     try {
