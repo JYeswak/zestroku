@@ -1,0 +1,18 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_104f4f22b8bad5b59c86b944fc5e33e771f50f032c1b9d9b423d89acaccd6be2",
+ "limitations": [
+  "Real existing Mac ARM loopback readiness/SIGINT only. Full original remote/workspace/fmt/clippy gates unrun this cycle; no household/live mutation/closure or publication claim."
+ ],
+ "operation": "zestroku.serve-readiness.c23.nonauthor-runtime",
+ "parameters": {
+  "binary_sha256": "ffebbbc8bf7b894e325f37b5a4a34cf50e89fe0956fe1d4b4ca8d47a5b5fe1c2",
+  "subject": "f333305128733eae9cf2a23ce02ceac37c603150"
+ },
+ "producer": "StormyKnoll",
+ "result_ref": {
+  "bytes": 848,
+  "sha256": "7df2dfa17500d0c7dcd10072b7fc414c91c2ededac1872f8c2f92615ceef8b2e"
+ }
+}
