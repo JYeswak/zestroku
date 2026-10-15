@@ -2,18 +2,21 @@
 //
 // Planted-negative and positive-control tests for safe-control.ts.
 //
-// Honesty contract (chief M5, bead .14.3 [a]):
+// Honesty contract (chief M5, bead .14.3 [a]; mails 54047/54053/54055):
 // - Fixtures below implement only the OBSERVABLE contract (exit codes,
 //   output shapes, real loopback HTTP exchanges). They never stand in for
 //   product proof: green-against-fixture shows the checker logic CAN pass,
 //   red-against-planted shows it CAN fail. Real product proof comes from
 //   dispatcher runs against the real binary and RCH suites.
-// - No mocked command echoes as success evidence, no source/file presence
-//   checks, no failure-forcing env flag, no regex on product source.
+// - No mocked command echoes as success evidence (no stubbed RCH output is
+//   ever asserted PASS), no source/file presence checks, no failure-forcing
+//   env flag, no regex on product source.
 // - Real sockets (loopback only), real subprocesses, real policy strings
 //   copied verbatim from product source (mutate.rs, mcp/lib.rs).
 // - Never mints approvals, never touches a non-loopback host, never writes
 //   outside the test scratch dir (left for the scratch reaper, never rm -rf).
+// - Full-suite-safe: no local Darwin artifact, RCH, or live credentials
+//   required; remote/live legs stay UNKNOWN without opt-in env.
 
 import { describe, test, expect, beforeAll } from "bun:test";
 import { spawn } from "node:child_process";
@@ -31,18 +34,26 @@ const LOCAL_TIMEOUT = 30_000;
 const TEST_REV = "f".repeat(40);
 const TEST_SHORT = TEST_REV.slice(0, 7);
 
+// The dispatcher's registered safe-control obligations; every covers entry
+// emitted by run() must fall in this set or integration fails the pillar
+// with coverage:unowned-obligation.
+const ALLOWED_COVERS = [
+  "cap.key", "cap.launch", "cap.install", "cap.history", "cap.undo", "cap.policy",
+].flatMap((id) => [`${id}.positive`, `${id}.negative`]);
+
 type ExecResult = { code: number; stdout: string; stderr: string; timedOut: boolean };
+type ExecFn = (argv: string[], options?: { env?: Record<string, string | undefined>; timeoutMs?: number }) => Promise<ExecResult>;
 
 function realExec(
   argv: string[],
-  options?: { env?: Record<string, string>; timeoutMs?: number },
+  options?: { env?: Record<string, string | undefined>; timeoutMs?: number },
 ): Promise<ExecResult> {
   // Exception: this is a kill-switch for real subprocesses, not a test
   // sleep; the timeout never adds latency to a passing run.
   const timeoutMs = options?.timeoutMs ?? LOCAL_TIMEOUT;
   const { promise, resolve } = Promise.withResolvers<ExecResult>();
   const child = spawn(argv[0], argv.slice(1), {
-    env: { ...process.env, ...options?.env },
+    env: { ...process.env, ...options?.env } as Record<string, string>,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";
@@ -71,14 +82,14 @@ function realExec(
   return promise;
 }
 
-function ctxFor(binary: string, env: Record<string, string | undefined>, scratch: string): CheckContext {
+function ctxFor(binary: string, env: Record<string, string | undefined>, scratch: string, exec?: ExecFn): CheckContext {
   return {
     repo: REPO,
     binary,
     source: TEST_REV,
     scratch,
     env,
-    exec: realExec,
+    exec: exec ?? realExec,
   };
 }
 
@@ -96,6 +107,17 @@ function assertNoApprovalOnlyPass(cases: CheckCase[]): void {
   }
 }
 
+const RCH_CASE_IDS = [
+  "safe-control.replay-single-use",
+  "safe-control.free-text-denial-no-dispatch",
+  "safe-control.install-gated-confirmation-audit",
+  "safe-control.snapshot-before-state-audited",
+  "safe-control.invalid-token-binding-denied-audited",
+  "safe-control.body-smuggling-refused-closed-schema",
+  "safe-control.dispatch-failure-recorded-as-failure",
+  "safe-control.completed-dispatch-with-true-before-state",
+];
+
 // Conforming fixture: implements the required observable contract.
 // --version binds the test revision; key-without-confirm refuses exit 4;
 // approve refuses non-TTY without minting; no undo entry point.
@@ -109,7 +131,8 @@ echo "unknown command: $1" >&2; exit 2
 
 // Planted fixture: approval-only success. --version is correct (so a
 // blanket-red checker cannot hide behind the artifact case); key reports the
-// exact real stub text from zestroku-mcp with exit 0 and dispatches nothing.
+// exact real stub text from zestroku-mcp with exit 0 and dispatches nothing;
+// approve mints outside a terminal; undo claims success without semantics.
 const BIN_STUB = `#!/bin/sh
 if [ "$1" = "--version" ]; then echo "zestroku 0.1.0 ${TEST_SHORT}"; exit 0; fi
 if [ "$1" = "approve" ]; then echo "deadbeefcafe0001"; exit 0; fi
@@ -150,6 +173,13 @@ describe("dispatch-line classifier", () => {
     expect(isCompletedDispatchText("")).toBe(false);
     expect(isCompletedDispatchText("ok: key HOME (audit id 12) and more")).toBe(false);
     expect(isCompletedDispatchText("ok: key HOME (audit id abc)")).toBe(false);
+  });
+
+  test("classifier is a dispatch signal, not audit proof", () => {
+    // mutate.rs warns on finish_mutation failure yet still prints ok: and
+    // exits 0, so a true return must never be read as a completed audit row.
+    // This test pins the documented limitation next to the predicate.
+    expect(isCompletedDispatchText("ok: key HOME (audit id 12)")).toBe(true);
   });
 
   test("regex surface stays linear on adversarial input", () => {
@@ -236,7 +266,7 @@ describe("run() against executable fixtures", () => {
     expect(byId(cases, "safe-control.source-bound-artifact").outcome).toBe("PASS");
     expect(byId(cases, "safe-control.unconfirmed-denial-zero-post").outcome).toBe("FAIL");
     expect(byId(cases, "safe-control.live-approval-boundary").outcome).toBe("FAIL");
-    expect(byId(cases, "safe-control.undo-surface").outcome).toBe("FAIL");
+    expect(byId(cases, "safe-control.approval-finality-no-inverse").outcome).toBe("UNKNOWN");
     assertNoApprovalOnlyPass(cases);
   }, LOCAL_TIMEOUT);
 
@@ -245,19 +275,41 @@ describe("run() against executable fixtures", () => {
     expect(byId(cases, "safe-control.source-bound-artifact").outcome).toBe("PASS");
     expect(byId(cases, "safe-control.unconfirmed-denial-zero-post").outcome).toBe("PASS");
     expect(byId(cases, "safe-control.live-approval-boundary").outcome).toBe("PASS");
-    for (const id of [
-      "safe-control.replay-single-use",
-      "safe-control.free-text-denial-no-dispatch",
-      "safe-control.snapshot-before-state-audited",
-      "safe-control.unknown-principal-closed-body",
-      "safe-control.dispatch-failure-recorded-as-failure",
-      "safe-control.live-device-read-only",
-      "safe-control.undo-surface",
-    ]) {
+    expect(byId(cases, "safe-control.approval-finality-no-inverse").outcome).toBe("PASS");
+    for (const id of [...RCH_CASE_IDS, "safe-control.live-device-read-only"]) {
       expect(byId(cases, id).outcome).toBe("UNKNOWN");
     }
     expect(cases.some((c) => c.outcome === "FAIL")).toBe(false);
     assertNoApprovalOnlyPass(cases);
+  }, LOCAL_TIMEOUT);
+
+  test("covers stay inside the registered safe-control obligations", async () => {
+    const cases = await run(ctxFor(binOk, {}, join(SCRATCH, "covers")));
+    for (const c of cases) {
+      const covers = c.covers ?? [];
+      for (let i = 0; i < covers.length; i++) {
+        expect(ALLOWED_COVERS.includes(covers[i])).toBe(true);
+        expect(covers.indexOf(covers[i])).toBe(i);
+      }
+    }
+    expect(byId(cases, "safe-control.unconfirmed-denial-zero-post").covers).toEqual(["cap.key.negative"]);
+    expect(cases.some((c) => (c.covers ?? []).some((id) => id.startsWith("cap.undo")))).toBe(false);
+  }, LOCAL_TIMEOUT);
+
+  test("zero-run remote output is FAIL, not green", async () => {
+    // Causal evaluator negative on the checker's own zero-run guard: a
+    // remote suite that matches zero tests must fail the case. The crafted
+    // output below is never asserted PASS anywhere in this file.
+    const stubRch: ExecFn = async (argv, options) => {
+      if (argv[0] === "rch") {
+        return { code: 0, stdout: "test result: ok. 0 passed; 0 failed; 0 ignored;", stderr: "", timedOut: false };
+      }
+      return realExec(argv, options);
+    };
+    const cases = await run(ctxFor(binOk, { ZESTROKU_MISSION_RUN_RCH: "1" }, join(SCRATCH, "zerorun"), stubRch));
+    const replay = byId(cases, "safe-control.replay-single-use");
+    expect(replay.outcome).toBe("FAIL");
+    expect(replay.detail.includes("zero-run")).toBe(true);
   }, LOCAL_TIMEOUT);
 
   test("missing binary is UNKNOWN everywhere, never green", async () => {

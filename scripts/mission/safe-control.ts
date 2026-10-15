@@ -5,31 +5,51 @@
 // WHAT: behavioral verdicts for the Keys/control mission row — approved
 // mutations reach the device exactly once with a completed audit, while
 // missing/blank/free-text/wrong/expired/replayed tokens, tier refusals and
-// unknown principals cause zero mutation with an audited denial. Never
+// closed-body violations cause zero mutation with an audited denial. Never
 // approval-only success.
 //
-// HOW (all real behavior, no presence/load proxies):
-// - Local: the real product binary against an isolated store (ZESTROKU_DB
-//   under ctx.scratch) and a real loopback listener that counts POSTs.
-//   Unconfirmed `key` must exit 4 with CONFIRMATION_REQUIRED and zero POSTs.
-// - Remote: existing source-bound RCH suites on the immutable ctx.source
-//   revision (RCH_REQUIRE_REMOTE=1, never a local build): replay single-use,
-//   free-text denial, snapshot before-state audit, closed request bodies
-//   (unknown principal can never ride the body), dispatch failures recorded
-//   as failures. Only observed test names are referenced.
-// - Boundary: `approve` must refuse outside an interactive owner terminal
-//   without minting; live device reads are read-only `info` and only when
-//   ZESTROKU_MISSION_LIVE_DEVICE is explicitly configured. This checker
-//   issues no key/launch POST to any device or service.
+// EVIDENCE TIERS (never confused):
+// - Local real behavior (simulated): the real product binary against an
+//   isolated store (ZESTROKU_DB under ctx.scratch) and a real loopback
+//   listener that counts POSTs. Exit codes and socket counts are observed;
+//   audit-row persistence for the local run is NOT claimed (no CLI read
+//   surface exists for the actions table) — row logging is proven by the
+//   RCH suites below, which read the store directly.
+// - Remote RCH suites (simulated): existing source-bound suites on the
+//   immutable ctx.source revision with RCH_REQUIRE_REMOTE=1 (never a local
+//   build; the dispatcher refuses local cargo). Only observed #[test] names
+//   are referenced; each named test must appear as `test <name> ... ok` and
+//   zero-run (`test result: ok. 0 passed`) is an explicit FAIL, never green.
+// - Live (live): read-only `info` only when ZESTROKU_MISSION_LIVE_DEVICE is
+//   configured; absent live prerequisites are UNKNOWN, never PASS.
+// - stdout/stderr text alone never proves audit completion: mutate.rs warns
+//   on finish_mutation failure yet still prints `ok:` and exits 0, and the
+//   MCP stub prints approval-only success without dispatch. Completed-audit
+//   claims rest on store-reading suites (mutation_api), never on text.
 //
-// This module never mints approvals, never touches production tokens, and
-// never targets a non-loopback device.
+// COVERS: each case lists only obligation polarities it fully asserts, from
+// the safe-control set (cap.key/launch/install/history/undo/policy ×
+// positive/negative). The closed-schema case proves request-body smuggling
+// is refused — it does NOT prove unknown-principal owner mapping (a tailnet
+// surface outside this pillar); that limitation is stated in its detail.
+// cap.undo rows are intentionally left for auto-coverage UNKNOWN: the
+// product exposes no undo acceptance to consume.
 //
-// Regex surface (deliberately minimal; literals use includes() per the
-// weakest-engine rule): COMPLETED_RE (anchored dispatch-line grammar),
-// REDACT_TOKEN (confirm value), REDACT_HEX (long hex runs). All regex inputs
-// are capped at MAX_SCAN first; subprocess outputs are inherently bounded by
-// the exec layer. Timed near-miss evidence lives in safe-control.test.ts.
+// ENV NAMES (all inputs bound here, no hidden transitive sources):
+// ZESTROKU_MISSION_RUN_RCH=1 (dispatcher opt-in for remote suites),
+// ZESTROKU_MISSION_LIVE_DEVICE (owner device host[:port] for read-only
+// info), ZESTROKU_DB / ZESTROKU_TIER / HOME (isolated per-run store, tier
+// override, home dir under ctx.scratch), RCH_REQUIRE_REMOTE=1 (forced for
+// every rch invocation by this checker). Transitive sources: ctx.source
+// (immutable base), ctx.binary (dispatcher-supplied), ctx.scratch.
+//
+// This module never mints approvals, never touches production tokens, never
+// targets a non-loopback device, and issues no key/launch POST anywhere.
+//
+// Regex surface (deliberately minimal; literals use includes()): COMPLETED_RE
+// (anchored dispatch-line grammar), REDACT_TOKEN, REDACT_HEX. All regex
+// inputs are capped at MAX_SCAN first. Timed near-miss evidence lives in
+// safe-control.test.ts.
 
 import type { CheckCase, CheckContext } from "../mission-check";
 import { createServer } from "node:http";
@@ -52,6 +72,7 @@ const RCH_A_FILTERS = [
   "minted_cli_token_authorizes_once_then_replay_is_denied",
   "free_text_confirm_is_rejected_and_audited_without_dispatch",
   "unconfirmed_keypress_refuses_with_audit_exit4",
+  "sideload_requires_confirmation_then_authenticates_and_audits_on_installer_port",
 ];
 const RCH_B_TARGETS = [
   "-p", "zestroku-api",
@@ -61,9 +82,13 @@ const RCH_B_TARGETS = [
 ];
 const RCH_B_FILTERS = [
   "tier_refusal_precedes_http_token_consumption_and_snapshot_is_audited",
+  "http_approval_requires_nonblank_single_use_device_and_command_binding",
+  "open_and_unknown_http_tiers_deny_before_mutation_post",
   "key_and_launch_mutation_routes_document_closed_request_bodies",
   "approved_http_dispatch_failures_finish_as_failures",
 ];
+const RCH_C_TARGET = ["-p", "zestroku-cli", "--test", "mutation_api"];
+const RCH_C_FILTERS = ["real_http_mutations_use_inventory_bound_approval_snapshot_and_audit"];
 
 function result(
   id: string,
@@ -71,8 +96,9 @@ function result(
   detail: string,
   claim: CheckCase["claim"] = "invariant",
   tier: CheckCase["tier"] = "simulated",
+  covers?: readonly string[],
 ): CheckCase {
-  return { id, outcome, detail, claim, tier };
+  return covers === undefined ? { id, outcome, detail, claim, tier } : { id, outcome, detail, claim, tier, covers };
 }
 
 /** Strip control whitespace and redact anything token-shaped before it can
@@ -88,9 +114,10 @@ export function sanitizeDetail(value: string): string {
 }
 
 /** True only for a real completed-dispatch line as printed by the CLI after
- * finish_mutation (mutate.rs: `ok: {kind} {target} (audit id {id})`).
- * Approval-only stub text ("dispatch happens in serve"), refusals, and empty
- * output are all false. Input capped before matching. */
+ * dispatch (mutate.rs: `ok: {kind} {target} (audit id {id})`). Approval-only
+ * stub text ("dispatch happens in serve"), refusals, and empty output are all
+ * false. A true return is a dispatch signal, NOT audit-completion proof:
+ * finish_mutation failure only warns while `ok:` still prints. */
 export function isCompletedDispatchText(text: string): boolean {
   const capped = text.length > MAX_SCAN ? text.slice(0, MAX_SCAN) : text;
   return !capped.toLowerCase().includes("dispatch happens in serve") && COMPLETED_RE.test(capped.trim());
@@ -185,14 +212,17 @@ async function denialZeroPost(ctx: CheckContext, versionOk: boolean): Promise<Ch
     const denied = !timedOut && code === 4 && output.includes("CONFIRMATION_REQUIRED");
     const completed = isCompletedDispatchText(output);
     if (denied && !completed && postCount === 0) {
-      return result(id, "PASS", "real unconfirmed keypress exited 4 CONFIRMATION_REQUIRED with zero POSTs to the loopback device", "invariant", "simulated");
+      return result(
+        id, "PASS",
+        "real unconfirmed keypress exited 4 CONFIRMATION_REQUIRED with zero POSTs to the loopback device; audit-row persistence for this local run is unverified (no CLI read surface for the actions table) and rests on the RCH row-reading suites",
+        "invariant", "simulated", ["cap.key.negative"],
+      );
     }
     return result(
       id,
       "FAIL",
       `expected exit 4 CONFIRMATION_REQUIRED with zero POSTs and no dispatch text; code=${code}, timedOut=${timedOut}, posts=${postCount}, completed=${completed}, output=${sanitizeDetail(output)}`,
-      "invariant",
-      "simulated",
+      "invariant", "simulated",
     );
   } catch (error) {
     return result(id, "FAIL", `denial run could not execute: ${sanitizeDetail(String(error))}`, "invariant", "simulated");
@@ -210,12 +240,12 @@ async function rchSuite(
   if (!isFullRevision(source)) {
     return { ran: false, unknownReason: "ctx.source is not a full revision; immutable remote proof unaddressable" };
   }
-  if (ctx.env.ZESTROKU_MISSION_ALLOW_RCH !== "1") {
-    return { ran: false, unknownReason: "ZESTROKU_MISSION_ALLOW_RCH is not 1; remote suites run only in dispatcher runs with admitted slots" };
+  if (ctx.env.ZESTROKU_MISSION_RUN_RCH !== "1") {
+    return { ran: false, unknownReason: "ZESTROKU_MISSION_RUN_RCH is not 1; remote suites run only in dispatcher runs with admitted slots" };
   }
   const attempted = await tryExec(
     ctx,
-    ["rch", "exec", "--base", source, "--clean-overlay", "--",
+    ["rch", "exec", "--base", source, "--clean-overlay", "--no-overlay", "--",
       "cargo", "test", "-j", "2", "--locked", ...target, "--", ...filters],
     { RCH_REQUIRE_REMOTE: "1" },
     RCH_TIMEOUT_MS,
@@ -235,6 +265,7 @@ function suiteCase(
   suite: { ran: boolean; unknownReason?: string; output?: string },
   names: string[],
   passDetail: string,
+  covers?: readonly string[],
 ): CheckCase {
   if (!suite.ran) {
     return result(id, "UNKNOWN", suite.unknownReason ?? "remote suite did not run; behavior unobserved", "invariant", "simulated");
@@ -243,10 +274,13 @@ function suiteCase(
   if (output.startsWith("REMOTE-FAILED")) {
     return result(id, "FAIL", `remote suite failed: ${sanitizeDetail(output)}`, "invariant", "simulated");
   }
+  if (output.includes("test result: ok. 0 passed")) {
+    return result(id, "FAIL", `filter matched zero tests (zero-run), not a pass; expected ${names.join(", ")}`, "invariant", "simulated");
+  }
   const missing = names.filter((name) => !output.includes(`test ${name} ... ok`));
   const suiteOk = output.includes("test result: ok");
   if (missing.length === 0 && suiteOk) {
-    return result(id, "PASS", passDetail, "invariant", "simulated");
+    return result(id, "PASS", passDetail, "invariant", "simulated", covers);
   }
   return result(id, "FAIL", `expected green runs of ${names.join(", ")}; missing=[${missing.join(", ")}], suiteOk=${suiteOk}`, "invariant", "simulated");
 }
@@ -306,19 +340,24 @@ async function liveDeviceReadOnly(ctx: CheckContext, versionOk: boolean): Promis
   return result(id, "FAIL", `live read-only info failed; code=${code}, timedOut=${timedOut}, output=${sanitizeDetail(`${stdout}\n${stderr}`)}`, "live-witness", "live");
 }
 
-async function undoSurface(ctx: CheckContext, versionOk: boolean): Promise<CheckCase> {
-  const id = "safe-control.undo-surface";
+/** Approval finality: the applicable consumer of the undo probe. Absence of
+ * any inverse entry point is observed support for "every approval is final".
+ * A present inverse is reported as unexercised (UNKNOWN), never called
+ * broken: this checker has no isolated undo consumer for an unknown future
+ * CLI shape, and inventing one would be fake coverage. */
+async function finalityNoInverse(ctx: CheckContext, versionOk: boolean): Promise<CheckCase> {
+  const id = "safe-control.approval-finality-no-inverse";
   if (!versionOk) {
-    return result(id, "UNKNOWN", "product binary did not answer --version; undo surface unobserved", "invariant", "simulated");
+    return result(id, "UNKNOWN", "product binary did not answer --version; inverse surface unobserved", "invariant", "simulated");
   }
   const attempted = await tryExec(ctx, [ctx.binary, "undo", "--help"], {}, LOCAL_TIMEOUT_MS);
   if (!attempted.ok) {
-    return result(id, "FAIL", `undo probe could not execute: ${attempted.reason}`, "invariant", "simulated");
+    return result(id, "FAIL", `inverse probe could not execute: ${attempted.reason}`, "invariant", "simulated");
   }
   if (attempted.value.code === 0) {
-    return result(id, "FAIL", "an undo entry point answered successfully; this checker has no undo consumer to exercise it", "invariant", "simulated");
+    return result(id, "UNKNOWN", "an inverse entry point answered; undo semantics are unexercised by this checker (no isolated undo consumer), so no undo verdict is expressed", "invariant", "simulated");
   }
-  return result(id, "UNKNOWN", `no undo entry point (code=${attempted.value.code}); every approval must be treated as final, no undo verdict expressible`, "invariant", "simulated");
+  return result(id, "PASS", `no inverse entry point (code=${attempted.value.code}); approvals are final, undo acceptance is absent rather than assumed`, "invariant", "simulated");
 }
 
 export async function run(ctx: CheckContext): Promise<CheckCase[]> {
@@ -352,18 +391,28 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
 
   cases.push(await denialZeroPost(ctx, versionOk));
 
+  const rev = revision === "" ? ctx.source.trim().slice(0, 12) : revision;
   const rchA = await rchSuite(ctx, RCH_A_TARGET, RCH_A_FILTERS);
   cases.push(suiteCase(
     "safe-control.replay-single-use",
     rchA,
     ["minted_cli_token_authorizes_once_then_replay_is_denied"],
-    "minted CLI token authorized exactly once; replay denied with audit (remote mutation_cli)",
+    `minted CLI key token authorized once then replay denied with denied audit row (remote mutation_cli @${rev})`,
+    ["cap.key.negative", "cap.history.negative"],
   ));
   cases.push(suiteCase(
     "safe-control.free-text-denial-no-dispatch",
     rchA,
     ["free_text_confirm_is_rejected_and_audited_without_dispatch", "unconfirmed_keypress_refuses_with_audit_exit4"],
-    "free-text and absent confirm refused and audited without dispatch (remote mutation_cli)",
+    `free-text and absent key confirm refused and audited without dispatch (remote mutation_cli @${rev})`,
+    ["cap.key.negative", "cap.history.negative"],
+  ));
+  cases.push(suiteCase(
+    "safe-control.install-gated-confirmation-audit",
+    rchA,
+    ["sideload_requires_confirmation_then_authenticates_and_audits_on_installer_port"],
+    `unconfirmed sideload refused before installer HTTP; confirmed install authenticated and audited (remote mutation_cli @${rev})`,
+    ["cap.install.positive", "cap.install.negative"],
   ));
 
   const rchB = await rchSuite(ctx, RCH_B_TARGETS, RCH_B_FILTERS);
@@ -371,24 +420,43 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
     "safe-control.snapshot-before-state-audited",
     rchB,
     ["tier_refusal_precedes_http_token_consumption_and_snapshot_is_audited"],
-    "tier refusal preceded token consumption with the active-app snapshot audited (remote mutation_gate_contract)",
+    `launch tier refusal preceded token consumption with zero POSTs and the active-app snapshot audited (remote mutation_gate_contract @${rev})`,
+    ["cap.launch.negative", "cap.policy.negative"],
   ));
   cases.push(suiteCase(
-    "safe-control.unknown-principal-closed-body",
+    "safe-control.invalid-token-binding-denied-audited",
+    rchB,
+    ["http_approval_requires_nonblank_single_use_device_and_command_binding", "open_and_unknown_http_tiers_deny_before_mutation_post"],
+    `missing/blank/free-text/wrong-action/wrong-device/expired tokens and open/unknown tiers denied with audited rows and snapshot-only device traffic (remote mutation_gate_contract @${rev})`,
+    ["cap.launch.negative", "cap.history.negative", "cap.policy.negative"],
+  ));
+  cases.push(suiteCase(
+    "safe-control.body-smuggling-refused-closed-schema",
     rchB,
     ["key_and_launch_mutation_routes_document_closed_request_bodies"],
-    "mutation bodies stay closed: host/port/tier/principal/backend_url cannot ride the request (remote mutation_schema_contract)",
+    `mutation request bodies stay closed: host/port/tier/principal/backend_url cannot ride the body (remote mutation_schema_contract @${rev}); unknown-principal owner mapping is a tailnet surface outside this pillar and remains unproven here`,
+    ["cap.policy.negative"],
   ));
   cases.push(suiteCase(
     "safe-control.dispatch-failure-recorded-as-failure",
     rchB,
     ["approved_http_dispatch_failures_finish_as_failures"],
-    "approved dispatch failures finished as failures, never success (remote mutation_outcome_contract)",
+    `approved launch dispatch failures finished as failures, never completed, after snapshot plus exactly one POST (remote mutation_outcome_contract @${rev})`,
+    ["cap.launch.negative", "cap.history.positive"],
+  ));
+
+  const rchC = await rchSuite(ctx, RCH_C_TARGET, RCH_C_FILTERS);
+  cases.push(suiteCase(
+    "safe-control.completed-dispatch-with-true-before-state",
+    rchC,
+    ["real_http_mutations_use_inventory_bound_approval_snapshot_and_audit"],
+    `real daemon plus SimDevice: approved launch then key each dispatched exactly once with completed audit rows carrying true before-states (tier_source=recorded snapshots), failure recorded as failure, tokens absent from every surface (remote mutation_api @${rev})`,
+    ["cap.key.positive", "cap.launch.positive", "cap.history.positive", "cap.policy.positive"],
   ));
 
   cases.push(await approvalBoundary(ctx, versionOk));
   cases.push(await liveDeviceReadOnly(ctx, versionOk));
-  cases.push(await undoSurface(ctx, versionOk));
+  cases.push(await finalityNoInverse(ctx, versionOk));
 
   return cases;
 }
