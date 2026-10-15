@@ -1,0 +1,24 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_543aded4c82a3feff8521148a3c41f538c9df7a0373d81e354b3021c8ab494b8",
+ "limitations": [
+  "Overlay main.rs carries pending-042 hunks; 042 serve-behavior failure outside this proof path. Full-workspace base green ev_a0957f96."
+ ],
+ "operation": "zestroku-lot-help-exit-proof",
+ "parameters": {
+  "base": "f333305128733eae9cf2a23ce02ceac37c603150",
+  "bead_id": "zestroku-lot",
+  "overlay": "fb4cda339a6d31f1d3dcc50d752190eb62d55388987f5ebda8b0f9a2721c10cc",
+  "overlay_paths": "main.rs+inventory.rs+help_exit.rs",
+  "worker": "contabo-4"
+ },
+ "producer": "QuietStream",
+ "result_ref": {
+  "command": "cargo test -j2 --locked -p zestroku-cli --test help_exit AND cargo clippy -j2 --locked -p zestroku-cli --all-targets -- -D warnings",
+  "decisive_output": "help_exit exit 0 4 passed; clippy exit 0 in 1069727ms; fmt edition-2024 clean on both files",
+  "remote_exit": 0,
+  "source": "f333305 + 3 owned overlays (042 main.rs hunks preserved verbatim)",
+  "worker": "contabo-4"
+ }
+}
