@@ -1,0 +1,21 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_b955ba69d10e6edcd4ea47f41e1d04c0c43d8a12e5da8d8e8f891df5f3abfdf2",
+ "limitations": [
+  "Historical ff77 failure was read from the bead record, not reproduced in this review.",
+  "No hosted CI, household device, tailnet, or mutation evidence."
+ ],
+ "operation": "verify/zestroku-m7c-serve-inq.1.1",
+ "parameters": {
+  "regression_test": "sigterm_stops_admission_and_drains_an_admitted_info_read",
+  "remote_exit": "0",
+  "source": "65ca080b692bdf6d12354bc66d488e4a99d95f86",
+  "strict_clippy_receipt": "ev_682aa512798e4ed1570dd6eff8ba09155be98286f9b94ef1c6ff732f0996ac7c"
+ },
+ "producer": "rch-2.1.15",
+ "result_ref": {
+  "bytes": 3698,
+  "sha256": "3543967f6e119e88aada836017ff8d80d556c1077217f4644b67459d2319b744"
+ }
+}
