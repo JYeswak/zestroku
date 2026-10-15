@@ -1,0 +1,20 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_3af483cf8b2046bdb2b22808ce57b1893eeb297baca6c234abcee2457e284a60",
+ "limitations": [],
+ "operation": "a0h.12 immutable core replay",
+ "parameters": {
+  "base": "98d9f4088d4328ae581707d3e111725654662764",
+  "cmd": "cargo test -j 2 --locked -p zestroku-core",
+  "overlay-fingerprint": "21e62da37563470c3eca0099dace54992da36daead47eda5fcdaec00075721f6",
+  "tally": "41+4+4+3+5 pass 0 fail",
+  "tree": "91a441732ffeb6919f771e8d4bbf81962e835ff6",
+  "worker": "contabo-1"
+ },
+ "producer": "SandyOrchid",
+ "result_ref": {
+  "bytes": 57,
+  "sha256": "0b8d966b40e3f2c5de0f920dadc11c6675a38ec8d00840874e939b01d379a8bc"
+ }
+}
