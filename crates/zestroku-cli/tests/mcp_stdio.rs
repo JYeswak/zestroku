@@ -484,6 +484,7 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
         .expect("system clock")
         .as_secs() as i64;
     let launch_token = mint_mcp_approval(&db, &target, &launch(1001), now);
+    let wrong_case_token = mint_mcp_approval(&db, &target, &keypress_raw("HOME"), now);
     let key_token = mint_mcp_approval(&db, &target, &keypress_raw("Home"), now);
 
     let daemon_port = free_port();
@@ -514,8 +515,25 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
         "{active_after_launch}"
     );
 
-    let keyed = session.call(
+    let wrong_case = session.call(
         4,
+        "key",
+        json!({"host": target, "target": "Home", "confirm": wrong_case_token}),
+    );
+    assert!(
+        is_error(&wrong_case),
+        "HOME-bound token must not authorize the Home wire path: {wrong_case}"
+    );
+    let posts_after_wrong_case: Vec<String> = sim
+        .received_requests()
+        .into_iter()
+        .filter(|(method, _)| method == "POST")
+        .map(|(_, path)| path)
+        .collect();
+    assert_eq!(posts_after_wrong_case, ["/launch/1001"]);
+
+    let keyed = session.call(
+        5,
         "key",
         json!({"host": target, "target": "Home", "confirm": key_token}),
     );
@@ -525,7 +543,8 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
     assert_eq!(keyed_outcome["target"], target);
     assert_eq!(keyed_outcome["outcome"], "completed");
 
-    let active_after_key = session.call(5, "active_app", json!({"host": target}));
+    let active_after_key = session.call(6, "active_app", json!({"host": target}));
+
     assert_eq!(
         result_json(&active_after_key)["name"],
         "Roku",
@@ -543,7 +562,7 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
         .expect("open shared action store")
         .list_actions()
         .expect("list shared actions");
-    assert_eq!(actions.len(), 2, "{actions:?}");
+    assert_eq!(actions.len(), 3, "{actions:?}");
     let launch_action = actions
         .iter()
         .find(|action| action.surface == "launch")
@@ -552,12 +571,19 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
     assert_eq!(launch_action.decision, "approved");
     assert_eq!(launch_action.result, "completed");
     assert!(launch_action.before_state.contains("Roku"));
+    let key_denial = actions
+        .iter()
+        .find(|action| action.surface == "key" && action.decision == "denied")
+        .expect("case-mismatched key token is denied");
+    assert_eq!(
+        key_denial.result,
+        zestroku_core::mutation::CONFIRMATION_INVALID
+    );
     let key_action = actions
         .iter()
-        .find(|action| action.surface == "key")
+        .find(|action| action.surface == "key" && action.decision == "approved")
         .expect("completed key action");
     assert_eq!(key_action.client, "http");
-    assert_eq!(key_action.decision, "approved");
     assert_eq!(key_action.result, "completed");
     assert!(key_action.before_state.contains("Streaming One"));
 }
