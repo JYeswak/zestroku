@@ -421,6 +421,7 @@ fn suspended_startup_preserves_last_known_row_and_leaves_fresh_store_empty() {
         "unreachable startup must retain last-known inventory"
     );
     assert_eq!(known_rows[0]["access_tier"], "permissive");
+    assert_eq!(known_rows[0]["model"], "Sim Express");
     let unchanged = persisted_row(&db, sim.port());
     assert_eq!(
         unchanged.last_seen, last_seen,
