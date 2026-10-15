@@ -24,6 +24,16 @@ async function withHealthServer<T>(run: (baseUrl: string) => Promise<T>): Promis
   }
 }
 
+const expectedDevice = {
+  name: "Fixture Roku",
+  host: "192.0.2.41",
+  model: "Fixture Model",
+  model_number: "FIXTURE-1",
+  software_version: "1.0",
+  access_tier: "permissive",
+  last_seen: 1_700_000_000,
+};
+
 test("health evaluator accepts a valid response and rejects a reachable unhealthy body", async () => {
   await withHealthServer(async (baseUrl) => {
     const positive = await inspectHealth(`${baseUrl}/health`);
@@ -37,10 +47,13 @@ test("health evaluator accepts a valid response and rejects a reachable unhealth
   });
 });
 
-test("inventory evaluator requires a nonempty device result", () => {
-  assert.equal(assessInventory(200, { devices: [{ name: "Fixture Roku" }] }), true);
-  assert.equal(assessInventory(200, { devices: [] }), false);
-  assert.equal(assessInventory(503, { devices: [{ name: "Fixture Roku" }] }), false);
+test("inventory evaluator requires the exact expected host and the API array DTO", () => {
+  assert.equal(assessInventory(200, [expectedDevice], expectedDevice.host), true);
+  assert.equal(assessInventory(200, [{ ...expectedDevice, host: "192.0.2.42" }], expectedDevice.host), false);
+  assert.equal(assessInventory(200, { devices: [expectedDevice] }, expectedDevice.host), false);
+  assert.equal(assessInventory(200, [], expectedDevice.host), false);
+  assert.equal(assessInventory(503, [expectedDevice], expectedDevice.host), false);
+  assert.equal(assessInventory(200, [expectedDevice], ""), false);
 });
 
 test("health evaluator rejects non-200 and non-ok response bodies", () => {

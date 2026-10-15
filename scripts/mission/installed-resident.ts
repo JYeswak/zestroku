@@ -21,9 +21,16 @@ export function assessHealth(status: number, body: unknown): boolean {
   return status === 200 && typeof body === "object" && body !== null && "status" in body && body.status === "ok";
 }
 
-export function assessInventory(status: number, body: unknown): boolean {
-  if (status !== 200 || typeof body !== "object" || body === null || !("devices" in body)) return false;
-  return Array.isArray(body.devices) && body.devices.length > 0;
+export function assessInventory(status: number, body: unknown, expectedHost: string): boolean {
+  if (status !== 200 || !Array.isArray(body) || expectedHost.trim().length === 0) return false;
+  return body.some((row) => row !== null && typeof row === "object" &&
+    "host" in row && row.host === expectedHost &&
+    "name" in row && typeof row.name === "string" &&
+    "model" in row && typeof row.model === "string" &&
+    "model_number" in row && typeof row.model_number === "string" &&
+    "software_version" in row && typeof row.software_version === "string" &&
+    "access_tier" in row && typeof row.access_tier === "string" &&
+    "last_seen" in row && typeof row.last_seen === "number" && Number.isSafeInteger(row.last_seen));
 }
 
 async function fetchJson(url: string): Promise<{ status: number; body: unknown }> {
@@ -62,15 +69,15 @@ export async function inspectHealth(url: string): Promise<CheckCase> {
   }
 }
 
-async function inspectInventory(url: string): Promise<CheckCase> {
+async function inspectInventory(url: string, expectedHost: string | undefined): Promise<CheckCase> {
+  if (!expectedHost) return result("resident.http-inventory", "UNKNOWN", "expected device host is absent; no target-specific inventory assertion was made", "live-witness", "live");
   try {
     const response = await fetchJson(url);
-    const ready = assessInventory(response.status, response.body);
-    const count = typeof response.body === "object" && response.body !== null && "devices" in response.body && Array.isArray(response.body.devices) ? response.body.devices.length : 0;
+    const found = assessInventory(response.status, response.body, expectedHost);
     return result(
       "resident.http-inventory",
-      ready ? "PASS" : "FAIL",
-      ready ? `reachable endpoint returned ${count} device rows` : `reachable endpoint failed nonempty inventory contract with HTTP ${response.status}`,
+      found ? "PASS" : "FAIL",
+      found ? "reachable endpoint returned the expected device with all required inventory fields" : `reachable endpoint omitted the expected device or violated the inventory schema with HTTP ${response.status}`,
       "invariant",
       "fixture",
     );
@@ -206,12 +213,12 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
   const serviceUrl = ctx.env.ZESTROKU_MISSION_SERVICE_URL;
   if (!serviceUrl) {
     cases.push(result("resident.http-health", "UNKNOWN", "service URL is absent; resident HTTP health was not observed", "live-witness", "live"));
-    cases.push(result("resident.http-inventory", "UNKNOWN", "service URL is absent; nonempty inventory was not observed", "live-witness", "live"));
+    cases.push(result("resident.http-inventory", "UNKNOWN", "service URL is absent; target-specific inventory was not observed", "live-witness", "live"));
   } else {
     try {
       const base = checkedServiceUrl(serviceUrl);
       cases.push(await inspectHealth(new URL("/health", base).toString()));
-      cases.push(await inspectInventory(new URL("/v1/devices", base).toString()));
+      cases.push(await inspectInventory(new URL("/v1/devices", base).toString(), ctx.env.ZESTROKU_MISSION_EXPECTED_DEVICE_HOST));
     } catch {
       cases.push(result("resident.http-health", "FAIL", "configured service URL is invalid", "invariant", "fixture"));
       cases.push(result("resident.http-inventory", "FAIL", "configured service URL is invalid", "invariant", "fixture"));
