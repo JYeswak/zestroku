@@ -2,11 +2,12 @@
 //!
 //! The read-only HTTP API (`zestroku-api::build_app`: `/health`,
 //! `/v1/devices`, `/v1/devices/{host}/info`, `/v1/devices/{host}/active-app`)
-//! over the shared store and the ECP transport, on one asupersync runtime.
+//! over the shared store and ECP transport, on one asupersync runtime.
 //! The listener binds loopback or a private-LAN address only (wildcard needs
 //! `--allow-unsafe-bind`), and validates the Host header against the bind IP.
-//! The daemon, not the agent's process tree, is what talks to the devices.
+//! The daemon, not the agent's process tree, talks to the devices.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -16,7 +17,11 @@ use asupersync::net::TcpListener;
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use asupersync::signal::{SignalKind, signal};
 use fastapi::{ServerConfig, TcpServer};
+use zestroku_core::store::SqliteStore;
+use zestroku_core::tier::{classify_tier, device_id, record_probe};
+use zestroku_proto::{Transport, parse_ecp_response, query};
 
+use crate::inventory;
 use crate::store_db;
 use crate::transport::SelectedTransport;
 
@@ -25,33 +30,118 @@ const DEFAULT_BIND: &str = "127.0.0.1:8070";
 struct Opts {
     bind: String,
     allow_wildcard: bool,
+    targets: Option<PathBuf>,
+    no_ssdp: bool,
+    mx: u8,
 }
 
 fn parse_opts(args: &[String]) -> Result<Opts, String> {
-    let mut o = Opts {
+    let mut opts = Opts {
         bind: DEFAULT_BIND.to_string(),
         allow_wildcard: false,
+        targets: std::env::var_os("ZESTROKU_TARGETS").map(PathBuf::from),
+        no_ssdp: false,
+        mx: 3,
     };
     let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--bind" => o.bind = it.next().ok_or("--bind needs ip:port")?.clone(),
-            "--allow-unsafe-bind" => o.allow_wildcard = true,
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--bind" => opts.bind = it.next().ok_or("--bind needs ip:port")?.clone(),
+            "--allow-unsafe-bind" => opts.allow_wildcard = true,
+            "--targets" => {
+                opts.targets = Some(PathBuf::from(it.next().ok_or("--targets needs a file")?));
+            }
+            "--no-ssdp" => opts.no_ssdp = true,
+            "--mx" => {
+                opts.mx = it
+                    .next()
+                    .and_then(|value| value.parse::<u8>().ok())
+                    .filter(|value| (1..=5).contains(value))
+                    .ok_or("--mx needs 1..=5")?;
+            }
             other => return Err(format!("unknown option {other}")),
         }
     }
-    Ok(o)
+    Ok(opts)
+}
+
+async fn discover_on_startup(
+    store: &Arc<Mutex<SqliteStore>>,
+    transport: &Arc<SelectedTransport>,
+    opts: &Opts,
+) -> Result<(), String> {
+    let seeds = inventory::read_seeds(opts.targets.as_ref())?;
+    if opts.no_ssdp && seeds.is_none() {
+        return Err("--no-ssdp needs a targets.toml (--targets or ZESTROKU_TARGETS)".into());
+    }
+    let (devices, mut notes) = if opts.no_ssdp {
+        inventory::seeds_only(seeds.as_deref().unwrap_or_default())
+            .await
+            .map_err(|error| format!("seed discovery failed: {error}"))?
+    } else {
+        zestroku_core::ssdp_io::discover(transport.as_ref(), seeds.as_deref(), opts.mx)
+            .await
+            .map_err(|error| format!("SSDP discovery failed: {error}"))?
+    };
+
+    let persistence_error = {
+        let store = store
+            .lock()
+            .map_err(|_| "inventory store lock poisoned".to_string())?;
+        inventory::persist_inventory(Some(&store), &devices)
+    };
+    if let Some(error) = persistence_error {
+        return Err(format!("inventory persistence failed: {error}"));
+    }
+
+    for (device, _) in &devices {
+        let response = match transport
+            .send(&device.host, device.port, &query("apps"))
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                notes.push(format!(
+                    "{}:{}: apps tier probe failed: {error}",
+                    device.host, device.port
+                ));
+                continue;
+            }
+        };
+        let gate = parse_ecp_response(&response).gate;
+        let observed = classify_tier(gate);
+        let id = device_id(&device.host, device.port);
+        let store = store
+            .lock()
+            .map_err(|_| "inventory store lock poisoned".to_string())?;
+        record_probe(&*store, &id, observed, &format!("{}", gate as i32)).map_err(|error| {
+            format!(
+                "tier persistence failed for {}:{}: {error}",
+                device.host, device.port
+            )
+        })?;
+    }
+    for note in notes {
+        eprintln!("zestroku serve: startup discovery note: {note}");
+    }
+    Ok(())
 }
 
 async fn serve_until_shutdown(
     app: fastapi::App,
     bind_addr: String,
     config: ServerConfig,
+    store: Arc<Mutex<SqliteStore>>,
+    transport: Arc<SelectedTransport>,
+    opts: Opts,
 ) -> Result<(), String> {
     let mut sigterm = signal(SignalKind::terminate())
         .map_err(|error| format!("could not register SIGTERM handler: {error}"))?;
     let mut sigint = signal(SignalKind::interrupt())
         .map_err(|error| format!("could not register SIGINT handler: {error}"))?;
+
+    discover_on_startup(&store, &transport, &opts).await?;
+
     match app.run_startup_hooks().await {
         fastapi::fastapi_core::StartupOutcome::Success => {}
         fastapi::fastapi_core::StartupOutcome::PartialSuccess { warnings } => {
@@ -107,53 +197,58 @@ async fn serve_until_shutdown(
 
 pub fn run(args: &[String]) -> ExitCode {
     let opts = match parse_opts(args) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("zestroku serve: {e}");
+        Ok(opts) => opts,
+        Err(error) => {
+            eprintln!("zestroku serve: {error}");
             return ExitCode::from(2);
         }
     };
     let addr = match zestroku_api::check_bind(&opts.bind, opts.allow_wildcard) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("zestroku serve: {e}");
+        Ok(addr) => addr,
+        Err(error) => {
+            eprintln!("zestroku serve: {error}");
             return ExitCode::from(2);
         }
     };
     let store = match store_db::open() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("zestroku serve: store unavailable: {e}");
+        Ok(store) => Arc::new(Mutex::new(store)),
+        Err(error) => {
+            eprintln!("zestroku serve: store unavailable: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let app = zestroku_api::build_app(Arc::new(Mutex::new(store)), Arc::new(SelectedTransport));
+    let transport = Arc::new(SelectedTransport);
+    let app = zestroku_api::build_app(Arc::clone(&store), Arc::clone(&transport));
     let bind_addr = addr.to_string();
     let mut config = ServerConfig::new(bind_addr.clone());
     if !addr.ip().is_unspecified() {
         config = config.with_allowed_hosts([addr.ip().to_string()]);
     }
-    let runtime = match create_reactor().map_err(|e| e.to_string()).and_then(|r| {
-        RuntimeBuilder::current_thread()
-            .with_reactor(r)
-            .build()
-            .map_err(|e| e.to_string())
-    }) {
-        Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("zestroku serve: could not start asupersync runtime: {e}");
+    let runtime = match create_reactor()
+        .map_err(|error| error.to_string())
+        .and_then(|reactor| {
+            RuntimeBuilder::current_thread()
+                .with_reactor(reactor)
+                .build()
+                .map_err(|error| error.to_string())
+        }) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("zestroku serve: could not start asupersync runtime: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let result = runtime.block_on(serve_until_shutdown(app, bind_addr, config));
+    let result = runtime.block_on(serve_until_shutdown(
+        app, bind_addr, config, store, transport, opts,
+    ));
     if !runtime.shutdown_timeout(Duration::from_secs(30)) {
         eprintln!("zestroku serve: asupersync runtime did not drain within 30s");
         return ExitCode::FAILURE;
     }
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("zestroku serve: {e}");
+        Err(error) => {
+            eprintln!("zestroku serve: {error}");
             ExitCode::FAILURE
         }
     }
