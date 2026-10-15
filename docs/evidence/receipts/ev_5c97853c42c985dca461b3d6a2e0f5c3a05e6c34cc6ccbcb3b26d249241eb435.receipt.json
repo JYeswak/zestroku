@@ -1,0 +1,23 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_5c97853c42c985dca461b3d6a2e0f5c3a05e6c34cc6ccbcb3b26d249241eb435",
+ "limitations": [
+  "Remote Linux loopback tests; comment-263 non-atomic move concern tracked separately in n1f, acceptance unchanged."
+ ],
+ "operation": "zestroku-identity-7ac-nonauthor-rerun",
+ "parameters": {
+  "base": "65ca080b692bdf6d12354bc66d488e4a99d95f86",
+  "bead_id": "zestroku-self-healing-identity-7ac",
+  "overlay": "none-no-overlay-fe0d5151",
+  "suites": "devices_store-6of6+store_roundtrip-5of5+scrub-3patterns"
+ },
+ "producer": "QuietStream",
+ "result_ref": {
+  "command": "cargo test -j1 --locked -p zestroku-cli --test devices_store AND -p zestroku-core --test store_roundtrip",
+  "decisive_output": "devices_store exit 0 6 passed; store_roundtrip exit 0 5 passed; scrub 3 patterns zero hits + 35 FIXTURESERIAL",
+  "remote_exit": 0,
+  "source": "immutable 65ca080 --clean-overlay --no-overlay",
+  "workers": "contabo-2+contabo-4"
+ }
+}
