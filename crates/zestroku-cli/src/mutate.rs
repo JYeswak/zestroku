@@ -451,3 +451,18 @@ pub fn approve(args: &[String]) -> ExitCode {
         }
     }
 }
+#[cfg(test)]
+mod key_command_tests {
+    use super::*;
+
+    #[test]
+    fn key_commands_preserve_the_proto_ecp_wire_case() {
+        let home = build_command("key", "Home").expect("build Home command");
+        let modeled_home = zestroku_proto::keypress(zestroku_types::Key::Home);
+        assert_eq!(home.path, modeled_home.path);
+        assert_eq!(home.path, "/keypress/Home");
+
+        let literal = build_command("key", "Lit_a").expect("build literal key command");
+        assert_eq!(literal.path, "/keypress/Lit_a");
+    }
+}

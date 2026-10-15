@@ -484,7 +484,7 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
         .expect("system clock")
         .as_secs() as i64;
     let launch_token = mint_mcp_approval(&db, &target, &launch(1001), now);
-    let key_token = mint_mcp_approval(&db, &target, &keypress_raw("HOME"), now);
+    let key_token = mint_mcp_approval(&db, &target, &keypress_raw("Home"), now);
 
     let daemon_port = free_port();
     let _daemon = Daemon::start(&db, daemon_port);
@@ -517,7 +517,7 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
     let keyed = session.call(
         4,
         "key",
-        json!({"host": target, "target": "HOME", "confirm": key_token}),
+        json!({"host": target, "target": "Home", "confirm": key_token}),
     );
     assert!(!is_error(&keyed), "{keyed}");
     let keyed_outcome = result_json(&keyed);
@@ -537,7 +537,7 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
         .filter(|(method, _)| method == "POST")
         .map(|(_, path)| path)
         .collect();
-    assert_eq!(posts, ["/launch/1001", "/keypress/HOME"]);
+    assert_eq!(posts, ["/launch/1001", "/keypress/Home"]);
 
     let actions = SqliteStore::open(&db)
         .expect("open shared action store")
