@@ -1,9 +1,9 @@
 #![cfg(unix)]
 #![forbid(unsafe_code)]
 
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -18,6 +18,134 @@ impl Drop for Daemon {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+struct PortRebinder {
+    child: Child,
+    input: ChildStdin,
+    output: BufReader<ChildStdout>,
+}
+
+impl PortRebinder {
+    fn spawn(port: u16) -> Self {
+        let mut child = Command::new(std::env::current_exe().expect("test executable path"))
+            .args(["--exact", "listener_rebinder_child", "--nocapture"])
+            .env("ZESTROKU_LISTENER_REBINDER_PORT", port.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn listener rebinder");
+        let input = child.stdin.take().expect("listener rebinder stdin");
+        let output = BufReader::new(child.stdout.take().expect("listener rebinder stdout"));
+        let mut rebinder = Self {
+            child,
+            input,
+            output,
+        };
+        assert_eq!(rebinder.read_message(), "READY");
+        rebinder
+    }
+
+    fn bind(&mut self) -> String {
+        self.send("bind");
+        self.read_message()
+    }
+
+    fn release(&mut self) {
+        self.send("release");
+        assert_eq!(self.read_message(), "RELEASED");
+        let status = self.child.wait().expect("wait for listener rebinder");
+        assert!(status.success(), "listener rebinder failed: {status}");
+    }
+
+    fn send(&mut self, command: &str) {
+        writeln!(self.input, "{command}").expect("send listener rebinder command");
+        self.input.flush().expect("flush listener rebinder command");
+    }
+
+    fn read_message(&mut self) -> String {
+        loop {
+            let mut line = String::new();
+            let bytes = self
+                .output
+                .read_line(&mut line)
+                .expect("read listener rebinder output");
+            assert!(bytes > 0, "listener rebinder exited before replying");
+            if let Some(message) = line.strip_prefix("PORT_REBINDER:") {
+                return message.trim().to_owned();
+            }
+        }
+    }
+}
+
+impl Drop for PortRebinder {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn listener_rebinder_child() {
+    let Ok(port) = std::env::var("ZESTROKU_LISTENER_REBINDER_PORT") else {
+        let port = free_port();
+        let mut rebinder = PortRebinder::spawn(port);
+        assert_eq!(rebinder.bind(), "BOUND");
+        assert_port_held(port);
+        rebinder.release();
+        assert_port_released(port);
+        return;
+    };
+
+    let port = port.parse::<u16>().expect("listener rebinder port");
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    let stdin = std::io::stdin();
+    let mut input = stdin.lock();
+    writeln!(output, "PORT_REBINDER:READY").expect("write listener rebinder ready");
+    output.flush().expect("flush listener rebinder ready");
+
+    let mut command = String::new();
+    input.read_line(&mut command).expect("read bind command");
+    assert_eq!(command.trim_end(), "bind");
+    let listener = match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(listener) => listener,
+        Err(error) => {
+            writeln!(output, "PORT_REBINDER:BIND_ERROR:{:?}", error.kind())
+                .expect("write listener rebinder bind error");
+            output.flush().expect("flush listener rebinder bind error");
+            panic!("listener rebinder could not bind the original address: {error}");
+        }
+    };
+    writeln!(output, "PORT_REBINDER:BOUND").expect("write listener rebinder bound");
+    output.flush().expect("flush listener rebinder bound");
+
+    command.clear();
+    input.read_line(&mut command).expect("read release command");
+    assert_eq!(command.trim_end(), "release");
+    drop(listener);
+    writeln!(output, "PORT_REBINDER:RELEASED").expect("write listener rebinder released");
+    output.flush().expect("flush listener rebinder released");
+}
+
+fn assert_port_held(port: u16) {
+    match TcpListener::bind(("127.0.0.1", port)) {
+        Err(error) => assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::AddrInUse,
+            "listener-held probe failed for a reason other than address ownership"
+        ),
+        Ok(listener) => {
+            drop(listener);
+            panic!("listener-held probe rebound an address still owned by another process");
+        }
+    }
+}
+
+fn assert_port_released(port: u16) {
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .unwrap_or_else(|error| panic!("serve address remained bound after release: {error}"));
+    drop(listener);
 }
 
 fn free_port() -> u16 {
@@ -105,9 +233,6 @@ fn status_code(response: &[u8]) -> Option<u16> {
         .nth(1)?
         .parse()
         .ok()
-}
-fn listener_is_closed(port: u16) -> bool {
-    TcpStream::connect(("127.0.0.1", port)).is_err()
 }
 
 fn read_req(stream: &mut TcpStream) -> std::io::Result<(Vec<u8>, String)> {
@@ -369,6 +494,7 @@ fn c3_partial_info_body_completes_after_term_and_admission_stop() {
     let target = format!("127.0.0.1:{}", sim.port());
     seed(&db, &target);
     let port = free_port();
+    let mut rebinder = PortRebinder::spawn(port);
     let mut daemon = start(&db, port);
     let host = format!("127.0.0.1:{port}");
     let (mut stream, started) = partial_info_request(port, &host, &target);
@@ -465,7 +591,6 @@ fn c3_partial_info_body_completes_after_term_and_admission_stop() {
         exit.map(|status| status.code()),
         term_at.elapsed()
     );
-    let listener_closed = listener_is_closed(port);
     assert!(send_cd.is_ok(), "C3 failed to send the request remainder");
     assert_eq!(status_code(&response), Some(200), "{text}");
     assert!(text.contains("SIMX1"), "{text}");
@@ -484,25 +609,14 @@ fn c3_partial_info_body_completes_after_term_and_admission_stop() {
         response_connection.is_some_and(|value| value.eq_ignore_ascii_case("close")),
         "C3 response did not request connection close: {response_head:?}"
     );
-    assert!(
-        listener_closed,
-        "C3 listener remained open after daemon exit"
+    let bind_result = rebinder.bind();
+    assert_eq!(
+        bind_result, "BOUND",
+        "C3 separate process could not rebind the original serve address after daemon exit"
     );
-    let holder = start(&db, port);
-    let holder_detected = !listener_is_closed(port);
-    drop(holder);
-    let listener_closed_after_holder = listener_is_closed(port);
-    eprintln!(
-        "C3 listener_probe after_daemon_exit={listener_closed} holder_detected={holder_detected} after_holder_exit={listener_closed_after_holder}"
-    );
-    assert!(
-        holder_detected,
-        "C3 listener probe missed a separate process holding the port"
-    );
-    assert!(
-        listener_closed_after_holder,
-        "C3 listener probe did not pass after the holder process exited"
-    );
+    assert_port_held(port);
+    rebinder.release();
+    assert_port_released(port);
 }
 
 #[derive(Debug, Clone, Copy)]
