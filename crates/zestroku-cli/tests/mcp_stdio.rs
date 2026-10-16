@@ -812,40 +812,42 @@ fn mcp_rejects_non_loopback_daemon_endpoint_before_startup() {
 
 #[test]
 fn mcp_read_consumer_rejects_daemon_schema_drift() {
+    let valid = json!([{
+        "name": "Sim Roku",
+        "host": "127.0.0.1",
+        "model": "Roku Express",
+        "model_number": "SIMX1",
+        "software_version": "15.2.4",
+        "access_tier": "permissive",
+        "last_seen": 1
+    }]);
+    let mut drifted = valid.clone();
+    drifted[0]["unexpected"] = json!(true);
+    let responses = [valid.to_string(), drifted.to_string()];
+
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind malformed daemon");
     let address = listener.local_addr().expect("malformed daemon address");
     let daemon = thread::spawn(move || {
-        let (stream, _) = listener.accept().expect("MCP read request");
-        let mut reader = BufReader::new(stream);
-        let mut request_line = String::new();
-        reader
-            .read_line(&mut request_line)
-            .expect("read request line");
-        let mut parts = request_line.split_whitespace();
-        assert_eq!(parts.next(), Some("GET"));
-        assert_eq!(parts.next(), Some("/v1/devices"));
+        for body in responses {
+            let (stream, _) = listener.accept().expect("MCP read request");
+            let mut reader = BufReader::new(stream);
+            let mut request_line = String::new();
+            reader
+                .read_line(&mut request_line)
+                .expect("read request line");
+            let mut parts = request_line.split_whitespace();
+            assert_eq!(parts.next(), Some("GET"));
+            assert_eq!(parts.next(), Some("/v1/devices"));
 
-        let mut stream = reader.into_inner();
-        let body = json!({
-            "devices": [{
-                "name": "Sim Roku",
-                "host": "127.0.0.1",
-                "model": "Roku Express",
-                "model_number": "SIMX1",
-                "software_version": "15.2.4",
-                "access_tier": "permissive",
-                "last_seen": 1,
-                "unexpected": true
-            }]
-        })
-        .to_string();
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-        .expect("write schema-drift response");
-        stream.flush().expect("flush schema-drift response");
+            let mut stream = reader.into_inner();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .expect("write schema response");
+            stream.flush().expect("flush schema response");
+        }
     });
 
     let dir = tempfile::tempdir().expect("temporary MCP schema directory");
@@ -853,10 +855,16 @@ fn mcp_read_consumer_rejects_daemon_schema_drift() {
     let mut session = Session::start(&db, &format!("http://{address}"));
     initialize_session(&mut session);
 
-    let response = session.call(2, "list_devices", json!({}));
+    let valid_response = session.call(2, "list_devices", json!({}));
+    assert!(!is_error(&valid_response), "{valid_response}");
+    let devices = result_json(&valid_response);
+    assert_eq!(devices[0]["name"], "Sim Roku");
+    assert_eq!(devices[0]["model_number"], "SIMX1");
+
+    let drifted_response = session.call(3, "list_devices", json!({}));
     assert!(
-        tool_error_text(&response).contains("daemon_response_schema_mismatch"),
-        "{response}"
+        tool_error_text(&drifted_response).contains("daemon_response_schema_mismatch"),
+        "{drifted_response}"
     );
     daemon.join().expect("schema-drift daemon");
 }
