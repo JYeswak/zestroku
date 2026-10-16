@@ -643,6 +643,88 @@ fn mcp_replay_is_refused_without_a_second_device_mutation() {
     assert_eq!(actions[0].result, "completed");
     assert_eq!(actions[1].decision, "denied");
 }
+
+#[test]
+fn mcp_key_and_launch_daemon_down_preserves_tokens_for_restart() {
+    use zestroku_proto::{keypress_raw, launch};
+
+    let sim = zestroku_sim::SimDevice::start(zestroku_sim::SimConfig {
+        kind: zestroku_sim::DeviceKind::Express,
+        tier: zestroku_sim::SimTier::Permissive,
+    });
+    let target = format!("127.0.0.1:{}", sim.port());
+    let dir = tempfile::tempdir().expect("temporary daemon-down directory");
+    let db = dir.path().join("actions.db");
+    seed_mutation_device(&db, &target, "SIM-1234X");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs() as i64;
+    let key_token = mint_mcp_approval(&db, &target, &keypress_raw("Home"), now);
+    let launch_token = mint_mcp_approval(&db, &target, &launch(1001), now);
+
+    let daemon_port = free_port();
+    let mut daemon = Daemon::start(&db, daemon_port);
+    let mut session = Session::start(&db, &format!("http://127.0.0.1:{daemon_port}"));
+    initialize_session(&mut session);
+    let baseline_posts = sim
+        .received_requests()
+        .into_iter()
+        .filter(|(method, _)| method == "POST")
+        .count();
+    daemon.stop();
+    let key_down = session.call(
+        2,
+        "key",
+        json!({"host": target, "target": "Home", "confirm": key_token}),
+    );
+    assert!(
+        tool_error_text(&key_down).contains("daemon_unavailable"),
+        "{key_down}"
+    );
+    let launch_down = session.call(
+        3,
+        "launch",
+        json!({"host": target, "target": "1001", "confirm": launch_token}),
+    );
+    assert!(
+        tool_error_text(&launch_down).contains("daemon_unavailable"),
+        "{launch_down}"
+    );
+    let down_posts: Vec<String> = sim
+        .received_requests()
+        .into_iter()
+        .filter(|(method, _)| method == "POST")
+        .map(|(_, path)| path)
+        .collect();
+    assert_eq!(
+        down_posts.len(),
+        baseline_posts,
+        "daemon-down mutations must not reach the device: {down_posts:?}"
+    );
+    daemon = Daemon::start(&db, daemon_port);
+    let keyed = session.call(
+        4,
+        "key",
+        json!({"host": target, "target": "Home", "confirm": key_token}),
+    );
+    assert!(!is_error(&keyed), "{keyed}");
+    assert_eq!(result_json(&keyed)["outcome"], "completed");
+    let launched = session.call(
+        5,
+        "launch",
+        json!({"host": target, "target": "1001", "confirm": launch_token}),
+    );
+    assert!(!is_error(&launched), "{launched}");
+    assert_eq!(result_json(&launched)["outcome"], "completed");
+    let posts: Vec<String> = sim
+        .received_requests()
+        .into_iter()
+        .filter(|(method, _)| method == "POST")
+        .map(|(_, path)| path)
+        .collect();
+    assert_eq!(posts[baseline_posts..], ["/keypress/Home", "/launch/1001"]);
+}
 #[test]
 fn mcp_rejects_non_loopback_daemon_endpoint_before_startup() {
     let output = Command::new(env!("CARGO_BIN_EXE_zestroku"))
