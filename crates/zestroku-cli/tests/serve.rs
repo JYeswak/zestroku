@@ -8,7 +8,7 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zestroku_core::store::{DeviceRow, SqliteStore, Store};
+use zestroku_core::store::{AccessTierRow, DeviceRow, SqliteStore, Store};
 
 fn free_port() -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -161,9 +161,12 @@ fn serve_refuses_wildcard_and_public_binds() {
     }
 }
 fn seed_sim_device(db: &std::path::Path, target: &str) {
-    let host = target.rsplit_once(':').map_or(target, |(host, _)| host);
-    SqliteStore::open(db)
-        .expect("open sim inventory")
+    let (host, port) = target
+        .rsplit_once(':')
+        .map(|(host, port)| (host, port.parse().expect("numeric sim port")))
+        .unwrap_or((target, 8060));
+    let store = SqliteStore::open(db).expect("open sim inventory");
+    store
         .upsert_device(&DeviceRow {
             id: target.into(),
             name: "Sim Roku".into(),
@@ -176,6 +179,14 @@ fn seed_sim_device(db: &std::path::Path, target: &str) {
             last_seen: 1,
         })
         .expect("seed sim device");
+    store
+        .upsert_access_tier(&AccessTierRow {
+            device_id: zestroku_core::tier::device_id(host, port),
+            tier: "permissive".into(),
+            probe_at: 1_700_000_000,
+            probe_map: "{}".into(),
+        })
+        .expect("seed recorded tier");
 }
 
 fn run_daemon_cli(db: &std::path::Path, daemon_url: &str, args: &[&str]) -> std::process::Output {
