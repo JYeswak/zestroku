@@ -415,7 +415,29 @@ impl Store for SqliteStore {
         new_device: &DeviceRow,
         identity: &str,
     ) -> Result<(), StoreError> {
-        self.in_transaction(|conn| {
+        let moved = self.in_transaction(|conn| {
+            // Occupancy gate before any writes: a destination row owned by
+            // a distinct (or unknown) identity refuses the move, so the
+            // INSERT OR REPLACE below can never merge two identities. A
+            // destination already carrying the moving identity (retry)
+            // proceeds.
+            let same_occupant = !conn
+                .query_with_params_sync(
+                    "SELECT device_id FROM device_identity WHERE device_id = ?1 AND identity = ?2 LIMIT 1",
+                    &[s(&new_device.id), s(identity)],
+                )?
+                .is_empty();
+            if !same_occupant {
+                let occupied = !conn
+                    .query_with_params_sync(
+                        "SELECT id FROM devices WHERE id = ?1 LIMIT 1",
+                        &[s(&new_device.id)],
+                    )?
+                    .is_empty();
+                if occupied {
+                    return Ok(false);
+                }
+            }
             conn.execute_with_params_sync(
                 "UPDATE aliases SET device_id = ?2 WHERE device_id = ?1",
                 &[s(old_id), s(&new_device.id)],
@@ -433,8 +455,15 @@ impl Store for SqliteStore {
                 &[s(&new_device.id), s(identity)],
             )
             .map(drop)?;
-            Ok(())
-        })
+            Ok(true)
+        })?;
+        if !moved {
+            return Err(backend(format!(
+                "destination {} already owned by a distinct identity",
+                new_device.id
+            )));
+        }
+        Ok(())
     }
 
     fn insert_confirmation_token(&self, token: &ConfirmationTokenRow) -> Result<(), StoreError> {

@@ -345,3 +345,135 @@ fn identity_move_rolls_back_when_target_upsert_aborts() {
     assert_eq!(st.get_access_tier(old_id).unwrap(), Some(tier));
     st.close().unwrap();
 }
+
+#[test]
+fn identity_move_refuses_destination_owned_by_distinct_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("identity-collision.db");
+    let old_id = "127.0.0.1:1111";
+    let new_id = "127.0.0.1:2222";
+    let old_device = device(old_id, "open");
+    let new_device = device(new_id, "open");
+
+    let st = SqliteStore::open(&path).unwrap();
+    st.upsert_device(&old_device).unwrap();
+    st.set_alias(&AliasRow {
+        alias: "living-room".into(),
+        device_id: old_id.into(),
+    })
+    .unwrap();
+    st.record_device_identity(old_id, "key-device-a").unwrap();
+    let app_a = AppRow {
+        device_id: old_id.into(),
+        app_id: "home".into(),
+        name: "Home".into(),
+        version: "1".into(),
+        fetched_at: 1,
+    };
+    st.upsert_app(&app_a).unwrap();
+    st.add_capability(old_id, "apps").unwrap();
+    let tier_a = AccessTierRow {
+        device_id: old_id.into(),
+        tier: "permissive".into(),
+        probe_at: 1,
+        probe_map: "{}".into(),
+    };
+    st.upsert_access_tier(&tier_a).unwrap();
+    // A distinct identity already occupies the destination endpoint.
+    st.upsert_device(&new_device).unwrap();
+    st.set_alias(&AliasRow {
+        alias: "bedroom".into(),
+        device_id: new_id.into(),
+    })
+    .unwrap();
+    st.record_device_identity(new_id, "key-device-b").unwrap();
+    let app_b = AppRow {
+        device_id: new_id.into(),
+        ..app_a.clone()
+    };
+    st.upsert_app(&app_b).unwrap();
+    st.add_capability(new_id, "apps").unwrap();
+    let tier_b = AccessTierRow {
+        device_id: new_id.into(),
+        tier: "limited".into(),
+        probe_at: 1,
+        probe_map: "{}".into(),
+    };
+    st.upsert_access_tier(&tier_b).unwrap();
+
+    let err = st
+        .move_device_identity(old_id, &new_device, "key-device-a")
+        .expect_err("occupied destination must refuse the move");
+    assert!(
+        err.to_string().contains("distinct identity"),
+        "refusal must name the collision, got: {err}"
+    );
+    // Both identities, rows, aliases, apps, and capabilities unchanged.
+    assert_eq!(st.get_device(old_id).unwrap(), Some(old_device));
+    assert_eq!(st.get_device(new_id).unwrap(), Some(new_device));
+    assert_eq!(
+        st.find_device_id_by_identity("key-device-a").unwrap(),
+        Some(old_id.to_string())
+    );
+    assert_eq!(
+        st.find_device_id_by_identity("key-device-b").unwrap(),
+        Some(new_id.to_string())
+    );
+    let mut aliases = st.list_aliases().unwrap();
+    aliases.sort_by(|a, b| a.alias.cmp(&b.alias));
+    assert_eq!(
+        aliases,
+        vec![
+            AliasRow {
+                alias: "bedroom".into(),
+                device_id: new_id.into(),
+            },
+            AliasRow {
+                alias: "living-room".into(),
+                device_id: old_id.into(),
+            },
+        ]
+    );
+    assert_eq!(st.list_apps(old_id).unwrap(), vec![app_a]);
+    assert_eq!(st.list_apps(new_id).unwrap(), vec![app_b]);
+    assert_eq!(st.list_capabilities(old_id).unwrap(), vec!["apps"]);
+    assert_eq!(st.list_capabilities(new_id).unwrap(), vec!["apps"]);
+    assert_eq!(st.get_access_tier(old_id).unwrap(), Some(tier_a));
+    assert_eq!(st.get_access_tier(new_id).unwrap(), Some(tier_b));
+    st.close().unwrap();
+}
+
+#[test]
+fn identity_move_refuses_destination_row_without_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("identity-unknown-occupant.db");
+    let old_id = "127.0.0.1:1111";
+    let new_id = "127.0.0.1:2222";
+    let old_device = device(old_id, "open");
+    let new_device = device(new_id, "open");
+
+    let st = SqliteStore::open(&path).unwrap();
+    st.upsert_device(&old_device).unwrap();
+    st.record_device_identity(old_id, "key-device-a").unwrap();
+    // Destination row exists but carries no identity record.
+    st.upsert_device(&new_device).unwrap();
+    assert_eq!(
+        st.find_device_id_by_identity("key-device-a").unwrap(),
+        Some(old_id.to_string())
+    );
+
+    let err = st
+        .move_device_identity(old_id, &new_device, "key-device-a")
+        .expect_err("identity-less destination must refuse the move");
+    assert!(
+        err.to_string().contains("distinct identity"),
+        "refusal must name the collision, got: {err}"
+    );
+    assert_eq!(st.get_device(old_id).unwrap(), Some(old_device));
+    assert_eq!(st.get_device(new_id).unwrap(), Some(new_device));
+    assert_eq!(
+        st.find_device_id_by_identity("key-device-a").unwrap(),
+        Some(old_id.to_string())
+    );
+    st.close().unwrap();
+}
