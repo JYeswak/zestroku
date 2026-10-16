@@ -328,9 +328,9 @@ fn open_and_unknown_http_tiers_deny_before_mutation_post() {
 fn recorded_tier_downgrade_during_snapshot_denies_without_mutation_post() {
     use std::sync::Mutex;
     use zestroku_core::mutation::issue_approval;
-    use zestroku_core::store::AccessTierRow;
+    use zestroku_core::store::{AccessTierRow, SqliteStore};
     use zestroku_proto::{Command, EcpResponse, Transport, launch};
-    use zestroku_types::Device;
+    use zestroku_types::{Device, Result};
 
     /// A tier writer landing inside the pre-authorization snapshot await,
     /// as a concurrent `/info` probe would: the gate must observe the new
