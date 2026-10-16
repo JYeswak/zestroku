@@ -1,4 +1,4 @@
-//! zestroku-api — read-only HTTP routes over the shared inventory and ECP transport.
+//! zestroku-api — inventory reads and per-operation-approved HTTP mutations.
 #![forbid(unsafe_code)]
 
 mod routes;
@@ -22,14 +22,19 @@ struct ApiState<S, T> {
     transport: Arc<T>,
 }
 
-/// Build the read-only v1 HTTP API over a shared store and ECP transport.
+/// Build the v1 HTTP API over a shared store and ECP transport.
 ///
-/// Registers health, inventory, info, active-app, installed-app, and generated
-/// OpenAPI endpoints. The host parameter accepts a host or host:port inventory
-/// id. Host-specific reads return 404 unless that exact device id exists in
-/// the store. Info refreshes the stored access-tier observation; the apps route
-/// uses the Permissive query gate. The store mutex is held only for synchronous
-/// calls and is released before each transport await.
+/// Registers health, inventory, device-info, active-app, installed-app, and
+/// OpenAPI reads plus confirmation-gated key and launch POSTs. Mutation targets
+/// come only from the inventory path parameter and the request body cannot
+/// override host, port, tier, or client provenance. Before each mutation the
+/// API snapshots active-app state, then delegates tier-before-token
+/// authorization and durable result recording to the core mutation gate. No
+/// HTTP route mints approvals. Bodies are strict JSON objects; a present Origin
+/// must exactly match `http://<Host>` or the request is refused before parsing,
+/// token consumption, or ECP I/O. Missing Origin is allowed for non-browser
+/// clients, and the API emits no Access-Control-Allow-Origin header. Store locks
+/// are released before every transport await.
 pub fn build_app<S, T>(store: Arc<Mutex<S>>, transport: Arc<T>) -> App
 where
     S: Store + Send + 'static,
@@ -445,7 +450,10 @@ mod tests {
         let transport = Arc::new(FakeTransport::new([]));
         let client = TestClient::new(build_app(store, transport));
 
-        let response = client.get("/v1/devices").send();
+        let response = client
+            .get("/v1/devices")
+            .header_str("host", "192.0.2.10")
+            .send();
         assert_eq!(response.status().as_u16(), 200);
         let devices: serde_json::Value =
             serde_json::from_str(response.text()).expect("device JSON");
@@ -471,6 +479,7 @@ mod tests {
 
         let info = client
             .get(&format!("/v1/devices/192.0.2.10:{port}/info"))
+            .header_str("host", "192.0.2.10")
             .send();
         assert_eq!(info.status().as_u16(), 200);
         let info_json: serde_json::Value = serde_json::from_str(info.text()).expect("info JSON");
@@ -484,6 +493,7 @@ mod tests {
 
         let active_app = client
             .get(&format!("/v1/devices/192.0.2.10:{port}/active-app"))
+            .header_str("host", "192.0.2.10")
             .send();
         assert_eq!(active_app.status().as_u16(), 200);
         let active_json: serde_json::Value =
@@ -517,6 +527,7 @@ mod tests {
 
         let info = client
             .get(&format!("/v1/devices/192.0.2.10:{port}/info"))
+            .header_str("host", "192.0.2.10")
             .send();
         assert_eq!(info.status().as_u16(), 200);
         let info_json: serde_json::Value = serde_json::from_str(info.text()).expect("info JSON");
@@ -548,6 +559,7 @@ mod tests {
 
         let info = client
             .get(&format!("/v1/devices/192.0.2.10:{port}/info"))
+            .header_str("host", "192.0.2.10")
             .send();
         assert_eq!(info.status().as_u16(), 200);
         let info_json: serde_json::Value = serde_json::from_str(info.text()).expect("info JSON");
@@ -564,7 +576,7 @@ mod tests {
             "/v1/devices/192.0.2.99/info",
             "/v1/devices/192.0.2.99/active-app",
         ] {
-            let response = client.get(path).send();
+            let response = client.get(path).header_str("host", "192.0.2.10").send();
             assert_eq!(response.status().as_u16(), 404, "path={path}");
             assert!(transport.calls().is_empty(), "path={path}");
         }
@@ -609,7 +621,10 @@ mod tests {
         let transport = Arc::new(FakeTransport::new([]));
         let client = TestClient::new(build_app(store, Arc::clone(&transport)));
 
-        let response = client.get("/health").send();
+        let response = client
+            .get("/health")
+            .header_str("host", "192.0.2.10")
+            .send();
         assert_eq!(response.status().as_u16(), 200);
         let body: serde_json::Value = serde_json::from_str(response.text()).expect("health JSON");
         assert_eq!(body["status"], "ok");
