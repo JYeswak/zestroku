@@ -186,8 +186,8 @@ fn complete_script_bash_registers_and_delegates() {
     assert_eq!(output.status.code(), Some(0));
     let text = String::from_utf8(output.stdout).expect("script UTF-8");
     assert!(text.contains("complete -F _zestroku zestroku"), "{text}");
-    assert!(text.contains("zestroku complete verbs"), "{text}");
-    assert!(text.contains("zestroku complete devices"), "{text}");
+    assert!(text.contains("_zestroku_collect"), "{text}");
+    assert!(text.contains("zestroku complete \"$1\""), "{text}");
     assert!(output.stderr.is_empty());
 }
 
