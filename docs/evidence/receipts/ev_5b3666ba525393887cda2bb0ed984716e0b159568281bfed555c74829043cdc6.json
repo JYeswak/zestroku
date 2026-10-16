@@ -1,0 +1,23 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_5b3666ba525393887cda2bb0ed984716e0b159568281bfed555c74829043cdc6",
+ "limitations": [
+  "Hosted CI and loopback simulator evidence only; no physical-device mutation claimed",
+  "No local or RCH execution claimed; full seven hosted gates passed at exact published source",
+  "Receipt documents nonauthor evidence; bead status remains unchanged"
+ ],
+ "operation": "verify_zestroku_mcp_mutation_acceptance",
+ "parameters": {
+  "bead": "zestroku-zestroku-doctrine-a0h.11.5",
+  "ci_run": "38893838463",
+  "command": "gh run view 38893838463 --log",
+  "exit_code": "0",
+  "source_sha": "57755cbefe9f6e818158039c55905f1f564a60bb"
+ },
+ "producer": "BeigeLeopard",
+ "result_ref": {
+  "bytes": 193752,
+  "sha256": "891ed4cbe8de16a0b454b3fcfdb5a552e099399a15ccfcd11db1dabf6e842691"
+ }
+}
