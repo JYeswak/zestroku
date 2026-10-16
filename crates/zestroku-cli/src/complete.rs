@@ -37,6 +37,40 @@ fn matches_prefix(candidate: &str, prefix: &str) -> bool {
     candidate.starts_with(prefix)
 }
 
+/// Bash completion adapter: registers `_zestroku` for the `zestroku`
+/// command and delegates every candidate list to the `complete` provider
+/// above, so shell behavior can never drift from CLI behavior. The adapter
+/// itself only suggests; execution still flows through target resolution,
+/// which denies ambiguous mutation targets.
+fn bash_adapter() -> &'static str {
+    r#"# zestroku shell completion (bash).
+# Install: source this file from ~/.bashrc, e.g.
+#   eval "$(zestroku complete --script bash)"
+_zestroku() {
+    local cur
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    if [ "$COMP_CWORD" -eq 1 ]; then
+        COMPREPLY=($(compgen -W "$(zestroku complete verbs)" -- "$cur"))
+        return 0
+    fi
+    case "${COMP_WORDS[1]}" in
+        devices|info|active-app|apps|key|launch|install|approve)
+            COMPREPLY=($(compgen -W "$(zestroku complete devices "$cur")" -- "$cur"))
+            ;;
+        complete)
+            case "${COMP_WORDS[2]}" in
+                "") COMPREPLY=($(compgen -W "devices apps verbs" -- "$cur")) ;;
+                apps) COMPREPLY=($(compgen -W "$(zestroku complete devices "$cur")" -- "$cur")) ;;
+            esac
+            ;;
+    esac
+    return 0
+}
+complete -F _zestroku zestroku
+"#
+}
+
 fn print_candidates(mut candidates: Vec<String>) -> ExitCode {
     candidates.sort();
     candidates.dedup();
@@ -135,11 +169,17 @@ fn usage_error(message: &str) -> ExitCode {
     eprintln!("zestroku complete: {message}");
     eprintln!("usage: zestroku complete <devices|apps|verbs> [prefix]");
     eprintln!("       zestroku complete apps <device-id> [prefix]");
+    eprintln!("       zestroku complete --script bash");
     ExitCode::from(2)
 }
 
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
+        Some("--script") if args.len() == 2 && args[1] == "bash" => {
+            print!("{script}", script = bash_adapter());
+            return ExitCode::SUCCESS;
+        }
+        Some("--script") => return usage_error("supported shells: bash"),
         Some("devices") if args.len() <= 2 => {
             complete_devices(args.get(1).map_or("", String::as_str))
         }

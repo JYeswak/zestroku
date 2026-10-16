@@ -39,6 +39,8 @@ USAGE:
         focused app (Open tier)
     zestroku complete <devices|apps|verbs> [prefix]
         shell-completion candidates from local inventory/cache
+    zestroku complete --script bash
+        shell adapter registration (source it from ~/.bashrc)
     zestroku key <host> <KEY> [--confirm <token>]   keypress (Permissive)
     zestroku approve <verb> <host> <target> [--installer-port <port>]   owner TTY approval
     zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)

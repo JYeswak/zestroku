@@ -176,3 +176,57 @@ fn explicit_daemon_down_refuses_without_fallback() {
     assert_ne!(output.status.code(), Some(0));
     assert!(stderr.contains("DAEMON_UNAVAILABLE"), "{stderr}");
 }
+
+#[test]
+fn complete_script_bash_registers_and_delegates() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    seed_store(&db);
+    let output = run(&db, &["complete", "--script", "bash"]);
+    assert_eq!(output.status.code(), Some(0));
+    let text = String::from_utf8(output.stdout).expect("script UTF-8");
+    assert!(text.contains("complete -F _zestroku zestroku"), "{text}");
+    assert!(text.contains("zestroku complete verbs"), "{text}");
+    assert!(text.contains("zestroku complete devices"), "{text}");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn complete_script_unknown_shell_is_a_usage_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    seed_store(&db);
+    let output = run(&db, &["complete", "--script", "fish"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stdout_lines(&output).is_empty());
+}
+
+#[test]
+fn bash_adapter_sources_and_offers_inventory_candidates() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    seed_store(&db);
+    let script = dir.path().join("zestroku.bash");
+    let output = run(&db, &["complete", "--script", "bash"]);
+    assert_eq!(output.status.code(), Some(0));
+    std::fs::write(&script, &output.stdout).expect("write adapter");
+    let binary = std::path::PathBuf::from(env!("CARGO_BIN_EXE_zestroku"));
+    let bin_dir = binary.parent().expect("binary directory");
+    let path = format!(
+        "{}:{}",
+        bin_dir.to_string_lossy(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let probe = Command::new("bash")
+        .env("ZESTROKU_DB", &db)
+        .env("PATH", &path)
+        .arg("-c")
+        .arg("source \"$0\"; COMP_WORDS=(zestroku complete devices); COMP_CWORD=2; _zestroku; printf '%s\\n' \"${COMPREPLY[@]}\"")
+        .arg(script)
+        .output()
+        .expect("run bash probe");
+    assert_eq!(probe.status.code(), Some(0), "{probe:?}");
+    let offered = String::from_utf8_lossy(&probe.stdout);
+    assert!(offered.contains("192.0.2.10:8060"), "{offered}");
+    assert!(offered.contains("living-room"), "{offered}");
+}
