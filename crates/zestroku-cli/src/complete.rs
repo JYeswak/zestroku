@@ -41,28 +41,44 @@ fn matches_prefix(candidate: &str, prefix: &str) -> bool {
 /// command and delegates every candidate list to the `complete` provider
 /// above, so shell behavior can never drift from CLI behavior. The adapter
 /// itself only suggests; execution still flows through target resolution,
-/// which denies ambiguous mutation targets.
+/// which denies ambiguous mutation targets. Candidates are read line by
+/// line (never `COMPREPLY=($(...))`) so app names containing spaces survive.
 fn bash_adapter() -> &'static str {
     r#"# zestroku shell completion (bash).
 # Install: source this file from ~/.bashrc, e.g.
 #   eval "$(zestroku complete --script bash)"
+_zestroku_collect() {
+    COMPREPLY=()
+    local line
+    if [ $# -eq 3 ]; then
+        while IFS= read -r line; do COMPREPLY+=("$line"); done < <(zestroku complete "$1" "$3" "$2")
+    else
+        while IFS= read -r line; do COMPREPLY+=("$line"); done < <(zestroku complete "$1" "$2")
+    fi
+}
 _zestroku() {
     local cur
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     if [ "$COMP_CWORD" -eq 1 ]; then
-        COMPREPLY=($(compgen -W "$(zestroku complete verbs)" -- "$cur"))
+        _zestroku_collect verbs "$cur"
         return 0
     fi
     case "${COMP_WORDS[1]}" in
         devices|info|active-app|apps|key|launch|install|approve)
-            COMPREPLY=($(compgen -W "$(zestroku complete devices "$cur")" -- "$cur"))
+            _zestroku_collect devices "$cur"
             ;;
         complete)
-            case "${COMP_WORDS[2]}" in
-                "") COMPREPLY=($(compgen -W "devices apps verbs" -- "$cur")) ;;
-                apps) COMPREPLY=($(compgen -W "$(zestroku complete devices "$cur")" -- "$cur")) ;;
-            esac
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                _zestroku_collect verbs "$cur"
+            elif [ "$COMP_CWORD" -eq 3 ]; then
+                case "${COMP_WORDS[2]}" in
+                    apps) _zestroku_collect devices "$cur" ;;
+                    devices|verbs) _zestroku_collect "${COMP_WORDS[2]}" "$cur" ;;
+                esac
+            elif [ "$COMP_CWORD" -eq 4 ] && [ "${COMP_WORDS[2]}" = "apps" ]; then
+                _zestroku_collect apps "$cur" "${COMP_WORDS[3]}"
+            fi
             ;;
     esac
     return 0

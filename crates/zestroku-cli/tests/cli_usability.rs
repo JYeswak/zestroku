@@ -217,16 +217,41 @@ fn bash_adapter_sources_and_offers_inventory_candidates() {
         bin_dir.to_string_lossy(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let probe = Command::new("bash")
-        .env("ZESTROKU_DB", &db)
-        .env("PATH", &path)
-        .arg("-c")
-        .arg("source \"$0\"; COMP_WORDS=(zestroku complete devices); COMP_CWORD=2; _zestroku; printf '%s\\n' \"${COMPREPLY[@]}\"")
-        .arg(script)
-        .output()
-        .expect("run bash probe");
-    assert_eq!(probe.status.code(), Some(0), "{probe:?}");
-    let offered = String::from_utf8_lossy(&probe.stdout);
-    assert!(offered.contains("192.0.2.10:8060"), "{offered}");
-    assert!(offered.contains("living-room"), "{offered}");
+    // (words, cword, must-contain, must-not-contain)
+    let contexts: [(&str, u32, Vec<&str>, Vec<&str>); 4] = [
+        ("zestroku complete devices", 2, vec!["devices"], vec![]),
+        (
+            "zestroku complete apps living-room",
+            3,
+            vec!["192.0.2.10:8060", "living-room"],
+            vec![],
+        ),
+        (
+            "zestroku complete apps living-room Streaming",
+            4,
+            vec!["Streaming One"],
+            vec!["1001"],
+        ),
+        ("zestroku", 1, vec!["info", "complete"], vec![]),
+    ];
+    for (words, cword, present, absent) in contexts {
+        let probe = Command::new("bash")
+            .env("ZESTROKU_DB", &db)
+            .env("PATH", &path)
+            .arg("-c")
+            .arg(format!(
+                "source \"$0\"; COMP_WORDS=({words}); COMP_CWORD={cword}; _zestroku; printf '%s\\n' \"${{COMPREPLY[@]}}\""
+            ))
+            .arg(&script)
+            .output()
+            .expect("run bash probe");
+        assert_eq!(probe.status.code(), Some(0), "{words} {probe:?}");
+        let offered = String::from_utf8_lossy(&probe.stdout);
+        for candidate in present {
+            assert!(offered.contains(candidate), "{words}: {offered}");
+        }
+        for candidate in absent {
+            assert!(!offered.contains(candidate), "{words}: {offered}");
+        }
+    }
 }
