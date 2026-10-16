@@ -94,7 +94,7 @@ fn complete_apps(device_id: &str, prefix: &str) -> ExitCode {
     };
     let mut candidates = Vec::with_capacity(rows.len() * 2);
     for row in rows {
-        candidates.push(row.id);
+        candidates.push(row.app_id.clone());
         candidates.push(row.name);
     }
     print_candidates(
