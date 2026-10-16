@@ -656,4 +656,51 @@ mod tests {
             "SSDP LOCATION escapes must be rejected before Transport::send"
         );
     }
+
+    #[test]
+    fn explicit_target_rejects_alternate_loopback_location_before_transport() {
+        // Same-host spoof: a 127.0.0.1 responder advertising a *different*
+        // loopback LOCATION must be refused even though both addresses are
+        // loopback — scope binds to the responder source, not the class.
+        let responder = UdpSocket::bind("127.0.0.1:0").expect("SSDP responder");
+        responder
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("SSDP read timeout");
+        let target = format!("127.0.0.1:{}", responder.local_addr().unwrap().port());
+        let responder_thread = thread::spawn(move || {
+            let mut request = [0_u8; 1500];
+            let (length, peer) = responder.recv_from(&mut request).expect("receive M-SEARCH");
+            assert!(
+                String::from_utf8_lossy(&request[..length]).contains("M-SEARCH * HTTP/1.1"),
+                "unexpected SSDP request"
+            );
+            let reply = "HTTP/1.1 200 OK\r\nLOCATION: http://127.0.0.2:8060/\r\n\
+                 ST: roku:ecp\r\nUSN: uuid:roku:ecp:alternate-loopback\r\n\r\n";
+            responder
+                .send_to(reply.as_bytes(), peer)
+                .expect("send SSDP reply");
+        });
+        let transport = FixtureTransport {
+            bodies: std::collections::BTreeMap::new(),
+            probed: std::sync::RwLock::new(Vec::new()),
+        };
+
+        let (devices, notes) = runtime()
+            .block_on(async {
+                let sweep = sweep_to(&target, 1).await?;
+                discover_from_sweep(&transport, None, sweep).await
+            })
+            .expect("loopback discovery");
+        responder_thread.join().expect("SSDP responder thread");
+        assert!(devices.is_empty(), "alternate-loopback LOCATION is refused");
+        assert_eq!(notes.len(), 1, "one outside-scope note: {notes:?}");
+        assert!(
+            notes[0].contains("outside the responder scope"),
+            "{notes:?}"
+        );
+        assert!(
+            transport.probed.read().expect("probed lock").is_empty(),
+            "alternate-loopback escape must be rejected before Transport::send"
+        );
+    }
 }
