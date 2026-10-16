@@ -14,11 +14,12 @@ use zestroku_core::store::{AccessTierRow, Store};
 use zestroku_proto::{Command, EcpResponse, Method as EcpMethod, Transport, launch};
 use zestroku_types::{AccessTier, Device, Error, Result};
 
+const ACTIVE_APP_XML: &str = "<active-app><app>Roku</app></active-app>";
 const DEVICE_INFO_XML: &str = "<device-info><model-name>Roku Fixture</model-name><model-number>FIXTURE1</model-number><software-version>15.2.4</software-version><is-tv>false</is-tv></device-info>";
 const LIMITED_403_BODY: &str = "ECP command not allowed in Limited mode.";
 
 struct SnapshotBarrierTransport {
-    calls: Mutex<Vec<(String, u16, Command)>>,
+    responses: ResponseTransport,
     block_next_snapshot: AtomicBool,
     snapshot_started: mpsc::Sender<()>,
     release_snapshot: Mutex<mpsc::Receiver<()>>,
@@ -28,9 +29,18 @@ impl SnapshotBarrierTransport {
     fn new() -> (Self, mpsc::Receiver<()>, mpsc::Sender<()>) {
         let (snapshot_started, started) = mpsc::channel();
         let (release, release_snapshot) = mpsc::channel();
+        let responses = ResponseTransport::new([
+            response(200, ACTIVE_APP_XML),
+            response(200, DEVICE_INFO_XML),
+            response(403, LIMITED_403_BODY),
+            response(404, ""),
+            response(200, ACTIVE_APP_XML),
+            response(200, ""),
+            response(200, ACTIVE_APP_XML),
+        ]);
         (
             Self {
-                calls: Mutex::new(Vec::new()),
+                responses,
                 block_next_snapshot: AtomicBool::new(true),
                 snapshot_started,
                 release_snapshot: Mutex::new(release_snapshot),
@@ -41,17 +51,28 @@ impl SnapshotBarrierTransport {
     }
 
     fn calls(&self) -> Vec<(String, u16, Command)> {
-        self.calls.lock().expect("calls lock").clone()
+        self.responses.calls()
     }
 }
 
 impl Transport for SnapshotBarrierTransport {
     async fn send(&self, host: &str, port: u16, command: &Command) -> Result<EcpResponse> {
-        self.calls
-            .lock()
-            .expect("calls lock")
-            .push((host.to_owned(), port, command.clone()));
+        if !matches!(
+            (command.method, command.path.as_str()),
+            (EcpMethod::Get, "/query/active-app")
+                | (EcpMethod::Get, "/query/device-info")
+                | (EcpMethod::Get, "/query/apps")
+                | (EcpMethod::Get, "/query/tv-active-channel")
+                | (EcpMethod::Post, "/launch/1001")
+        ) {
+            return Err(Error::Unreachable(format!(
+                "unexpected fixture command {}",
+                command.path
+            )));
+        }
 
+        // Prepare the response before pausing its return to the mutation route.
+        let response = self.responses.send(host, port, command).await?;
         if command.method == EcpMethod::Get
             && command.path == "/query/active-app"
             && self.block_next_snapshot.swap(false, Ordering::SeqCst)
@@ -66,18 +87,7 @@ impl Transport for SnapshotBarrierTransport {
                 .map_err(|_| Error::Unreachable("snapshot release disconnected".into()))?;
         }
 
-        match (command.method, command.path.as_str()) {
-            (EcpMethod::Get, "/query/active-app") => {
-                Ok(response(200, "<active-app><app>Roku</app></active-app>"))
-            }
-            (EcpMethod::Get, "/query/device-info") => Ok(response(200, DEVICE_INFO_XML)),
-            (EcpMethod::Get, "/query/apps") => Ok(response(403, LIMITED_403_BODY)),
-            (EcpMethod::Get, "/query/tv-active-channel") => Ok(response(404, "")),
-            (EcpMethod::Post, "/launch/1001") => Ok(response(200, "")),
-            _ => Err(Error::Unreachable(
-                format!("unexpected fixture command {}", command.path).into(),
-            )),
-        }
+        Ok(response)
     }
 }
 
