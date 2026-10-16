@@ -256,7 +256,7 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
     let unreachable_target = format!("127.0.0.1:{}", unreachable_sim.port());
     let dir = tempfile::tempdir().expect("tempdir");
     let db = dir.path().join("actions.db");
-    seed_device(&db, &target, "SIM-1234X");
+    seed_mutation_device(&db, &target, "SIM-1234X");
     seed_device(&db, &unreachable_target, "SIM-DEAD");
     unreachable_sim.suspend();
 
@@ -433,7 +433,7 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
     let refused = s.call(
         13,
         "key",
-        json!({"host": "127.0.0.1", "target": "Home", "confirm": "not-a-token"}),
+        json!({"host": target, "target": "Home", "confirm": "not-a-token"}),
     );
     assert!(
         is_error(&refused),
