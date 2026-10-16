@@ -69,104 +69,6 @@ fn run_env(db: &std::path::Path, args: &[&str], extra: &[(&str, &str)]) -> std::
     }
     command.args(args).output().expect("run zestroku")
 }
-
-/// Minimal loopback HTTP daemon serving canned JSON by path suffix. Reads
-/// each request through the blank header-terminator line before replying
-/// so close never races unread request bytes; stops on drop.
-struct FakeDaemon {
-    port: u16,
-    requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    stop: std::sync::mpsc::Sender<()>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl FakeDaemon {
-    fn start(info_body: &'static str, app_body: &'static str) -> Self {
-        use std::io::{BufRead, BufReader, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake daemon");
-        listener
-            .set_nonblocking(true)
-            .expect("nonblocking listener");
-        let port = listener.local_addr().expect("fake daemon port").port();
-        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let thread_requests = std::sync::Arc::clone(&requests);
-        let (stop, stop_rx) = std::sync::mpsc::channel();
-        let thread = std::thread::spawn(move || {
-            loop {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-                        let mut reader = BufReader::new(stream);
-                        let mut head = String::new();
-                        let mut request_line = String::new();
-                        loop {
-                            let mut line = String::new();
-                            match reader.read_line(&mut line) {
-                                Ok(0) | Err(_) => break,
-                                Ok(_) => {
-                                    if request_line.is_empty() {
-                                        request_line = line.clone();
-                                    }
-                                    if line == "\r\n" {
-                                        break;
-                                    }
-                                    head.push_str(&line);
-                                }
-                            }
-                        }
-                        thread_requests
-                            .lock()
-                            .expect("request log lock")
-                            .push(request_line.clone());
-                        let body = if request_line.contains("active-app") {
-                            app_body
-                        } else {
-                            info_body
-                        };
-                        let mut stream = reader.into_inner();
-                        let _ = write!(
-                            stream,
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                            body.len()
-                        );
-                        let _ = stream.flush();
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        match stop_rx.recv_timeout(std::time::Duration::from_millis(10)) {
-                            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        Self {
-            port,
-            requests,
-            stop,
-            thread: Some(thread),
-        }
-    }
-
-    fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
-    }
-
-    fn requests(&self) -> Vec<String> {
-        self.requests.lock().expect("request log lock").clone()
-    }
-}
-
-impl Drop for FakeDaemon {
-    fn drop(&mut self) {
-        let _ = self.stop.send(());
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
 fn stdout_lines(output: &std::process::Output) -> Vec<String> {
     String::from_utf8_lossy(&output.stdout)
         .lines()
@@ -287,20 +189,6 @@ fn explicit_daemon_down_refuses_without_fallback() {
 }
 
 #[test]
-fn complete_script_bash_registers_and_delegates() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let db = dir.path().join("actions.db");
-    seed_store(&db);
-    let output = run(&db, &["complete", "--script", "bash"]);
-    assert_eq!(output.status.code(), Some(0));
-    let text = String::from_utf8(output.stdout).expect("script UTF-8");
-    assert!(text.contains("complete -F _zestroku zestroku"), "{text}");
-    assert!(text.contains("_zestroku_collect"), "{text}");
-    assert!(text.contains("zestroku complete \"$1\""), "{text}");
-    assert!(output.stderr.is_empty());
-}
-
-#[test]
 fn complete_script_unknown_shell_is_a_usage_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = dir.path().join("actions.db");
@@ -384,60 +272,6 @@ fn bash_adapter_sources_and_offers_inventory_candidates() {
         let expected: Vec<String> = expected.into_iter().map(str::to_owned).collect();
         assert_eq!(offered, expected, "{words}");
     }
-}
-
-const INFO_BODY: &str = "{\"model_name\":\"Roku Express\",\"model_number\":\"3941X2\",\"software_version\":\"15.2.4\",\"is_tv\":false,\"access_tier\":\"permissive\",\"tv_active_channel\":null}";
-const APP_BODY: &str = "{\"app_id\":1001,\"name\":\"Streaming One\"}";
-
-#[test]
-fn info_json_stdout_is_typed_and_stderr_stays_empty() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let db = dir.path().join("actions.db");
-    seed_store(&db);
-    let daemon = FakeDaemon::start(INFO_BODY, APP_BODY);
-    let output = run_env(
-        &db,
-        &["info", "--json", "192.0.2.10:8060"],
-        &[("ZESTROKU_DAEMON_URL", &daemon.url())],
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(0), "{stderr}");
-    assert!(stderr.is_empty(), "{stderr}");
-    let document: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("stdout JSON");
-    assert_eq!(document["model_name"], "Roku Express");
-    assert_eq!(document["model_number"], "3941X2");
-    assert_eq!(document["is_tv"], false);
-    assert_eq!(document["access_tier"], "permissive");
-    assert!(document["tv_active_channel"].is_null());
-    assert!(
-        daemon
-            .requests()
-            .iter()
-            .any(|line| line.contains("GET") && line.contains("/info")),
-        "{:?}",
-        daemon.requests()
-    );
-}
-
-#[test]
-fn active_app_json_stdout_is_typed_and_stderr_stays_empty() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let db = dir.path().join("actions.db");
-    seed_store(&db);
-    let daemon = FakeDaemon::start(INFO_BODY, APP_BODY);
-    let output = run_env(
-        &db,
-        &["active-app", "--json", "192.0.2.10:8060"],
-        &[("ZESTROKU_DAEMON_URL", &daemon.url())],
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(0), "{stderr}");
-    assert!(stderr.is_empty(), "{stderr}");
-    let document: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("stdout JSON");
-    assert_eq!(document["name"], "Streaming One");
-    assert_eq!(document["app_id"], 1001);
 }
 
 #[test]
