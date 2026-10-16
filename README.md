@@ -157,13 +157,14 @@ ssh -o BatchMode=yes localhost \
 Discovery and the daemon share `ZESTROKU_TRANSPORT`: `std` selects the existing
 macOS LAN workaround; unset or `asupersync` selects the normal client. Unknown
 values produce a diagnostic and deterministically use asupersync. The selector
-does not grant LAN permission: run discovery in the same permitted process tree
-to populate the shared inventory before starting the daemon.
+does not grant LAN permission: run explicit `ZESTROKU_DIRECT=1` discovery in
+the permitted process tree, using the same `ZESTROKU_DB` as the daemon,
+to populate its inventory before starting it.
 
-For MCP, the default endpoint is `http://127.0.0.1:8070`; `ZESTROKU_DAEMON_URL`
-may override it only with `http://<loopback-ip>:<nonzero-port>`. Invalid MCP
-endpoints are rejected before startup. `ZESTROKU_DIRECT=1` explicitly selects
-direct ECP and requires LAN permission in the CLI's own process tree.
+For MCP and default CLI `key`/`launch`, `ZESTROKU_DAEMON_URL` defaults to
+`http://127.0.0.1:8070` and must be `http://<loopback-ip>:<nonzero-port>`.
+Invalid endpoints are rejected before mutation dispatch. `ZESTROKU_DIRECT=1`
+selects diagnostic direct ECP and requires LAN permission in the CLI's own tree.
 
 ## Architecture (frankensonos §3 pattern)
 
@@ -189,12 +190,18 @@ Design principles (inherited):
 
 ## Current CLI surface
 
-`zestroku devices` discovers devices (SSDP plus optional seeds) and records
-them in the store. macOS gates UDP multicast per executable: a freshly built
-binary can find zero devices by SSDP while TCP to the ECP port works
-(measured 2026-10-11, byte-identical copies behaved differently). Use
-`--scan <cidr>` (private ranges, at most a /22, e.g. `--scan 192.168.1.0/24`)
-or `--targets <file>` for discovery that needs no multicast grant.
+`zestroku devices` lists the daemon's cached inventory without discovering or
+probing devices. `--json` emits `source: "daemon"`, a `devices` array with
+`name`, `host`, `model`, `model_number`, `software_version`, `access_tier`,
+and `last_seen`, and an empty `notes` array. This cache view does not provide
+an ECP port or TV classification; neither value is fabricated.
+
+Use `ZESTROKU_DIRECT=1 zestroku devices` for explicit discovery and inventory
+refresh (SSDP plus optional seeds). Discovery flags require this mode.
+macOS gates UDP multicast per executable, so use `--targets <file>` with
+`--no-ssdp`, or `--scan <cidr>` (private ranges, at most a /22), when needed.
+Direct discovery retains its device-info JSON fields, including `port` and
+`is_tv`, plus structured per-target failure notes.
 `zestroku info <host>` and `zestroku active-app <host>` use
 `ZESTROKU_DAEMON_URL` (default `http://127.0.0.1:8070`) and fail with
 `DAEMON_UNAVAILABLE` within 2 s if the daemon is down; they do not fall back to
@@ -218,6 +225,19 @@ Ambiguous matches list candidates; mutations never select one implicitly.
 a typed action phrase. It prints a random, five-minute, single-use token bound
 to the device endpoint and command. Use `zestroku key <host> <KEY> --confirm <token>` or
 `zestroku launch <host> <app-id> --confirm <token>` to consume it.
+Default CLI `key` and `launch` forward the opaque token to the daemon, which
+owns the before-state snapshot, recorded-tier/approval gate, command dispatch
+and final audit outcome. The owner `approve`
+command must use the same `ZESTROKU_DB` as the daemon. A down daemon fails
+without consuming a local token or falling back to ECP. `ZESTROKU_DIRECT=1`
+retains the local diagnostic mutation path.
+
+`zestroku launch <host> --app <name> --confirm <token>` resolves an ASCII
+case-insensitive exact name, then a unique prefix, against the daemon's
+installed apps. Missing or ambiguous names never dispatch. The approval
+still binds the numeric app ID; the audit records the requested label and
+resolved ID before dispatch. The label is caller metadata, not an authority
+or a substitute for the command-bound approval.
 `zestroku approve install <host> sideload [--installer-port <port>]` defaults to port 80.
 It binds the token to that exact installer port and `POST /plugin_install`.
 `zestroku install <host> <zip> --password-stdin [--installer-port <port>] [--confirm <token>]`
@@ -226,9 +246,10 @@ The username defaults to `rokudev`; override it with `--username`. Supply the ow
 developer password through stdin, not an argument. ZIP contents and credentials are
 never stored in the repository or mutation audit record. The response body is checked
 for Roku HTML error markers; HTTP 200 alone is not treated as success.
-Blank, arbitrary, mismatched, expired, and reused tokens are refused locally
-(exit 4) and audited. HTTP and MCP key/launch requests take the same opaque
-token string; neither surface can mint approvals.
+Blank, arbitrary, mismatched, expired, and reused tokens are refused
+(exit 4) and audited by the daemon for default `key`/`launch`; direct
+diagnosis and `install` retain their local gates. HTTP and MCP key/launch
+requests use the same opaque token; neither surface can mint approvals.
 `zestroku serve [--bind <ip:port>]` exposes `GET /health`,
 `GET /v1/devices`, `GET /v1/devices/{host}/info`,
 `GET /v1/devices/{host}/active-app`, `GET /v1/devices/{host}/apps`, and the
