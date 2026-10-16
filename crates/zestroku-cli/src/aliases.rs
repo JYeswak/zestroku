@@ -55,9 +55,9 @@ pub fn run(args: &[String]) -> ExitCode {
             }
         }
         "rm" if args.len() == 2 => {
-            let alias = &args[1];
+            let alias = args[1].trim();
             let exists = match store.list_aliases() {
-                Ok(aliases) => aliases.iter().any(|row| row.alias == *alias),
+                Ok(aliases) => aliases.iter().any(|row| row.alias == alias),
                 Err(error) => {
                     eprintln!("zestroku alias: cannot list aliases: {error}");
                     return ExitCode::FAILURE;
