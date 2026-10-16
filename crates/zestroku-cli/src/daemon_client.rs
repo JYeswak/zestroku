@@ -108,6 +108,46 @@ enum HttpFailure {
     Invalid(String),
 }
 
+/// Explicit-URL variants for the CLI `--daemon <url>` flag. They behave
+/// exactly like [`info`], [`active_app`] and [`apps`] but use the given
+/// daemon URL instead of `ZESTROKU_DAEMON_URL`/the default.
+pub fn info_via(target: &str, daemon_url: &str) -> Result<DeviceInfo, ReadError> {
+    let path = device_path(target, "info")?;
+    let response = daemon_get_via(daemon_url, &path)?;
+    serde_json::from_str(&response.body)
+        .map_err(|error| ReadError::InvalidResponse(format!("daemon JSON: {error}")))
+}
+
+/// Explicit-URL variant of [`active_app`]; see [`info_via`].
+pub fn active_app_via(target: &str, daemon_url: &str) -> Result<ActiveApp, ReadError> {
+    let path = device_path(target, "active-app")?;
+    let response = daemon_get_via(daemon_url, &path)?;
+    serde_json::from_str(&response.body)
+        .map_err(|error| ReadError::InvalidResponse(format!("daemon JSON: {error}")))
+}
+
+/// Explicit-URL variant of [`apps`]; see [`info_via`].
+pub fn apps_via(
+    target: &str,
+    daemon_url: &str,
+) -> Result<Vec<zestroku_proto::InstalledApp>, ReadError> {
+    let path = device_path(target, "apps")?;
+    let response = daemon_get_via(daemon_url, &path)?;
+    let response: InstalledAppsResponse = serde_json::from_str(&response.body)
+        .map_err(|error| ReadError::InvalidResponse(format!("daemon JSON: {error}")))?;
+    Ok(response
+        .apps
+        .into_iter()
+        .map(|app| zestroku_proto::InstalledApp {
+            id: app.id,
+            name: app.name,
+            app_type: app.app_type,
+            subtype: app.subtype,
+            version: app.version,
+        })
+        .collect())
+}
+
 pub fn info(target: &str) -> Result<DeviceInfo, ReadError> {
     let path = device_path(target, "info")?;
     let response = daemon_get(&path)?;
@@ -182,7 +222,11 @@ fn normalize_direct_host(host: &str) -> Result<String, ReadError> {
 fn daemon_get(path: &str) -> Result<HttpResponse, ReadError> {
     let raw_url =
         std::env::var("ZESTROKU_DAEMON_URL").unwrap_or_else(|_| DEFAULT_DAEMON_URL.to_owned());
-    let endpoint = parse_daemon_url(&raw_url)?;
+    daemon_get_via(&raw_url, path)
+}
+
+fn daemon_get_via(raw_url: &str, path: &str) -> Result<HttpResponse, ReadError> {
+    let endpoint = parse_daemon_url(raw_url)?;
     let response = http_get(&endpoint, path, "application/json").map_err(map_daemon_failure)?;
     if response.status != 200 {
         let error = serde_json::from_str::<serde_json::Value>(&response.body)

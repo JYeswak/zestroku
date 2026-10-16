@@ -14,6 +14,7 @@ use zestroku_proto::{
 
 mod aliases;
 mod apps;
+mod complete;
 mod daemon_client;
 mod devices;
 mod install;
@@ -28,11 +29,16 @@ fn usage() -> &'static str {
     r#"zestroku — owner-interop control for Roku devices
 
 USAGE:
-    zestroku devices                     list discovered devices
+    zestroku devices [--json]            list discovered devices
     zestroku alias <set|rm|ls> ...       manage local device names
-    zestroku apps <host> [--json]        list installed apps (Permissive)
-    zestroku info <host>                 device-info (Open tier)
-    zestroku active-app <host>           focused app (Open tier)
+    zestroku apps <host> [--json] [--daemon <url>] [--direct]
+        list installed apps (Permissive)
+    zestroku info <host> [--json] [--daemon <url>] [--direct]
+        device-info (Open tier)
+    zestroku active-app <host> [--json] [--daemon <url>] [--direct]
+        focused app (Open tier)
+    zestroku complete <devices|apps|verbs> [prefix]
+        shell-completion candidates from local inventory/cache
     zestroku key <host> <KEY> [--confirm <token>]   keypress (Permissive)
     zestroku approve <verb> <host> <target> [--installer-port <port>]   owner TTY approval
     zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)
@@ -41,8 +47,11 @@ USAGE:
     zestroku serve [--bind <ip:port>]    read-only HTTP API daemon (loopback default)
 
 Install uses http://<host>:80/plugin_install by default; credentials are supplied through stdin, never arguments or the action log.
-Read mode: info/active-app use ZESTROKU_DAEMON_URL (default http://127.0.0.1:8070); set ZESTROKU_DIRECT=1 for direct ECP.
-A down daemon returns DAEMON_UNAVAILABLE; it never falls back to LAN.
+Read mode precedence: --direct, then --daemon <url>, then ZESTROKU_DIRECT=1 /
+ZESTROKU_DAEMON_URL, then the loopback default (http://127.0.0.1:8070).
+--direct and --daemon together are refused; flags always win over the
+environment. A down daemon returns DAEMON_UNAVAILABLE; it never falls back
+to LAN. Machine output (--json) goes to stdout only; diagnostics stay stderr.
 Mutations require a single-use token minted by approve in an interactive owner terminal.
 Tier behavior: Permissive-tier commands are refused locally (exit 3) when the device's observed tier is Limited — no round-trip, no 403."#
 }
@@ -57,12 +66,105 @@ pub(crate) fn split_host_port(target: &str) -> (String, u16) {
     }
 }
 
+/// Explicit read-path mode. Precedence is `--direct` > `--daemon <url>` >
+/// `ZESTROKU_DIRECT=1` / `ZESTROKU_DAEMON_URL` > built-in default. A flag
+/// always wins over the environment; `--direct` plus `--daemon` is a usage
+/// error rather than a silent pick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReadMode {
+    Default,
+    Direct,
+    Daemon(String),
+}
+
+/// Parsed `info` / `active-app` / `apps` read options.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReadOpts {
+    target: String,
+    json: bool,
+    mode: ReadMode,
+}
+
+/// Parse read options over explicit inputs. `ZESTROKU_DIRECT=1` arrives as
+/// `direct_env` (rather than being read here) so unit tests stay hermetic;
+/// callers pass `std::env::var("ZESTROKU_DIRECT").ok()`. The daemon URL
+/// environment stays resolved at call time inside daemon_client.
+pub(crate) fn parse_read_opts(
+    args: &[String],
+    direct_env: Option<&str>,
+) -> Result<ReadOpts, (ExitCode, String)> {
+    let mut target: Option<String> = None;
+    let mut json = false;
+    let mut direct = false;
+    let mut daemon: Option<String> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--direct" => direct = true,
+            "--daemon" => {
+                index += 1;
+                let Some(url) = args.get(index) else {
+                    return Err((ExitCode::from(2), "read: --daemon needs a URL".into()));
+                };
+                daemon = Some(url.clone());
+            }
+            flag if flag.starts_with('-') => {
+                return Err((ExitCode::from(2), format!("read: unknown flag {flag}")));
+            }
+            value if target.is_none() => target = Some(value.to_owned()),
+            value => {
+                return Err((
+                    ExitCode::from(2),
+                    format!("read: unexpected extra argument {value}"),
+                ));
+            }
+        }
+        index += 1;
+    }
+    let Some(target) = target else {
+        return Err((ExitCode::from(2), "read: missing <host>".into()));
+    };
+    let mode = match (direct, daemon) {
+        (true, Some(_)) => {
+            return Err((
+                ExitCode::from(2),
+                "read: --direct conflicts with --daemon".into(),
+            ));
+        }
+        (true, None) => ReadMode::Direct,
+        (false, Some(url)) => ReadMode::Daemon(url),
+        (false, None) if direct_env == Some("1") => ReadMode::Direct,
+        (false, None) => ReadMode::Default,
+    };
+    Ok(ReadOpts { target, json, mode })
+}
+
 fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
     let Some(verb) = args.first().map(String::as_str) else {
         return Ok(());
     };
     let (target_index, strict, mutation) = match verb {
-        "info" | "active-app" if args.len() == 2 => (1, false, false),
+        "info" | "active-app" if args.len() >= 2 => {
+            // Flag-aware scan: the first non-flag value is the target, and
+            // `--daemon` consumes its URL operand.
+            let mut index = 1;
+            let mut target_index = None;
+            while index < args.len() {
+                if args[index] == "--daemon" {
+                    index += 2;
+                    continue;
+                }
+                if !args[index].starts_with('-') && target_index.is_none() {
+                    target_index = Some(index);
+                }
+                index += 1;
+            }
+            let Some(target_index) = target_index else {
+                return Ok(());
+            };
+            (target_index, false, false)
+        }
         "apps" if args.len() >= 2 => {
             let Some((index, _)) = args
                 .iter()
@@ -151,23 +253,51 @@ fn report_read_error(error: daemon_client::ReadError) -> ExitCode {
     ExitCode::FAILURE
 }
 
-fn print_info(
+fn render_info(
     model_name: &str,
     model_number: &str,
     software_version: &str,
     is_tv: bool,
     access_tier: &str,
     tv_active_channel: Option<bool>,
-) {
-    let channel = match tv_active_channel {
-        Some(true) => "present",
-        Some(false) => "absent",
-        None => "unknown",
-    };
-    println!(
-        "{} ({}) software={} tv={} tier={} tv-active-channel={}",
-        model_name, model_number, software_version, is_tv, access_tier, channel
-    );
+    json: bool,
+) -> String {
+    if json {
+        let channel = match tv_active_channel {
+            Some(value) => serde_json::Value::Bool(value),
+            None => serde_json::Value::Null,
+        };
+        serde_json::json!({
+            "model_name": model_name,
+            "model_number": model_number,
+            "software_version": software_version,
+            "is_tv": is_tv,
+            "access_tier": access_tier,
+            "tv_active_channel": channel,
+        })
+        .to_string()
+    } else {
+        let channel = match tv_active_channel {
+            Some(true) => "present",
+            Some(false) => "absent",
+            None => "unknown",
+        };
+        format!(
+            "{} ({}) software={} tv={} tier={} tv-active-channel={}",
+            model_name, model_number, software_version, is_tv, access_tier, channel
+        )
+    }
+}
+
+fn render_active_app(name: &str, app_id: Option<u32>, json: bool) -> String {
+    if json {
+        serde_json::json!({ "name": name, "app_id": app_id }).to_string()
+    } else {
+        match app_id {
+            Some(id) => format!("{name} ({id})"),
+            None => name.to_owned(),
+        }
+    }
 }
 
 fn tv_channel_presence(response: &EcpResponse) -> Option<bool> {
@@ -178,7 +308,7 @@ fn tv_channel_presence(response: &EcpResponse) -> Option<bool> {
     }
 }
 
-fn run_direct_read(verb: &str, target: &str) -> ExitCode {
+fn run_direct_read(verb: &str, target: &str, json: bool) -> ExitCode {
     let (host, port) = split_host_port(target);
     let command = match verb {
         "info" => query("device-info"),
@@ -233,13 +363,17 @@ fn run_direct_read(verb: &str, target: &str) -> ExitCode {
                 Ok(response) => tv_channel_presence(&response),
                 Err(_) => None,
             };
-        print_info(
-            &info.model_name,
-            &info.model_number,
-            &info.software_version,
-            info.is_tv,
-            &access_tier,
-            tv_active_channel,
+        println!(
+            "{}",
+            render_info(
+                &info.model_name,
+                &info.model_number,
+                &info.software_version,
+                info.is_tv,
+                &access_tier,
+                tv_active_channel,
+                json
+            )
         );
     } else {
         let app = match parse_active_app(&response.body) {
@@ -249,43 +383,61 @@ fn run_direct_read(verb: &str, target: &str) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        match app.app_id {
-            Some(id) => println!("{} ({id})", app.name),
-            None => println!("{}", app.name),
-        }
+        println!("{}", render_active_app(&app.name, app.app_id, json));
     }
     ExitCode::SUCCESS
 }
 
-fn run_read_command(verb: &str, target: &str) -> ExitCode {
-    if std::env::var("ZESTROKU_DIRECT").is_ok_and(|value| value == "1") {
-        return run_direct_read(verb, target);
+fn run_read_command(verb: &str, opts: &ReadOpts) -> ExitCode {
+    let direct_env = std::env::var("ZESTROKU_DIRECT").is_ok_and(|value| value == "1");
+    let direct = opts.mode == ReadMode::Direct || (opts.mode == ReadMode::Default && direct_env);
+    if direct {
+        return run_direct_read(verb, &opts.target, opts.json);
     }
+    // Daemon path: an explicit `--daemon` URL wins; otherwise the existing
+    // environment/default resolution inside daemon_client applies.
+    let via = match &opts.mode {
+        ReadMode::Daemon(url) => Some(url.clone()),
+        _ => None,
+    };
     match verb {
-        "info" => match daemon_client::info(target) {
-            Ok(info) => {
-                print_info(
-                    &info.model_name,
-                    &info.model_number,
-                    &info.software_version,
-                    info.is_tv,
-                    &info.access_tier,
-                    info.tv_active_channel,
-                );
-                ExitCode::SUCCESS
-            }
-            Err(error) => report_read_error(error),
-        },
-        "active-app" => match daemon_client::active_app(target) {
-            Ok(app) => {
-                match app.app_id {
-                    Some(id) => println!("{} ({id})", app.name),
-                    None => println!("{}", app.name),
+        "info" => {
+            let result = match via {
+                Some(url) => daemon_client::info_via(&opts.target, &url),
+                None => daemon_client::info(&opts.target),
+            };
+            match result {
+                Ok(info) => {
+                    println!(
+                        "{}",
+                        render_info(
+                            &info.model_name,
+                            &info.model_number,
+                            &info.software_version,
+                            info.is_tv,
+                            &info.access_tier,
+                            info.tv_active_channel,
+                            opts.json
+                        )
+                    );
+                    ExitCode::SUCCESS
                 }
-                ExitCode::SUCCESS
+                Err(error) => report_read_error(error),
             }
-            Err(error) => report_read_error(error),
-        },
+        }
+        "active-app" => {
+            let result = match via {
+                Some(url) => daemon_client::active_app_via(&opts.target, &url),
+                None => daemon_client::active_app(&opts.target),
+            };
+            match result {
+                Ok(app) => {
+                    println!("{}", render_active_app(&app.name, app.app_id, opts.json));
+                    ExitCode::SUCCESS
+                }
+                Err(error) => report_read_error(error),
+            }
+        }
         _ => unreachable!("read dispatch only accepts info and active-app"),
     }
 }
@@ -323,8 +475,16 @@ fn main() -> ExitCode {
             println!("{}", usage());
             ExitCode::SUCCESS
         }
-        Some("info") | Some("active-app") if args.len() == 2 => {
-            run_read_command(&args[0], &args[1])
+        Some("complete") => complete::run(&args[1..]),
+        Some("info") | Some("active-app") => {
+            let direct_env = std::env::var("ZESTROKU_DIRECT").ok();
+            match parse_read_opts(&args[1..], direct_env.as_deref()) {
+                Ok(opts) => run_read_command(&args[0], &opts),
+                Err((code, error)) => {
+                    eprintln!("zestroku: {error}");
+                    code
+                }
+            }
         }
         Some("approve") => mutate::approve(&args[1..]),
         Some("install") if args.len() >= 3 => install::run(&args[1..]),
@@ -334,5 +494,107 @@ fn main() -> ExitCode {
             eprintln!("{}", usage());
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    #[test]
+    fn read_opts_default_passes_target_through() {
+        let opts = parse_read_opts(&args(&["192.0.2.10:8060"]), None).expect("parse");
+        assert_eq!(opts.target, "192.0.2.10:8060");
+        assert!(!opts.json);
+        assert_eq!(opts.mode, ReadMode::Default);
+    }
+
+    #[test]
+    fn read_opts_json_and_explicit_daemon_win_over_env() {
+        let opts = parse_read_opts(
+            &args(&["--json", "--daemon", "http://127.0.0.1:9999", "host"]),
+            Some("1"),
+        )
+        .expect("parse");
+        assert!(opts.json);
+        assert_eq!(opts.mode, ReadMode::Daemon("http://127.0.0.1:9999".into()));
+    }
+
+    #[test]
+    fn read_opts_direct_flag_beats_direct_env_off() {
+        let opts = parse_read_opts(&args(&["--direct", "host"]), None).expect("parse");
+        assert_eq!(opts.mode, ReadMode::Direct);
+    }
+
+    #[test]
+    fn read_opts_direct_env_selects_direct_without_flags() {
+        let opts = parse_read_opts(&args(&["host"]), Some("1")).expect("parse");
+        assert_eq!(opts.mode, ReadMode::Direct);
+    }
+
+    #[test]
+    fn read_opts_conflicting_flags_are_usage_errors() {
+        let (code, _) = parse_read_opts(&args(&["--direct", "--daemon", "u", "h"]), None)
+            .expect_err("conflict must fail");
+        assert_eq!(code, ExitCode::from(2));
+        let (code, _) = parse_read_opts(&args(&[]), None).expect_err("missing host must fail");
+        assert_eq!(code, ExitCode::from(2));
+        let (code, _) =
+            parse_read_opts(&args(&["--daemon"]), None).expect_err("missing URL must fail");
+        assert_eq!(code, ExitCode::from(2));
+        let (code, _) =
+            parse_read_opts(&args(&["--bogus", "h"]), None).expect_err("unknown flag must fail");
+        assert_eq!(code, ExitCode::from(2));
+    }
+
+    #[test]
+    fn render_info_json_shape_is_typed() {
+        let document: serde_json::Value = serde_json::from_str(&render_info(
+            "R",
+            "N",
+            "V",
+            true,
+            "permissive",
+            Some(false),
+            true,
+        ))
+        .expect("valid JSON");
+        assert_eq!(document["model_name"], "R");
+        assert_eq!(document["is_tv"], true);
+        assert_eq!(document["access_tier"], "permissive");
+        assert_eq!(document["tv_active_channel"], false);
+    }
+
+    #[test]
+    fn render_info_json_absent_channel_is_null() {
+        let document: serde_json::Value =
+            serde_json::from_str(&render_info("R", "N", "V", false, "open", None, true))
+                .expect("valid JSON");
+        assert!(document["tv_active_channel"].is_null());
+    }
+
+    #[test]
+    fn render_active_app_json_shape_is_typed() {
+        let document: serde_json::Value =
+            serde_json::from_str(&render_active_app("App", Some(7), true)).expect("valid JSON");
+        assert_eq!(document["name"], "App");
+        assert_eq!(document["app_id"], 7);
+        let document: serde_json::Value =
+            serde_json::from_str(&render_active_app("App", None, true)).expect("valid JSON");
+        assert!(document["app_id"].is_null());
+    }
+
+    #[test]
+    fn render_human_shapes_are_unchanged() {
+        assert_eq!(
+            render_info("R", "N", "V", true, "permissive", Some(true), false),
+            "R (N) software=V tv=true tier=permissive tv-active-channel=present"
+        );
+        assert_eq!(render_active_app("App", Some(7), false), "App (7)");
+        assert_eq!(render_active_app("App", None, false), "App");
     }
 }

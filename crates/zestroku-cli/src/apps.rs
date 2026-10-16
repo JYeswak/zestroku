@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::check_tier;
+use zestroku_core::store::Store;
 use zestroku_proto::{EcpGate, InstalledApp, parse_apps, parse_ecp_response, query_apps};
 use zestroku_types::{AccessTier, Device, Error};
 
@@ -10,21 +11,73 @@ use crate::transport::{AsupersyncTransport, send_selected};
 struct AppsOpts {
     host: String,
     json: bool,
+    mode: crate::ReadMode,
 }
 
 fn parse_opts(args: &[String]) -> std::result::Result<AppsOpts, String> {
     let mut host = None;
     let mut json = false;
-    for arg in args {
-        match arg.as_str() {
+    let mut direct = false;
+    let mut daemon: Option<String> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
             "--json" => json = true,
+            "--direct" => direct = true,
+            "--daemon" => {
+                index += 1;
+                let Some(url) = args.get(index) else {
+                    return Err("apps: --daemon needs a URL".into());
+                };
+                daemon = Some(url.clone());
+            }
             value if value.starts_with('-') => return Err(format!("unknown option {value}")),
             value if host.is_none() => host = Some(value.to_string()),
             _ => return Err("apps accepts one <host>".to_string()),
         }
+        index += 1;
     }
     let host = host.ok_or_else(|| "apps needs <host>".to_string())?;
-    Ok(AppsOpts { host, json })
+    let mode = match (direct, daemon) {
+        (true, Some(_)) => return Err("apps: --direct conflicts with --daemon".into()),
+        (true, None) => crate::ReadMode::Direct,
+        (false, Some(url)) => crate::ReadMode::Daemon(url),
+        (false, None) => crate::ReadMode::Default,
+    };
+    Ok(AppsOpts { host, json, mode })
+}
+
+/// Refresh the installed-app cache after a successful fetch so shell
+/// completion can offer app names offline. Failures are swallowed: a stale
+/// cache must never break the read itself or pollute machine output.
+fn refresh_app_cache(host: &str, port: u16, apps: &[InstalledApp]) {
+    let Ok(store) = crate::store_db::open() else {
+        return;
+    };
+    let device_id = zestroku_core::tier::device_id(host, port);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .min(i64::MAX as u64) as i64;
+    let cached = match store.list_apps(&device_id) {
+        Ok(cached) => cached,
+        Err(_) => return,
+    };
+    for row in &cached {
+        if !apps.iter().any(|app| app.id == row.app_id) {
+            let _ = store.delete_app(&device_id, &row.app_id);
+        }
+    }
+    for app in apps {
+        let _ = store.upsert_app(&zestroku_core::store::AppRow {
+            device_id: device_id.clone(),
+            app_id: app.id.clone(),
+            name: app.name.clone(),
+            version: app.version.clone().unwrap_or_default(),
+            fetched_at: now,
+        });
+    }
 }
 
 enum TierLookupError {
@@ -54,7 +107,9 @@ pub fn run(args: &[String]) -> ExitCode {
     let opts = match parse_opts(args) {
         Ok(opts) => opts,
         Err(error) => {
-            eprintln!("zestroku apps: {error}; usage: zestroku apps <host> [--json]");
+            eprintln!(
+                "zestroku apps: {error}; usage: zestroku apps <host> [--json] [--daemon <url>] [--direct]"
+            );
             return ExitCode::from(2);
         }
     };
@@ -73,10 +128,16 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(3);
         }
     };
-    execute(&host, port, access_tier, opts.json)
+    execute(&host, port, access_tier, opts.json, &opts.mode)
 }
 
-fn execute(host: &str, port: u16, access_tier: AccessTier, json: bool) -> ExitCode {
+fn execute(
+    host: &str,
+    port: u16,
+    access_tier: AccessTier,
+    json: bool,
+    mode: &crate::ReadMode,
+) -> ExitCode {
     let device = Device {
         host: host.to_string(),
         port,
@@ -92,10 +153,20 @@ fn execute(host: &str, port: u16, access_tier: AccessTier, json: bool) -> ExitCo
         return ExitCode::from(3);
     }
 
-    if std::env::var("ZESTROKU_DIRECT").as_deref() != Ok("1") {
+    let direct_env = std::env::var("ZESTROKU_DIRECT").as_deref() == Ok("1");
+    let direct =
+        *mode == crate::ReadMode::Direct || (*mode == crate::ReadMode::Default && direct_env);
+    if !direct {
         let target = zestroku_core::tier::device_id(host, port);
-        return match crate::daemon_client::apps(&target) {
-            Ok(apps) => print_apps(apps, json),
+        let fetched = match mode {
+            crate::ReadMode::Daemon(url) => crate::daemon_client::apps_via(&target, url),
+            _ => crate::daemon_client::apps(&target),
+        };
+        return match fetched {
+            Ok(apps) => {
+                refresh_app_cache(host, port, &apps);
+                print_apps(apps, json)
+            }
             Err(error) => {
                 eprintln!("zestroku: [{}] {error}", error.code());
                 if matches!(
@@ -142,7 +213,10 @@ fn execute(host: &str, port: u16, access_tier: AccessTier, json: bool) -> ExitCo
     });
 
     match result {
-        Ok(apps) => print_apps(apps, json),
+        Ok(apps) => {
+            refresh_app_cache(host, port, &apps);
+            print_apps(apps, json)
+        }
         Err(error) => {
             eprintln!("zestroku: {error}");
             if matches!(error, Error::TierRefused { .. }) {
@@ -292,7 +366,13 @@ mod tests {
     #[test]
     fn limited_tier_refuses_before_any_loopback_request() {
         let server = LoopbackEcp::start();
-        let code = execute("127.0.0.1", server.port, AccessTier::Open, true);
+        let code = execute(
+            "127.0.0.1",
+            server.port,
+            AccessTier::Open,
+            true,
+            &crate::ReadMode::Default,
+        );
         assert_eq!(code, ExitCode::from(3));
         assert!(
             server
@@ -301,6 +381,30 @@ mod tests {
                 .expect("request log lock")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn parse_opts_accepts_explicit_mode_flags() {
+        let args = vec![
+            "roku.local".to_string(),
+            "--daemon".to_string(),
+            "http://127.0.0.1:9".to_string(),
+        ];
+        let opts = parse_opts(&args).expect("daemon flag");
+        assert_eq!(
+            opts.mode,
+            crate::ReadMode::Daemon("http://127.0.0.1:9".into())
+        );
+        let args = vec!["roku.local".to_string(), "--direct".to_string()];
+        let opts = parse_opts(&args).expect("direct flag");
+        assert_eq!(opts.mode, crate::ReadMode::Direct);
+        let args = vec![
+            "roku.local".to_string(),
+            "--direct".to_string(),
+            "--daemon".to_string(),
+            "http://127.0.0.1:9".to_string(),
+        ];
+        parse_opts(&args).expect_err("conflicting flags must fail");
     }
 
     #[test]
