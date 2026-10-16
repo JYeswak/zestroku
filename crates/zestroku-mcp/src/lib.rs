@@ -15,7 +15,8 @@
 //! CLI's real-process integration test exercises it through the actual daemon
 //! and loopback simulator.
 //!
-//! Unit tests exercise the extracted `decide()` seam used by mutation `call()`.
+//! Unit tests exercise the extracted `decide()` local-gate seam; the live
+//! mutation path dispatches through the daemon (see `MutationTool`).
 //! FastMCP's `McpContext` has no public test constructor because
 //! `Cx::for_testing` is gated inside the dependency.
 #![forbid(unsafe_code)]
@@ -149,10 +150,10 @@ impl MutationTool {
     }
 
     /// Map one daemon mutation response: 2xx must carry the daemon's audited
-    /// outcome shape (integer action id plus string target/surface/outcome)
-    /// and is returned verbatim; anything else is a tool error. The daemon,
-    /// not this handler, owns authorization and the audit row, and every
-    /// device failure arrives as non-2xx.
+    /// outcome shape (integer action id, string target/surface, outcome
+    /// exactly "completed") and is returned verbatim; anything else is a
+    /// tool error. The daemon, not this handler, owns authorization and
+    /// the audit row, and every device failure arrives as non-2xx.
     fn mutation_content(
         response: asupersync::http::h1::Response,
     ) -> Outcome<Vec<Content>, McpError> {
@@ -198,16 +199,19 @@ impl MutationTool {
                 ));
             }
         };
+        // The daemon returns 2xx only on the completed arm, so a 2xx body
+        // must also carry outcome "completed"; anything else is a mismatch.
         let shape = value
             .get("action_id")
             .and_then(serde_json::Value::as_i64)
             .is_some()
-            && ["target", "surface", "outcome"].iter().all(|field| {
+            && ["target", "surface"].iter().all(|field| {
                 value
                     .get(field)
                     .and_then(serde_json::Value::as_str)
                     .is_some()
-            });
+            })
+            && value.get("outcome").and_then(serde_json::Value::as_str) == Some("completed");
         if !shape {
             return Outcome::Err(mcp_error(
                 McpErrorCode::ToolExecutionError,
