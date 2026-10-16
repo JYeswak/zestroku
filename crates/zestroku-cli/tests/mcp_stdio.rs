@@ -519,7 +519,7 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
 #[test]
 fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
     use zestroku_core::store::Store;
-    use zestroku_proto::{keypress_raw, launch};
+    use zestroku_proto::launch;
     use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
 
     let sim = SimDevice::start(SimConfig {
@@ -763,7 +763,7 @@ fn mcp_key_and_launch_daemon_down_preserves_tokens_for_restart() {
         baseline_posts,
         "daemon-down mutations must not reach the device: {down_posts:?}"
     );
-    daemon = Daemon::start(&db, daemon_port);
+    let _restarted_daemon = Daemon::start(&db, daemon_port);
     let keyed = session.call(
         4,
         "key",
