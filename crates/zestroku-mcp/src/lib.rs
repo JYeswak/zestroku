@@ -1,20 +1,21 @@
 //! zestroku-mcp — MCP server tools over the same core gates as the CLI.
 //!
-//! m7e surface: mutating tools (`key`, `launch`) take a REQUIRED explicit
-//! `confirm` argument — the MCP equivalent of the CLI's `--confirm` per-op
-//! gate. A missing/false/blank confirmation is refused with
-//! CONFIRMATION_REQUIRED and audited as a denied actions row exactly like
-//! the CLI path (same `authorize_mutation`, same store). `recent_actions`
-//! exposes the audit log read-only. Transport wiring (stdio) lands with
-//! m7c serve; this module owns the tool handlers and the pure decision
-//! seam both the handler and tests drive.
+//! `list_devices`, `info`, `active_app`, and `apps` read through the configured
+//! daemon API using FastMCP's asynchronous request context. They never open
+//! direct ECP connections or synthesize local results when the daemon is down.
+//! `echo` is local; `recent_actions` reads the shared audit store.
 //!
-//! Testing note: fastmcp's `McpContext` has no out-of-band constructor
-//! (`Cx::for_testing` is `cfg(any(test, feature = "test-internals"))` on
-//! the asupersync dependency, invisible to this crate), so tests exercise
-//! the extracted `decide()` seam — the exact function `call()` invokes
-//! after arg mapping — against a real temp-dir store. `call()` itself adds
-//! only arg parsing and result wrapping.
+//! `key` and `launch` require explicit per-operation confirmation and audit
+//! refusals through the shared core gate. These MCP handlers do not dispatch
+//! device I/O; they only apply the confirmation gate and record denials.
+//!
+//! `run_stdio` owns the MCP stdio transport and its asupersync runtime. The
+//! CLI's real-process integration test exercises it through the actual daemon
+//! and loopback simulator.
+//!
+//! Unit tests exercise the extracted `decide()` seam used by mutation `call()`.
+//! FastMCP's `McpContext` has no public test constructor because
+//! `Cx::for_testing` is gated inside the dependency.
 #![forbid(unsafe_code)]
 
 use std::sync::Arc;
@@ -447,10 +448,105 @@ impl ReadOperation {
     }
 
     fn accepts_response(self, value: &serde_json::Value) -> bool {
+        let exact_fields = |value: &serde_json::Value, fields: &[&str]| {
+            value.as_object().is_some_and(|object| {
+                object.len() == fields.len()
+                    && fields.iter().all(|field| object.contains_key(*field))
+            })
+        };
+        let has_string_fields = |value: &serde_json::Value, fields: &[&str]| {
+            fields
+                .iter()
+                .all(|field| value.get(*field).is_some_and(serde_json::Value::is_string))
+        };
+        let has_optional_string_fields = |value: &serde_json::Value, fields: &[&str]| {
+            fields.iter().all(|field| {
+                value
+                    .get(*field)
+                    .is_some_and(|field| field.is_null() || field.is_string())
+            })
+        };
+
         match self {
-            Self::Devices => value.is_array(),
-            Self::Info | Self::ActiveApp => value.is_object(),
-            Self::Apps => value.get("apps").is_some_and(serde_json::Value::is_array),
+            Self::Devices => value.as_array().is_some_and(|devices| {
+                devices.iter().all(|device| {
+                    exact_fields(
+                        device,
+                        &[
+                            "name",
+                            "host",
+                            "model",
+                            "model_number",
+                            "software_version",
+                            "access_tier",
+                            "last_seen",
+                        ],
+                    ) && has_string_fields(
+                        device,
+                        &[
+                            "name",
+                            "host",
+                            "model",
+                            "model_number",
+                            "software_version",
+                            "access_tier",
+                        ],
+                    ) && device
+                        .get("last_seen")
+                        .and_then(serde_json::Value::as_i64)
+                        .is_some()
+                })
+            }),
+            Self::Info => {
+                exact_fields(
+                    value,
+                    &[
+                        "host",
+                        "model_name",
+                        "model_number",
+                        "software_version",
+                        "is_tv",
+                        "access_tier",
+                        "tv_active_channel",
+                    ],
+                ) && has_string_fields(
+                    value,
+                    &[
+                        "host",
+                        "model_name",
+                        "model_number",
+                        "software_version",
+                        "access_tier",
+                    ],
+                ) && value
+                    .get("is_tv")
+                    .is_some_and(serde_json::Value::is_boolean)
+                    && value
+                        .get("tv_active_channel")
+                        .is_some_and(|channel| channel.is_null() || channel.is_boolean())
+            }
+            Self::ActiveApp => {
+                exact_fields(value, &["host", "app_id", "name"])
+                    && has_string_fields(value, &["host", "name"])
+                    && value.get("app_id").is_some_and(|app_id| {
+                        app_id.is_null()
+                            || app_id.as_u64().is_some_and(|id| id <= u64::from(u32::MAX))
+                    })
+            }
+            Self::Apps => {
+                exact_fields(value, &["host", "apps"])
+                    && has_string_fields(value, &["host"])
+                    && value
+                        .get("apps")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|apps| {
+                            apps.iter().all(|app| {
+                                exact_fields(app, &["id", "name", "type", "subtype", "version"])
+                                    && has_string_fields(app, &["id", "name", "type"])
+                                    && has_optional_string_fields(app, &["subtype", "version"])
+                            })
+                        })
+            }
         }
     }
 }
@@ -483,11 +579,24 @@ fn encode_path_segment(value: &str) -> String {
     encoded
 }
 
-fn daemon_base_url() -> String {
-    std::env::var("ZESTROKU_DAEMON_URL")
-        .unwrap_or_else(|_| DEFAULT_DAEMON_URL.to_string())
-        .trim_end_matches('/')
-        .to_string()
+fn daemon_base_url() -> Result<String, String> {
+    const INVALID_URL: &str = "ZESTROKU_DAEMON_URL must be http://<loopback-ip>:<nonzero-port>";
+    let configured = match std::env::var("ZESTROKU_DAEMON_URL") {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => DEFAULT_DAEMON_URL.to_string(),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err("ZESTROKU_DAEMON_URL must be valid UTF-8".to_string());
+        }
+    };
+    let base_url = configured.trim_end_matches('/');
+    let authority = base_url.strip_prefix("http://").ok_or(INVALID_URL)?;
+    let address = authority
+        .parse::<std::net::SocketAddr>()
+        .map_err(|_| INVALID_URL)?;
+    if !address.ip().is_loopback() || address.port() == 0 {
+        return Err(INVALID_URL.to_string());
+    }
+    Ok(base_url.to_string())
 }
 
 struct DaemonReadTool {
@@ -511,13 +620,13 @@ impl DaemonReadTool {
     ) -> Result<Vec<Content>, McpError> {
         let body = String::from_utf8(response.body).map_err(|_| {
             mcp_error(
-                McpErrorCode::InternalError,
+                McpErrorCode::ToolExecutionError,
                 "daemon_invalid_response: response is not UTF-8",
             )
         })?;
         let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
             mcp_error(
-                McpErrorCode::InternalError,
+                McpErrorCode::ToolExecutionError,
                 "daemon_invalid_response: response is not JSON",
             )
         })?;
@@ -528,13 +637,13 @@ impl DaemonReadTool {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("daemon_http_error");
             return Err(mcp_error(
-                McpErrorCode::InternalError,
+                McpErrorCode::ToolExecutionError,
                 format!("daemon API error: {code} (HTTP {})", response.status),
             ));
         }
         if !self.operation.accepts_response(&value) {
             return Err(mcp_error(
-                McpErrorCode::InternalError,
+                McpErrorCode::ToolExecutionError,
                 "daemon_response_schema_mismatch",
             ));
         }
@@ -600,9 +709,10 @@ impl ToolHandler for DaemonReadTool {
                         .cancel_reason()
                         .unwrap_or_else(|| CancelReason::user("daemon read request cancelled")),
                 ),
-                Err(_) => {
-                    Outcome::Err(mcp_error(McpErrorCode::InternalError, "daemon_unavailable"))
-                }
+                Err(_) => Outcome::Err(mcp_error(
+                    McpErrorCode::ToolExecutionError,
+                    "daemon_unavailable",
+                )),
             }
         })
     }
@@ -610,7 +720,7 @@ impl ToolHandler for DaemonReadTool {
 
 /// The MCP server: daemon-backed read tools, the audit log, gated mutations,
 /// and the local `echo` connectivity check.
-pub fn server() -> fastmcp::auto::Server {
+pub fn server() -> Result<fastmcp::auto::Server, String> {
     let client = Arc::new(
         HttpClient::builder()
             .max_body_size(MAX_DAEMON_RESPONSE_BYTES)
@@ -619,35 +729,38 @@ pub fn server() -> fastmcp::auto::Server {
             .no_retries()
             .build(),
     );
-    let base_url: Arc<str> = Arc::from(daemon_base_url());
-    fastmcp::auto::server_builder("zestroku", env!("CARGO_PKG_VERSION"))
-        .tool(EchoTool)
-        .tool(DaemonReadTool::new(
-            ReadOperation::Devices,
-            Arc::clone(&client),
-            Arc::clone(&base_url),
-        ))
-        .tool(DaemonReadTool::new(
-            ReadOperation::Info,
-            Arc::clone(&client),
-            Arc::clone(&base_url),
-        ))
-        .tool(DaemonReadTool::new(
-            ReadOperation::ActiveApp,
-            Arc::clone(&client),
-            Arc::clone(&base_url),
-        ))
-        .tool(DaemonReadTool::new(ReadOperation::Apps, client, base_url))
-        .tool(RecentActionsTool { limit: 20 })
-        .tool(MutationTool { kind: "key" })
-        .tool(MutationTool { kind: "launch" })
-        .build()
+    let base_url: Arc<str> = Arc::from(daemon_base_url()?);
+    Ok(
+        fastmcp::auto::server_builder("zestroku", env!("CARGO_PKG_VERSION"))
+            .tool(EchoTool)
+            .tool(DaemonReadTool::new(
+                ReadOperation::Devices,
+                Arc::clone(&client),
+                Arc::clone(&base_url),
+            ))
+            .tool(DaemonReadTool::new(
+                ReadOperation::Info,
+                Arc::clone(&client),
+                Arc::clone(&base_url),
+            ))
+            .tool(DaemonReadTool::new(
+                ReadOperation::ActiveApp,
+                Arc::clone(&client),
+                Arc::clone(&base_url),
+            ))
+            .tool(DaemonReadTool::new(ReadOperation::Apps, client, base_url))
+            .tool(RecentActionsTool { limit: 20 })
+            .tool(MutationTool { kind: "key" })
+            .tool(MutationTool { kind: "launch" })
+            .build(),
+    )
 }
 
 /// Serve the MCP tools over stdio under one asupersync runtime. Returns
 /// only on setup failure: a running stdio server ends the process.
 pub fn run_stdio() -> Result<(), String> {
     use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
+    let server = server()?;
     let reactor = create_reactor().map_err(|e| format!("create I/O reactor: {e}"))?;
     let runtime = RuntimeBuilder::current_thread()
         .with_reactor(reactor)
@@ -656,7 +769,7 @@ pub fn run_stdio() -> Result<(), String> {
         .map_err(|e| format!("build asupersync runtime: {e}"))?;
     runtime.block_on(async {
         let cx = asupersync::Cx::current().ok_or("runtime installs no ambient Cx")?;
-        server().run_stdio_with_cx(&cx).await
+        server.run_stdio_with_cx(&cx).await
     })
 }
 
@@ -672,6 +785,81 @@ mod tests {
         let path = dir.path().join("actions.db");
         let store = SqliteStore::open(&path).expect("temp store opens");
         (dir, store)
+    }
+
+    #[test]
+    fn daemon_read_response_contract_rejects_schema_drift() {
+        let devices = json!([{
+            "name": "Roku",
+            "host": "127.0.0.1",
+            "model": "Express",
+            "model_number": "SIMX1",
+            "software_version": "15.2.4",
+            "access_tier": "permissive",
+            "last_seen": 1
+        }]);
+        assert!(ReadOperation::Devices.accepts_response(&devices));
+        assert!(ReadOperation::Devices.accepts_response(&json!([])));
+        let mut drifted_device = devices.clone();
+        drifted_device[0]["unexpected"] = json!(true);
+        assert!(!ReadOperation::Devices.accepts_response(&drifted_device));
+        let mut drifted_device_type = devices.clone();
+        drifted_device_type[0]["model"] = json!(1);
+        assert!(!ReadOperation::Devices.accepts_response(&drifted_device_type));
+        let mut drifted_timestamp = devices.clone();
+        drifted_timestamp[0]["last_seen"] = json!("1");
+        assert!(!ReadOperation::Devices.accepts_response(&drifted_timestamp));
+
+        let info = json!({
+            "host": "127.0.0.1",
+            "model_name": "Sim Express",
+            "model_number": "SIMX1",
+            "software_version": "15.2.4",
+            "is_tv": false,
+            "access_tier": "permissive",
+            "tv_active_channel": null
+        });
+        assert!(ReadOperation::Info.accepts_response(&info));
+        let mut drifted_info = info.clone();
+        drifted_info.as_object_mut().unwrap().remove("access_tier");
+        assert!(!ReadOperation::Info.accepts_response(&drifted_info));
+        let mut drifted_boolean = info.clone();
+        drifted_boolean["is_tv"] = json!("false");
+        assert!(!ReadOperation::Info.accepts_response(&drifted_boolean));
+        let mut drifted_optional_boolean = info.clone();
+        drifted_optional_boolean["tv_active_channel"] = json!("false");
+        assert!(!ReadOperation::Info.accepts_response(&drifted_optional_boolean));
+
+        let active_app = json!({
+            "host": "127.0.0.1",
+            "app_id": null,
+            "name": "Roku"
+        });
+        assert!(ReadOperation::ActiveApp.accepts_response(&active_app));
+        let mut drifted_active_app = active_app.clone();
+        drifted_active_app["app_id"] = json!("not-a-number");
+        assert!(!ReadOperation::ActiveApp.accepts_response(&drifted_active_app));
+
+        let apps = json!({
+            "host": "127.0.0.1",
+            "apps": [{
+                "id": "1001",
+                "name": "Streaming One",
+                "type": "appl",
+                "subtype": null,
+                "version": null
+            }]
+        });
+        assert!(ReadOperation::Apps.accepts_response(&apps));
+        let mut drifted_apps = apps.clone();
+        drifted_apps["apps"][0]["unexpected"] = json!(true);
+        assert!(!ReadOperation::Apps.accepts_response(&drifted_apps));
+        let mut drifted_app_id = apps.clone();
+        drifted_app_id["apps"][0]["id"] = json!(1001);
+        assert!(!ReadOperation::Apps.accepts_response(&drifted_app_id));
+        let mut drifted_optional_string = apps.clone();
+        drifted_optional_string["apps"][0]["subtype"] = json!(true);
+        assert!(!ReadOperation::Apps.accepts_response(&drifted_optional_string));
     }
 
     #[test]
