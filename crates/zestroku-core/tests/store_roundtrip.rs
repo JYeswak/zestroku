@@ -310,7 +310,7 @@ fn identity_move_rolls_back_when_target_upsert_aborts() {
     st.upsert_access_tier(&tier).unwrap();
     st.close().unwrap();
 
-    let conn = AsyncConnection::open_sync(path.to_string_lossy().into_owned()).unwrap();
+    let mut conn = AsyncConnection::open_sync(path.to_string_lossy().into_owned()).unwrap();
     conn.execute_batch_sync(
         "CREATE TRIGGER abort_identity_move_target BEFORE INSERT ON devices \
          WHEN NEW.id = '127.0.0.1:2222' \
