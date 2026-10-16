@@ -154,6 +154,41 @@ fn complete_apps_resolves_alias_to_canonical_device_id() {
     let lines = stdout_lines(&output);
     assert!(lines.contains(&"Streaming One".to_owned()), "{lines:?}");
 }
+#[test]
+fn complete_devices_ambiguous_prefix_lists_both_without_choosing() {
+    // Boundary: a prefix matching two inventory entries lists both and
+    // exits 0 with empty stderr — completion never resolves an implicit
+    // single choice and never executes.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    seed_store(&db);
+    let store = SqliteStore::open(&db).expect("open store");
+    store
+        .upsert_device(&DeviceRow {
+            id: "192.0.2.11:8060".into(),
+            name: "Fixture Roku Two".into(),
+            ip: "192.0.2.11".into(),
+            model: "Roku Fixture".into(),
+            model_num: "FIXTURE2".into(),
+            firmware: "15.2.4".into(),
+            wifi_driver: "fixture".into(),
+            access_tier: "permissive".into(),
+            last_seen: 1_700_000_000,
+        })
+        .expect("seed second device");
+    store
+        .set_alias(&AliasRow {
+            alias: "living-room-2".into(),
+            device_id: "192.0.2.11:8060".into(),
+        })
+        .expect("seed second alias");
+    let output = run(&db, &["complete", "devices", "living-room"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stderr.is_empty());
+    let lines = stdout_lines(&output);
+    assert!(lines.contains(&"living-room".to_owned()), "{lines:?}");
+    assert!(lines.contains(&"living-room-2".to_owned()), "{lines:?}");
+}
 
 #[test]
 fn read_mode_flag_conflict_fails_before_any_io() {
