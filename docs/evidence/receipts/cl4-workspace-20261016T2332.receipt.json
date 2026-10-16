@@ -1,0 +1,25 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_cd40ab6c280b24e527b77d6da6fb3a6da8469f0a8c2f6c75c68f2f37cfd72259",
+ "limitations": [
+  "Exact immutable base plus explicit 18-path overlay only, not later HEAD/785ee8d. No current CI, Clippy, installed Mac, physical Roku, full capacity batch or independent acceptance pass inferred."
+ ],
+ "operation": "immutable-rch-locked-workspace",
+ "parameters": {
+  "base": "f2886cbb93cdfbf73289c0d1c93bca70094c5554",
+  "decisive_output": "cargo test -j 1 --locked --workspace; Remote command finished exit=0; 70167ms; complete output sha256 bound",
+  "mode": "clean-overlay-proof",
+  "overlay": "efc2b04da574ceb59c7dc5b6a958e1ff6a745d67c071d1aeda061eb3363e0488",
+  "policy_comment": "297",
+  "subject_kind": "rch-base-overlay-tree-identity-json",
+  "subject_sha256": "333c16da627c41962e9bed0b97f8908a168ba181c5a90cb30352cc12788e152b",
+  "tree": "e0a186ef4bfff9d70bd1c34a3dde791c591c2614",
+  "worker": "contabo-4"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 35890,
+  "sha256": "b10e79407948272b1f0cf580b536f0e3116f9a391b91e267b359624cabce7f4f"
+ }
+}
