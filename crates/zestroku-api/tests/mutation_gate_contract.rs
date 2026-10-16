@@ -323,3 +323,124 @@ fn open_and_unknown_http_tiers_deny_before_mutation_post() {
         assert_eq!(actions[0].result, zestroku_core::mutation::TIER_REFUSED);
     }
 }
+
+#[test]
+fn recorded_tier_downgrade_during_snapshot_denies_without_mutation_post() {
+    use std::sync::Mutex;
+    use zestroku_core::mutation::issue_approval;
+    use zestroku_core::store::AccessTierRow;
+    use zestroku_proto::{Command, EcpResponse, Transport, launch};
+    use zestroku_types::Device;
+
+    /// A tier writer landing inside the pre-authorization snapshot await,
+    /// as a concurrent `/info` probe would: the gate must observe the new
+    /// tier instead of the pre-snapshot value.
+    struct DowngradingTransport {
+        store: Arc<std::sync::Mutex<SqliteStore>>,
+        calls: Mutex<Vec<(String, u16, Command)>>,
+        downgraded: Mutex<bool>,
+    }
+
+    impl DowngradingTransport {
+        fn calls(&self) -> Vec<(String, u16, Command)> {
+            self.calls.lock().expect("calls lock").clone()
+        }
+    }
+
+    impl Transport for DowngradingTransport {
+        async fn send(&self, host: &str, port: u16, command: &Command) -> Result<EcpResponse> {
+            self.calls
+                .lock()
+                .expect("calls lock")
+                .push((host.to_owned(), port, command.clone()));
+            if command.path == "/query/active-app" && !*self.downgraded.lock().expect("flag lock") {
+                *self.downgraded.lock().expect("flag lock") = true;
+                self.store
+                    .lock()
+                    .expect("store lock")
+                    .upsert_access_tier(&AccessTierRow {
+                        device_id: zestroku_core::tier::device_id(host, port),
+                        tier: "limited".into(),
+                        probe_at: 1_700_000_001,
+                        probe_map: r#"{"query/apps":"limited"}"#.into(),
+                    })
+                    .expect("downgrade recorded tier");
+                return Ok(EcpResponse {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: "<active-app><app>Roku</app></active-app>".into(),
+                });
+            }
+            Ok(EcpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: String::new(),
+            })
+        }
+    }
+
+    let (_directory, store) = store_with_device(HOST, PORT, "permissive");
+    let device = Device {
+        host: HOST.into(),
+        port: PORT,
+        model_name: "Roku Fixture".into(),
+        model_number: "FIXTURE1".into(),
+        software_version: "15.2.4".into(),
+        is_tv: false,
+        access_tier: AccessTier::Permissive,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs() as i64;
+    let token = issue_approval(
+        &*store.lock().expect("store lock"),
+        &device,
+        &launch(1001),
+        now,
+    )
+    .expect("mint launch token");
+    let transport = Arc::new(DowngradingTransport {
+        store: Arc::clone(&store),
+        calls: Mutex::new(Vec::new()),
+        downgraded: Mutex::new(false),
+    });
+    let client = TestClient::new(build_app(Arc::clone(&store), Arc::clone(&transport)));
+    let path = format!("/v1/devices/{HOST}:{PORT}/launch");
+    let denied = client
+        .post(&path)
+        .header_str("host", HOST)
+        .json(&serde_json::json!({"app_id": 1001, "confirm": &token}))
+        .send();
+    assert_eq!(denied.status().as_u16(), 403);
+    assert_eq!(error_code(&denied), "tier_refused");
+    let calls = transport.calls();
+    assert_eq!(calls.len(), 1, "denial precedes any mutation dispatch");
+    assert_eq!(calls[0].2.method, EcpMethod::Get);
+    assert_eq!(calls[0].2.path, "/query/active-app");
+    // The refused token must be unconsumed: restoring the tier lets the
+    // same token authorize exactly once.
+    store
+        .lock()
+        .expect("store lock")
+        .upsert_access_tier(&AccessTierRow {
+            device_id: zestroku_core::tier::device_id(HOST, PORT),
+            tier: "permissive".into(),
+            probe_at: 1_700_000_002,
+            probe_map: r#"{"query/apps":"open"}"#.into(),
+        })
+        .expect("restore recorded tier");
+    let approved = client
+        .post(&path)
+        .header_str("host", HOST)
+        .json(&serde_json::json!({"app_id": 1001, "confirm": &token}))
+        .send();
+    assert_eq!(approved.status().as_u16(), 200);
+    let posts: Vec<String> = transport
+        .calls()
+        .into_iter()
+        .filter(|(_, _, command)| command.method == EcpMethod::Post)
+        .map(|(_, _, command)| command.path)
+        .collect();
+    assert_eq!(posts, ["/launch/1001"]);
+}
