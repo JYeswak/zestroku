@@ -1,0 +1,40 @@
+{
+ "authority": "live",
+ "confidence": "observed",
+ "evidence_id": "ev_17648d5f379b83c9c2e1b5bea5ce8ce40e6049fc97a7e56bdff692b6ef9f679a",
+ "limitations": [
+  "Source-control publication only; no Roku device, runtime, strict locked, RCH, disk-floor, or product-acceptance PASS.",
+  "Subsequent integrated-subject CI38873149358 failed clippy; tests and later gates did not run."
+ ],
+ "operation": "publish-shared-main",
+ "parameters": {
+  "bead": "zestroku-zestroku-doctrine-a0h.13",
+  "repo": "/Users/josh/Developer/zestroku"
+ },
+ "producer": "git_converge.py@9bb2483",
+ "result_ref": {
+  "kind": "git-publication",
+  "native_result": {
+   "applied": true,
+   "kept_dirty": [],
+   "paths": 21,
+   "published_commits": 82,
+   "pushed": true,
+   "races": [],
+   "remote_after": "1fbd4fd53e412ec0dbe055f9f79fde0d42913fcf",
+   "state": "MERGED"
+  },
+  "observed_verification": {
+   "fetch_origin_main_exit": 0,
+   "local_only_commits": 0,
+   "origin_only_commits": 0,
+   "subject_ancestor_of_origin_main_exit": 0
+  },
+  "origin_before": "1818d71b235a3233099fdcb2dad300efefe63ec2",
+  "owner_declaration_comment": 607,
+  "qualification_message": 58103,
+  "repository": "https://github.com/JYeswak/zestroku",
+  "source_before": "f397882871efb66a237f1a91f364cc101dc4252f",
+  "subject": "1fbd4fd53e412ec0dbe055f9f79fde0d42913fcf"
+ }
+}
