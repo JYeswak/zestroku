@@ -1,0 +1,18 @@
+{
+ "authority": "live",
+ "confidence": "observed",
+ "evidence_id": "ev_5087848e70bbee5bb402b391b4777eeaf6915c037115777a496a77d34fbe8271",
+ "limitations": [
+  "Scoped native drain/GC/enable/probe observations only; no full .13 batch, local admission, normal telemetry, product runtime, release or mission acceptance."
+ ],
+ "operation": "zestroku.rch.contabo2-native-reclaim.20261016",
+ "parameters": {
+  "decisive_output_json": "{\"after\":{\"all_active_builds\":0,\"all_queued_builds\":0,\"disk_free_gib_observed\":\"44.01826858520508\",\"fleet_slots_available\":14,\"fleet_slots_total\":14,\"fleet_workers_healthy\":4,\"native_enable_exit\":0,\"pressure\":\"telemetry_gap\",\"pressure_reason\":\"telemetry_unavailable\",\"probe_exit\":0,\"probe_status\":\"ok\",\"queue_observed_at\":\"2026-10-16T04:18:21.640371+00:00\"},\"barrier\":{\"all_active_builds\":0,\"all_queued_builds\":0,\"native_drain_exit\":0,\"observed_status\":\"drained\",\"used_slots\":0},\"before\":{\"all_active_builds\":0,\"all_queued_builds\":0,\"disk_free_gib_observed\":\"7.1048583984375\",\"fleet_slots_available\":10,\"pressure\":\"critical\"},\"limits\":[\"Native maintenance observations, not an independently accepted .13 proof batch\",\"Local disk admission remains a distinct unfulfilled prerequisite\",\"Telemetry gap remains; no normal-pressure/memory guarantee\",\"No product test, immutable locked workspace gate, installed release or mission acceptance proved\"],\"native_gc\":{\"apply_exit\":0,\"collect_candidates\":2,\"confirmed_removed\":2,\"kept_young_canonical_zestroku_pool\":true,\"manual_deletion\":false,\"preview_exit\":0,\"process_and_open_descriptor_gates\":\"ok\",\"reported_freed_unit_label\":\"MB\",\"reported_freed_value\":37799,\"window_or_cap_policy_changed\":false},\"operator\":{\"binary_sha256\":\"f2b24cbf860602c3ac95bd307b884f9b9449daea5dff2aa43228b40a77218ec1\",\"commit\":\"59a3b6235f97\",\"version\":\"rch 2.1.28\"},\"worker\":\"contabo-2\"}",
+  "subject_sha256": "f2b24cbf860602c3ac95bd307b884f9b9449daea5dff2aa43228b40a77218ec1"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 1406,
+  "sha256": "a7836f4b1d8085687b9694b70cfa3a8e8185ac13bce44df04b104ce64d7699af"
+ }
+}
