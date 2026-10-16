@@ -180,6 +180,16 @@ fn moved_device_keeps_one_row_and_aliases_follow() {
         aliases[0].device_id, new_id,
         "alias follows the moved device"
     );
+    let xml = "<device-info><udn>FIXTUREUDN</udn><serial-number>FIXTURESERIAL-MOVE</serial-number><model-name>Sim Express</model-name><model-number>SIMX1</model-number><software-version>15.2.4</software-version><is-tv>false</is-tv></device-info>";
+    let info =
+        zestroku_proto::parse_device_info(xml).expect("parse moved SimDevice identity fixture");
+    assert_eq!(
+        store
+            .find_device_id_by_identity(&zestroku_core::discovery::identity_key(&info))
+            .expect("identity lookup"),
+        Some(new_id.clone()),
+        "identity follows the moved device"
+    );
     drop(second);
 }
 
@@ -219,6 +229,45 @@ fn same_model_different_identities_never_merge() {
 }
 
 #[test]
+fn unknown_identity_same_model_devices_never_merge() {
+    // Planted negative: neither sim advertises a serial or UDN. Empty
+    // identity must not collapse distinct same-model endpoints in the store.
+    let config = SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    };
+    let first = SimDevice::start_with_serial(config, "");
+    first.set_unknown_identity();
+    let second = SimDevice::start_with_serial(config, "");
+    second.set_unknown_identity();
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let targets = write_targets(dir.path(), &[first.port(), second.port()]);
+    let (code, _stdout, stderr) = run_devices(&db, &targets);
+    assert_eq!(code, 0, "run failed: {stderr}");
+
+    let store = SqliteStore::open(&db).expect("open store");
+    let rows = store.list_devices().expect("list devices");
+    assert_eq!(
+        rows.len(),
+        2,
+        "empty identity must not merge same-model devices: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|row| row.model_num == "SIMX1"),
+        "the negative must use two same-model devices: {rows:?}"
+    );
+    for sim in [&first, &second] {
+        assert_eq!(
+            sim.received_requests(),
+            vec![("GET".into(), "/query/device-info".into())],
+            "each endpoint is queried once"
+        );
+    }
+}
+
+#[test]
 fn cli_output_never_emits_fixture_identifiers() {
     // Acceptance [c]: every CLI/JSON/log surface must be free of the sim's
     // FIXTURESERIAL-class tokens. The identity key is a digest by
@@ -253,4 +302,56 @@ fn cli_output_never_emits_fixture_identifiers() {
         }
     }
     drop(sim);
+}
+#[test]
+fn real_devices_json_reports_an_unreachable_seed() {
+    let live = SimDevice::start_with_serial(
+        SimConfig {
+            kind: DeviceKind::Express,
+            tier: SimTier::Permissive,
+        },
+        "FIXTURE-MACHINE-READABLE",
+    );
+    let dead_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve closed port");
+    let dead_port = dead_listener
+        .local_addr()
+        .expect("closed port address")
+        .port();
+    drop(dead_listener);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let targets = write_targets(dir.path(), &[live.port(), dead_port]);
+    let output = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &db)
+        .args(["devices", "--no-ssdp", "--targets"])
+        .arg(&targets)
+        .arg("--json")
+        .output()
+        .expect("run actual devices JSON command");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("valid CLI JSON");
+    assert_eq!(document["devices"].as_array().map(Vec::len), Some(1));
+    let notes = document["notes"].as_array().expect("notes array");
+    let dead_target = format!("127.0.0.1:{dead_port}");
+    let note = notes
+        .iter()
+        .find(|note| note["target"] == dead_target)
+        .expect("dead seed note");
+    assert!(!note["reason"].as_str().unwrap_or_default().is_empty());
+    assert_eq!(
+        live.received_requests(),
+        vec![("GET".into(), "/query/device-info".into())]
+    );
+    let stdout = String::from_utf8(output.stdout).expect("JSON output UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr UTF-8");
+    for surface in [&stdout, &stderr] {
+        assert!(!surface.contains("FIXTURE-MACHINE-READABLE"));
+    }
 }
