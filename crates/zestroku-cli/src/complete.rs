@@ -12,7 +12,7 @@
 
 use std::process::ExitCode;
 
-use zestroku_core::store::Store;
+use zestroku_core::store::{SqliteStore, Store};
 
 use crate::store_db;
 
@@ -77,7 +77,22 @@ fn complete_devices(prefix: &str) -> ExitCode {
     )
 }
 
-fn complete_apps(device_id: &str, prefix: &str) -> ExitCode {
+/// Map a completion operand to its canonical device id through the alias
+/// table. An exact alias match resolves; anything else passes through
+/// literally so a cold cache stays empty output rather than an error, and
+/// no resolution failure can ever trigger execution or denial.
+fn resolve_completion_device(store: &SqliteStore, operand: &str) -> String {
+    match store.list_aliases() {
+        Ok(aliases) => aliases
+            .into_iter()
+            .find(|row| row.alias == operand)
+            .map(|row| row.device_id)
+            .unwrap_or_else(|| operand.to_owned()),
+        Err(_) => operand.to_owned(),
+    }
+}
+
+fn complete_apps(operand: &str, prefix: &str) -> ExitCode {
     let store = match store_db::open() {
         Ok(store) => store,
         Err(error) => {
@@ -85,7 +100,8 @@ fn complete_apps(device_id: &str, prefix: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let rows = match store.list_apps(device_id) {
+    let device_id = resolve_completion_device(&store, operand);
+    let rows = match store.list_apps(&device_id) {
         Ok(rows) => rows,
         Err(error) => {
             eprintln!("zestroku complete: cannot list cached apps: {error}");

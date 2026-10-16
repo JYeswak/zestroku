@@ -134,6 +134,17 @@ fn complete_unknown_kind_is_a_usage_error() {
 }
 
 #[test]
+fn complete_apps_resolves_alias_to_canonical_device_id() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    seed_store(&db);
+    let output = run(&db, &["complete", "apps", "living-room"]);
+    assert_eq!(output.status.code(), Some(0));
+    let lines = stdout_lines(&output);
+    assert!(lines.contains(&"Streaming One".to_owned()), "{lines:?}");
+}
+
+#[test]
 fn read_mode_flag_conflict_fails_before_any_io() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = dir.path().join("actions.db");
