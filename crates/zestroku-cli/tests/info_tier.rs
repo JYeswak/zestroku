@@ -136,6 +136,40 @@ fn alias_set_list_remove_and_info_resolution_round_trip() {
 }
 
 #[test]
+fn alias_rm_trims_padded_alias_like_set() {
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("aliases.db");
+    let id = format!("127.0.0.1:{}", sim.port());
+    let store = SqliteStore::open(&db).expect("open inventory store");
+    seed_device(&store, &id, "Living Room Roku", "Roku Express", "3941X2");
+    drop(store);
+
+    let set = run_cli(&db, &["alias", "set", " living-room ", &id], false);
+    assert_eq!(
+        set.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    let listed = run_cli(&db, &["alias", "ls"], false);
+    assert!(String::from_utf8_lossy(&listed.stdout).contains(&format!("living-room -> {id}")));
+
+    let removed = run_cli(&db, &["alias", "rm", " living-room "], false);
+    assert_eq!(
+        removed.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    let listed = run_cli(&db, &["alias", "ls"], false);
+    assert!(String::from_utf8_lossy(&listed.stdout).contains("no aliases"));
+}
+
+#[test]
 fn ambiguous_tv_refuses_reads_and_mutations_before_network_requests() {
     let tv_a = SimDevice::start(SimConfig {
         kind: DeviceKind::Tv,
