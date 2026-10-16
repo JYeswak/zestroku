@@ -613,19 +613,7 @@ async fn execute_mutation<S: Store, T: Transport>(
         Ok(None) => return error_response(StatusCode::NOT_FOUND, "device_not_found"),
         Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
     };
-    let (tier_source, recorded_tier) = {
-        let store = match state.store.lock() {
-            Ok(store) => store,
-            Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
-        };
-        match recorded_tier_for(&*store, &row.ip, target.port) {
-            Ok(Some(tier)) => ("recorded", tier.access_tier()),
-            Ok(None) => ("unknown-unprobed", AccessTier::Open),
-            Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
-        }
-    };
     let mut device = super::device_for_gate(&row, &target);
-    device.access_tier = recorded_tier;
 
     // Match the CLI contract: snapshot before the core's tier-then-token gate.
     // A failed read is represented honestly and never treated as a real state.
@@ -635,13 +623,23 @@ async fn execute_mutation<S: Store, T: Transport>(
             .unwrap_or_else(|_| "unparseable".to_owned()),
         Err(_) => "unreachable".to_owned(),
     };
-    let before_state = marked_before_state(tier_source, &before);
-    let intent = format!("{surface} {} {}", target.id, command.path);
     let action_id = {
         let store = match state.store.lock() {
             Ok(store) => store,
             Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
         };
+        // Re-read the recorded tier at the authorization linearization point:
+        // a concurrent tier update during the snapshot await above must not
+        // be bypassed by the pre-snapshot value. No await is held under this
+        // guard; the tier and the gate/token consumption below are atomic.
+        let (tier_source, recorded_tier) = match recorded_tier_for(&*store, &row.ip, target.port) {
+            Ok(Some(tier)) => ("recorded", tier.access_tier()),
+            Ok(None) => ("unknown-unprobed", AccessTier::Open),
+            Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
+        };
+        device.access_tier = recorded_tier;
+        let before_state = marked_before_state(tier_source, &before);
+        let intent = format!("{surface} {} {}", target.id, command.path);
         match authorize_mutation(
             &*store,
             &device,

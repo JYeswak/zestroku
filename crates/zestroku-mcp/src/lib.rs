@@ -5,15 +5,18 @@
 //! direct ECP connections or synthesize local results when the daemon is down.
 //! `echo` is local; `recent_actions` reads the shared audit store.
 //!
-//! `key` and `launch` require explicit per-operation confirmation and audit
-//! refusals through the shared core gate. These MCP handlers do not dispatch
-//! device I/O; they only apply the confirmation gate and record denials.
+//! `key` and `launch` forward the opaque owner approval token to the
+//! configured loopback daemon, which authorizes through the shared core gate
+//! and dispatches exactly once. These handlers never consume approvals
+//! locally, never open direct ECP connections, and return a tool error
+//! (never approval-only success) when the daemon refuses, fails, or is down.
 //!
 //! `run_stdio` owns the MCP stdio transport and its asupersync runtime. The
 //! CLI's real-process integration test exercises it through the actual daemon
 //! and loopback simulator.
 //!
-//! Unit tests exercise the extracted `decide()` seam used by mutation `call()`.
+//! Unit tests exercise the extracted `decide()` local-gate seam; the live
+//! mutation path dispatches through the daemon (see `MutationTool`).
 //! FastMCP's `McpContext` has no public test constructor because
 //! `Cx::for_testing` is gated inside the dependency.
 #![forbid(unsafe_code)]
@@ -78,7 +81,7 @@ fn build_command(kind: &str, target: &str) -> Result<Command, McpError> {
             })?;
             Ok(zestroku_proto::launch(app_id))
         }
-        "key" => Ok(zestroku_proto::keypress_raw(&target.to_uppercase())),
+        "key" => Ok(zestroku_proto::keypress_raw(target)),
         other => Err(mcp_error(
             McpErrorCode::InvalidParams,
             format!("unknown mutation kind {other}"),
@@ -86,10 +89,12 @@ fn build_command(kind: &str, target: &str) -> Result<Command, McpError> {
     }
 }
 
-/// The decision seam: everything `MutationTool::call` does after arg
-/// mapping, without a context. Returns the user-facing text on approval or
-/// the error (already audited) on refusal. Arg-shaped failures come back
-/// as `Err(ArgError)` and are never audited.
+/// The local gate seam exercised by unit tests: arg mapping plus the
+/// shared-core authorization, audited locally. The live mutation path does
+/// NOT call this: the daemon is the sole authorizer (single-use tokens
+/// cannot be consumed twice), so this seam only proves gate semantics
+/// offline. Arg-shaped failures come back as `Err(ArgError)` and are never
+/// audited.
 #[derive(Debug)]
 pub struct ArgError(pub String);
 
@@ -127,9 +132,94 @@ pub fn decide<S: Store + ?Sized>(
     }
 }
 
-/// One mutating MCP tool: `kind` is "key" or "launch".
+/// One mutating MCP tool: `kind` is "key" or "launch". Mutations dispatch
+/// through the configured loopback daemon; the client is shared per server.
 pub struct MutationTool {
     pub kind: &'static str,
+    client: Arc<HttpClient>,
+    base_url: Arc<str>,
+}
+
+impl MutationTool {
+    fn new(kind: &'static str, client: Arc<HttpClient>, base_url: Arc<str>) -> Self {
+        Self {
+            kind,
+            client,
+            base_url,
+        }
+    }
+
+    /// Map one daemon mutation response: 2xx must carry the daemon's audited
+    /// outcome shape (integer action id, string target/surface, outcome
+    /// exactly "completed") and is returned verbatim; anything else is a
+    /// tool error. The daemon, not this handler, owns authorization and
+    /// the audit row, and every device failure arrives as non-2xx.
+    fn mutation_content(
+        response: asupersync::http::h1::Response,
+    ) -> Outcome<Vec<Content>, McpError> {
+        let body = match String::from_utf8(response.body) {
+            Ok(body) => body,
+            Err(_) => {
+                return Outcome::Err(mcp_error(
+                    McpErrorCode::ToolExecutionError,
+                    "daemon_invalid_response: response is not UTF-8",
+                ));
+            }
+        };
+        if !(200..300).contains(&response.status) {
+            let code = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("error")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| "daemon_http_error".to_string());
+            // The tool contract names confirmation failures
+            // CONFIRMATION_REQUIRED (see the tool description); the daemon's
+            // refusal is audited daemon-side, never approved here.
+            if response.status == 403 && code == "confirmation_required" {
+                return Outcome::Err(mcp_error(
+                    McpErrorCode::Custom(-32001),
+                    format!("{CONFIRMATION_REQUIRED}: daemon refused the token (HTTP 403)"),
+                ));
+            }
+            return Outcome::Err(mcp_error(
+                McpErrorCode::ToolExecutionError,
+                format!("daemon API error: {code} (HTTP {})", response.status),
+            ));
+        }
+        let value: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(value) => value,
+            Err(_) => {
+                return Outcome::Err(mcp_error(
+                    McpErrorCode::ToolExecutionError,
+                    "daemon_invalid_response: mutation outcome is not JSON",
+                ));
+            }
+        };
+        // The daemon returns 2xx only on the completed arm, so a 2xx body
+        // must also carry outcome "completed"; anything else is a mismatch.
+        let shape = value
+            .get("action_id")
+            .and_then(serde_json::Value::as_i64)
+            .is_some()
+            && ["target", "surface"].iter().all(|field| {
+                value
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+            })
+            && value.get("outcome").and_then(serde_json::Value::as_str) == Some("completed");
+        if !shape {
+            return Outcome::Err(mcp_error(
+                McpErrorCode::ToolExecutionError,
+                "daemon_response_schema_mismatch",
+            ));
+        }
+        Outcome::Ok(vec![Content::Text { text: body }])
+    }
 }
 
 impl ToolHandler for MutationTool {
@@ -170,67 +260,96 @@ impl ToolHandler for MutationTool {
     }
 
     fn execution_mode(&self) -> ToolExecutionMode {
-        // Store write only; never the network. m7c may promote to Async
-        // when dispatch folds in behind the gate.
-        ToolExecutionMode::Blocking
+        ToolExecutionMode::Async
     }
 
-    fn call(&self, _ctx: &McpContext, arguments: serde_json::Value) -> McpResult<Vec<Content>> {
-        let host = arguments
-            .get("host")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| mcp_error(McpErrorCode::InvalidParams, "missing `host`"))?
-            .to_string();
-        let target = arguments
-            .get("target")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| mcp_error(McpErrorCode::InvalidParams, "missing `target`"))?
-            .to_string();
-        let confirmation = confirmation_token_from(&arguments);
-        // Tier mirrors the CLI's ZESTROKU_TIER operator override (the live
-        // Express is Permissive since the M3 flip); Open stays the fail-safe
-        // default until discovery populates tier in m7c.
-        let tier = match std::env::var("ZESTROKU_TIER").as_deref() {
-            Ok("permissive") | Ok("Permissive") => AccessTier::Permissive,
-            _ => AccessTier::Open,
-        };
-        let store = SqliteStore::open(&store_path()).map_err(|e| {
-            mcp_error(
-                McpErrorCode::InternalError,
-                format!("action log unavailable: {e}"),
-            )
-        })?;
-        match decide(
-            &store,
-            self.kind,
-            &host,
-            &target,
-            tier,
-            confirmation,
-            "unavailable (m7c wires the probe)",
-        ) {
-            Ok(Ok(text)) => Ok(vec![Content::Text { text }]),
-            Ok(Err(arg)) => Err(mcp_error(McpErrorCode::InvalidParams, arg.0)),
-            Err(MutationError::ConfirmationRequired { action_id, .. }) => Err(mcp_error(
-                McpErrorCode::Custom(-32001),
-                format!("{CONFIRMATION_REQUIRED}: audit id {action_id}"),
-            )),
-            Err(MutationError::TierRefused(e)) => Err(mcp_error(
-                McpErrorCode::Custom(-32002),
-                format!("tier refused: {e} (denial audited)"),
-            )),
-            Err(MutationError::NotMutation) => Err(mcp_error(
-                McpErrorCode::InternalError,
-                "internal: non-POST reached the gate",
-            )),
-            Err(e) => Err(mcp_error(
-                McpErrorCode::InternalError,
-                format!("mutation gate: {e}"),
-            )),
-        }
+    fn call(&self, _ctx: &McpContext, _arguments: serde_json::Value) -> McpResult<Vec<Content>> {
+        Err(mcp_error(
+            McpErrorCode::InternalError,
+            "mutation tools require the asynchronous request context",
+        ))
+    }
+
+    fn call_async<'a>(
+        &'a self,
+        ctx: &'a McpContext,
+        arguments: serde_json::Value,
+    ) -> BoxFuture<'a, Outcome<Vec<Content>, McpError>> {
+        self.call_async_in_request(ctx, ctx.cx(), arguments)
+    }
+
+    fn call_async_in_request<'a>(
+        &'a self,
+        _ctx: &'a McpContext,
+        request_cx: &'a Cx,
+        arguments: serde_json::Value,
+    ) -> BoxFuture<'a, Outcome<Vec<Content>, McpError>> {
+        Box::pin(async move {
+            let Some(host) = arguments.get("host").and_then(|v| v.as_str()) else {
+                return Outcome::Err(mcp_error(McpErrorCode::InvalidParams, "missing `host`"));
+            };
+            let Some(target) = arguments.get("target").and_then(|v| v.as_str()) else {
+                return Outcome::Err(mcp_error(McpErrorCode::InvalidParams, "missing `target`"));
+            };
+            let Some(confirm) = confirmation_token_from(&arguments) else {
+                // A missing token is refused before any I/O: there is nothing
+                // the daemon could authorize, and no audit row exists for it.
+                return Outcome::Err(mcp_error(
+                    McpErrorCode::Custom(-32001),
+                    format!("{CONFIRMATION_REQUIRED}: missing approval token"),
+                ));
+            };
+            // Arg shape is validated locally without any I/O; the daemon is
+            // the sole authorizer, so every well-formed call is forwarded and
+            // every refusal is a tool error, never approval-only success.
+            let body = match self.kind {
+                "launch" => match target.parse::<u32>() {
+                    Ok(app_id) => serde_json::json!({"app_id": app_id, "confirm": confirm}),
+                    Err(_) => {
+                        return Outcome::Err(mcp_error(
+                            McpErrorCode::InvalidParams,
+                            format!("app id must be a number, got {target:?}"),
+                        ));
+                    }
+                },
+                "key" => serde_json::json!({"key": target, "confirm": confirm}),
+                other => {
+                    return Outcome::Err(mcp_error(
+                        McpErrorCode::InvalidParams,
+                        format!("unknown mutation kind {other}"),
+                    ));
+                }
+            };
+            let path = format!("/v1/devices/{}/{}", encode_path_segment(host), self.kind);
+            let url = format!("{}{path}", self.base_url);
+            let response = match self
+                .client
+                .request(
+                    request_cx,
+                    asupersync::http::h1::types::Method::Post,
+                    &url,
+                    vec![("content-type".to_string(), "application/json".to_string())],
+                    body.to_string().into_bytes(),
+                )
+                .await
+            {
+                Ok(response) => response,
+                Err(asupersync::http::h1::ClientError::Cancelled) => {
+                    return Outcome::Cancelled(request_cx.cancel_reason().unwrap_or_else(|| {
+                        CancelReason::user("daemon mutation request cancelled")
+                    }));
+                }
+                Err(_) => {
+                    return Outcome::Err(mcp_error(
+                        McpErrorCode::ToolExecutionError,
+                        "daemon_unavailable",
+                    ));
+                }
+            };
+            Self::mutation_content(response)
+        })
     }
 }
-
 /// Read-only audit surface: the N most recent actions rows, newest first.
 pub struct RecentActionsTool {
     pub limit: usize,
@@ -748,10 +867,18 @@ pub fn server() -> Result<fastmcp::auto::Server, String> {
                 Arc::clone(&client),
                 Arc::clone(&base_url),
             ))
-            .tool(DaemonReadTool::new(ReadOperation::Apps, client, base_url))
+            .tool(DaemonReadTool::new(
+                ReadOperation::Apps,
+                Arc::clone(&client),
+                Arc::clone(&base_url),
+            ))
             .tool(RecentActionsTool { limit: 20 })
-            .tool(MutationTool { kind: "key" })
-            .tool(MutationTool { kind: "launch" })
+            .tool(MutationTool::new(
+                "key",
+                Arc::clone(&client),
+                Arc::clone(&base_url),
+            ))
+            .tool(MutationTool::new("launch", client, base_url))
             .build(),
     )
 }
