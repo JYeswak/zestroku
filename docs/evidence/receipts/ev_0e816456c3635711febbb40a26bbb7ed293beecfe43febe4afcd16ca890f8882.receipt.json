@@ -1,0 +1,17 @@
+{
+ "authority": "live",
+ "confidence": "observed",
+ "evidence_id": "ev_0e816456c3635711febbb40a26bbb7ed293beecfe43febe4afcd16ca890f8882",
+ "limitations": [
+  "POST-STATE only (raw, exit codes recorded). gc preview/apply output on contabo-1/-2 was filtered through cut/grep/head with no exit code captured, so removal amounts (45035MB, 3362MB) are limited evidence, not receipted."
+ ],
+ "operation": "rch status+queue raw capture after s4 reclaim of contabo-1/-2",
+ "parameters": {
+  "files": "status.json,queue.json,exits.txt"
+ },
+ "producer": "PeachKnoll",
+ "result_ref": {
+  "bytes": 32299,
+  "sha256": "5f7ac25fa21fec2886409563132a676ed7a5644a97d604e534bfbfba675c867d"
+ }
+}

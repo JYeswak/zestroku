@@ -1,0 +1,19 @@
+{
+ "authority": "live",
+ "confidence": "observed",
+ "evidence_id": "ev_c0f1ec64289a6035e4faf7ee0d1edc4f035ef64fe67e502f3bf1d7c16ac812c2",
+ "limitations": [
+  "Raw stdout, stderr and exit code of every step are in the bundle (unpiped). Free-space before/after (11.0 -> 29.1 GB) is from rch status read after the probe; telemetry may lag. contabo-2/-3 were NOT re-previewed by me this round (PeachStork previewed them). Earlier 04:24Z contabo-1/-2 apply receipts were limited (filtered output)."
+ ],
+ "operation": "rch reclaim contabo-4 under chief order: uds+rch gc previews, drain, gc apply, enable, probe",
+ "parameters": {
+  "exit_codes": "{\"cache-status-c1\":\"0\",\"gc-preview-c1\":\"0\",\"uds-gc-preview\":\"0\",\"c4-drain\":\"0\",\"c4-gc-preview\":\"0\",\"c4-gc-apply\":\"0\",\"c4-enable\":\"0\",\"c4-probe\":\"0\"}",
+  "freed_mb": "18578",
+  "worker": "contabo-4"
+ },
+ "producer": "PeachKnoll",
+ "result_ref": {
+  "bytes": 13978,
+  "sha256": "ed09d57873952d51db3fd0668d67e7516f93bae1d6c178602ca3ac23766b27d2"
+ }
+}

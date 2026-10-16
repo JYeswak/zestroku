@@ -1,0 +1,58 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_bdc941215c164480a9654052cdd0e6fe74880dc26e290a159047a5a69a044b42",
+ "limitations": [
+  "UNVERIFIED: SSDP identity retention from one live discovery observation without a second query; discover_merges_seeds_and_reconciles_probes covers configured seed probes only.",
+  "UNVERIFIED: unknown identity never merges in the store; empty identity-key and distinct-known-identity tests do not establish this invariant.",
+  "Only the listed targeted suites ran; this was not the full workspace test gate."
+ ],
+ "operation": "zestroku_11_1_targeted_acceptance",
+ "parameters": {
+  "base_sha": "0e6722fbc3869fae0c9882a27375088ac902a828",
+  "command": "cargo test -j 2 --locked -p zestroku-cli --test devices_store --test devices_scan -p zestroku-core --lib --test store_roundtrip --test ssdp_io_wire --test ssdp_sweep_loopback -- --test-threads=1"
+ },
+ "producer": "rch",
+ "result_ref": {
+  "base_sha": "0e6722fbc3869fae0c9882a27375088ac902a828",
+  "clean_overlay_tree": "005c2ad45471b08f7ca5c49adb5d12b6b69ac649",
+  "covered_test_names": [
+   "same_model_different_identities_never_merge",
+   "moved_device_keeps_one_row_and_aliases_follow",
+   "cli_output_never_emits_fixture_identifiers",
+   "different_identities_are_never_merged",
+   "identity_lookup_moves_aliases_to_the_new_endpoint",
+   "identity_key_separates_devices_and_is_empty_when_unknown",
+   "discover_merges_seeds_and_reconciles_probes"
+  ],
+  "remote_exit": 0,
+  "run_id": "bg_28",
+  "selected_worker": "contabo-3",
+  "tests": {
+   "devices_scan": {
+    "failed": 0,
+    "passed": 5
+   },
+   "devices_store": {
+    "failed": 0,
+    "passed": 4
+   },
+   "ssdp_io_wire": {
+    "failed": 0,
+    "passed": 4
+   },
+   "ssdp_sweep_loopback": {
+    "failed": 0,
+    "passed": 3
+   },
+   "store_roundtrip": {
+    "failed": 0,
+    "passed": 5
+   },
+   "zestroku_core_lib": {
+    "failed": 0,
+    "passed": 37
+   }
+  }
+ }
+}

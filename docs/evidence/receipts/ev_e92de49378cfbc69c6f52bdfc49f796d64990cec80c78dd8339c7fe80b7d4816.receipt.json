@@ -1,0 +1,24 @@
+{
+ "authority": "pending",
+ "confidence": "observed",
+ "evidence_id": "ev_e92de49378cfbc69c6f52bdfc49f796d64990cec80c78dd8339c7fe80b7d4816",
+ "limitations": [
+  "Source-only nonauthor replay; no build/runtime/device operation",
+  "Future behavior negatives and product doctor remain UNVERIFIED"
+ ],
+ "operation": "nonauthor/source-review/zestroku-zestroku-doctrine-a0h.10.1",
+ "parameters": {
+  "author_receipt": "ev_bec4350fa931565546d1a59a17a3535a7493b19df9e1eb08ee485674b9ab073e",
+  "bead": "zestroku-zestroku-doctrine-a0h.10.1",
+  "canonical_main": "a3b839baa818e372fdfe22468d77130783b264b0",
+  "dirty_devices_current": "ebe808d59cb1fb6ddca6420116076c741ba7b8b09d0166063b21715d4614e64b",
+  "dirty_devices_source_ff77": "c4975179b42847afed5293eb601222ad7c0023fa52c0623785f1f35f92427abb",
+  "ripwire": "refuted_complete1",
+  "source_sha": "ff77b962552bf7360af7c5fcdf3fc7dcee8a6536"
+ },
+ "producer": "OrangeOx",
+ "result_ref": {
+  "bytes": 5495,
+  "sha256": "fb5e8d629073f697696f6edad2c4fdc442b7133ce2d01979a146563413d05dfa"
+ }
+}

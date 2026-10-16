@@ -5,6 +5,19 @@ read-only (SSDP M-SEARCH + `GET /query/device-info`). Run from this repo's
 canonical checkout on the Mac **on the owner LAN** (192.168.1.0/24 — the rch
 workers are off-LAN, which is why this leg needs a local darwin binary).
 
+## SSDP trust boundary
+
+The normal multicast discovery path requires a numeric IPv4 `LOCATION` host
+that exactly matches the UDP responder's private IPv4 source address. Loopback,
+link-local/metadata, public/off-LAN, DNS, and mismatched private-host
+advertisements are refused before any ECP `Transport` request. Configured
+`targets.toml` seeds and explicit `--scan` ranges remain independent operator
+inputs and are not derived from SSDP.
+
+For tests and other explicit local targets, `sweep_to` additionally requires
+the source and numeric LOCATION host to match the selected private/loopback
+IPv4 target exactly.
+
 ## Prerequisites (once)
 
 1. darwin binary (local build, Josh-approved bypass or darwin worker):

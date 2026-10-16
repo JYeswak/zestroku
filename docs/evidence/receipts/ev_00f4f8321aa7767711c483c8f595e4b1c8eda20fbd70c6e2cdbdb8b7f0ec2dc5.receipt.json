@@ -1,0 +1,23 @@
+{
+ "authority": "pending",
+ "confidence": "observed",
+ "evidence_id": "ev_00f4f8321aa7767711c483c8f595e4b1c8eda20fbd70c6e2cdbdb8b7f0ec2dc5",
+ "limitations": [
+  "Source-only contract; no build/runtime or device mutation",
+  "Policy/mutation implementation remains absent; no product PASS"
+ ],
+ "operation": "rework/zestroku-zestroku-doctrine-a0h.10.3/source-contract",
+ "parameters": {
+  "bead": "zestroku-zestroku-doctrine-a0h.10.3",
+  "canonical_main": "a7e697ab261ec34804edc515903df27c7da094f9",
+  "methods": "ripwire_verify+uses+source_read",
+  "source_parent": "91c5e0a0032d3a56018a8602d19c526f62090375",
+  "source_receipt": "ev_c58853dd6a6348a7325176ae29cdaaacc3b7760aa3208a756b5aaefd50bc7e60",
+  "source_sha": "ff77b962552bf7360af7c5fcdf3fc7dcee8a6536"
+ },
+ "producer": "OrangeOx",
+ "result_ref": {
+  "bytes": 4895,
+  "sha256": "4175b0338b17dbb7f98b9252117a34f36353fe1d9a11e5a518f5b15fea9dfcfb"
+ }
+}

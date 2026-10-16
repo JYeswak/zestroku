@@ -1,0 +1,23 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_d5b6eaa1034080d91ccd63c328276dc6111ee4c8a3f74f0826693dbb1221a7d5",
+ "limitations": [
+  "Full SIGTERM-workspace-Clippy batch incomplete; workspace exit 101 and Clippy not run.",
+  "This receipt proves only separate plain and clean-overlay pooled roots on one worker."
+ ],
+ "operation": "zestroku-rch-cache-mode-negative",
+ "parameters": {
+  "bead": "zestroku-zestroku-doctrine-a0h.13",
+  "clean_overlay_source_sha": "92cbdf7327e84fcc07f2038bcdb6ed81be2b5bd7",
+  "full_batch_status": "incomplete",
+  "mode": "plain-scratch+clean-overlay-proof",
+  "policy_comment": "297",
+  "worker": "contabo-3"
+ },
+ "producer": "OrangeShore",
+ "result_ref": {
+  "bytes": 7248,
+  "sha256": "da7b45372373fbc0b175d1378f7ea7df26074ce3be5b17c402ae27bafba89c20"
+ }
+}
