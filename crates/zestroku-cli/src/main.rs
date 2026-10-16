@@ -140,41 +140,35 @@ pub(crate) fn parse_read_opts(
     Ok(ReadOpts { target, json, mode })
 }
 
+/// Flag-aware read-target scan shared by `info`, `active-app` and `apps`:
+/// the first non-flag value past the verb, with `--daemon` consuming its
+/// URL operand so the URL is never mistaken for the target.
+fn read_target_index(args: &[String]) -> Option<usize> {
+    let mut index = 1;
+    let mut target = None;
+    while index < args.len() {
+        if args[index] == "--daemon" {
+            index += 2;
+            continue;
+        }
+        if !args[index].starts_with('-') && target.is_none() {
+            target = Some(index);
+        }
+        index += 1;
+    }
+    target
+}
+
 fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
     let Some(verb) = args.first().map(String::as_str) else {
         return Ok(());
     };
     let (target_index, strict, mutation) = match verb {
-        "info" | "active-app" if args.len() >= 2 => {
-            // Flag-aware scan: the first non-flag value is the target, and
-            // `--daemon` consumes its URL operand.
-            let mut index = 1;
-            let mut target_index = None;
-            while index < args.len() {
-                if args[index] == "--daemon" {
-                    index += 2;
-                    continue;
-                }
-                if !args[index].starts_with('-') && target_index.is_none() {
-                    target_index = Some(index);
-                }
-                index += 1;
-            }
-            let Some(target_index) = target_index else {
+        "info" | "active-app" | "apps" if args.len() >= 2 => {
+            let Some(target_index) = read_target_index(args) else {
                 return Ok(());
             };
             (target_index, false, false)
-        }
-        "apps" if args.len() >= 2 => {
-            let Some((index, _)) = args
-                .iter()
-                .enumerate()
-                .skip(1)
-                .find(|(_, value)| !value.starts_with('-'))
-            else {
-                return Ok(());
-            };
-            (index, false, false)
         }
         "key" | "launch" if args.len() >= 3 => (1, false, true),
         "install" if args.len() >= 3 => (1, false, true),
@@ -596,5 +590,26 @@ mod tests {
         );
         assert_eq!(render_active_app("App", Some(7), false), "App (7)");
         assert_eq!(render_active_app("App", None, false), "App");
+    }
+
+    #[test]
+    fn read_target_scan_skips_daemon_url_for_alias() {
+        // `apps --daemon URL living-room` must resolve the alias, never
+        // mistake the URL operand for the target.
+        assert_eq!(
+            read_target_index(&args(&[
+                "apps",
+                "--daemon",
+                "http://127.0.0.1:9",
+                "living-room"
+            ])),
+            Some(3)
+        );
+        assert_eq!(
+            read_target_index(&args(&["info", "--json", "living-room"])),
+            Some(2)
+        );
+        assert_eq!(read_target_index(&args(&["info", "--json"])), None);
+        assert_eq!(read_target_index(&args(&["apps", "--daemon"])), None);
     }
 }

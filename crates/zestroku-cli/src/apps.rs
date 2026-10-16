@@ -8,6 +8,7 @@ use zestroku_types::{AccessTier, Device, Error};
 
 use crate::transport::{AsupersyncTransport, send_selected};
 
+#[derive(Debug)]
 struct AppsOpts {
     host: String,
     json: bool,
