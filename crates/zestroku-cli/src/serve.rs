@@ -1,10 +1,10 @@
-//! `zestroku serve [--bind <ip:port>] [--allow-unsafe-bind]`
+//! `zestroku serve [--bind <ip:port>]`
 //!
 //! The read-only HTTP API (`zestroku-api::build_app`: `/health`,
 //! `/v1/devices`, `/v1/devices/{host}/info`, `/v1/devices/{host}/active-app`)
 //! over the shared store and ECP transport, on one asupersync runtime.
-//! The listener binds loopback or a private-LAN address only (wildcard needs
-//! `--allow-unsafe-bind`), and validates the Host header against the bind IP.
+//! The listener binds loopback or one of this node's Tailscale addresses
+//! only, and validates the Host header against the bind IP.
 //! The daemon, not the agent's process tree, talks to the devices.
 
 use std::path::PathBuf;
@@ -29,7 +29,6 @@ const DEFAULT_BIND: &str = "127.0.0.1:8070";
 
 struct Opts {
     bind: String,
-    allow_wildcard: bool,
     targets: Option<PathBuf>,
     no_ssdp: bool,
     mx: u8,
@@ -38,7 +37,6 @@ struct Opts {
 fn parse_opts(args: &[String]) -> Result<Opts, String> {
     let mut opts = Opts {
         bind: DEFAULT_BIND.to_string(),
-        allow_wildcard: false,
         targets: std::env::var_os("ZESTROKU_TARGETS").map(PathBuf::from),
         no_ssdp: false,
         mx: 3,
@@ -47,7 +45,6 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--bind" => opts.bind = it.next().ok_or("--bind needs ip:port")?.clone(),
-            "--allow-unsafe-bind" => opts.allow_wildcard = true,
             "--targets" => {
                 opts.targets = Some(PathBuf::from(it.next().ok_or("--targets needs a file")?));
             }
@@ -203,13 +200,29 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let addr = match zestroku_api::check_bind(&opts.bind, opts.allow_wildcard) {
+    let addr = match zestroku_api::check_bind(&opts.bind) {
         Ok(addr) => addr,
         Err(error) => {
             eprintln!("zestroku serve: {error}");
             return ExitCode::from(2);
         }
     };
+    if !addr.ip().is_loopback() {
+        let owned = match zestroku_api::tailscale_self_ips() {
+            Ok(ips) => zestroku_api::node_owns_address(&addr.ip(), &ips),
+            Err(error) => {
+                eprintln!("zestroku serve: tailnet bind refused ({error})");
+                return ExitCode::from(2);
+            }
+        };
+        if !owned {
+            eprintln!(
+                "zestroku serve: tailnet bind refused ({} is not this node address)",
+                addr.ip()
+            );
+            return ExitCode::from(2);
+        }
+    }
     let store = match store_db::open() {
         Ok(store) => Arc::new(Mutex::new(store)),
         Err(error) => {

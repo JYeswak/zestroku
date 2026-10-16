@@ -160,6 +160,163 @@ fn serve_refuses_wildcard_and_public_binds() {
         assert!(err.contains("--bind"), "{bind}: {err}");
     }
 }
+
+#[test]
+fn serve_refuses_private_and_linklocal_binds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    for bind in ["192.168.1.20:8070", "10.0.0.5:8070", "169.254.1.2:8070"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+            .env("ZESTROKU_DB", &db)
+            .args(["serve", "--bind", bind])
+            .output()
+            .expect("run serve");
+        assert_eq!(out.status.code(), Some(2), "{bind}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("--bind"), "{bind}: {err}");
+    }
+}
+
+#[test]
+fn serve_removed_unsafe_bind_flag_is_unknown_option() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &db)
+        .args(["serve", "--allow-unsafe-bind"])
+        .output()
+        .expect("run serve");
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("unknown option"), "removed flag: {err}");
+}
+
+/// Write an executable fake `tailscale` into a fresh dir and return the dir.
+/// The fake honors `TAILSCALE_FIXTURE` (stdout body), `TAILSCALE_EXIT` (code).
+fn fake_tailscale_dir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bin = dir.path().join("tailscale");
+    std::fs::write(
+        &bin,
+        "#!/bin/sh\nif [ -n \"$TAILSCALE_FIXTURE\" ]; then printf '%s' \"$TAILSCALE_FIXTURE\"; fi\nexit \"$TAILSCALE_EXIT\"\n",
+    )
+    .expect("write fake tailscale");
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod fake tailscale");
+    dir
+}
+
+#[test]
+fn serve_tailnet_bind_requires_own_node_membership() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    // Fake source owns .11 only; binding the neighbor CGNAT address must fail
+    // before the store is even opened: no DB file may appear.
+    let tail = fake_tailscale_dir();
+    let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &db)
+        .env("PATH", tail.path())
+        .env(
+            "TAILSCALE_FIXTURE",
+            r#"{"TailscaleIPs": ["100.93.84.11", "fd7a:115c:a1e0::8d3b:540c"]}"#,
+        )
+        .env("TAILSCALE_EXIT", "0")
+        .args(["serve", "--bind", "100.93.84.12:8070"])
+        .output()
+        .expect("run serve");
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("not this node"), "membership: {err}");
+    assert!(!db.exists(), "store opened before membership check");
+}
+
+#[test]
+fn serve_tailnet_bind_refuses_unavailable_and_malformed_source() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Unavailable: fake exits nonzero.
+    let tail = fake_tailscale_dir();
+    for (fixture, exit, want) in [
+        ("", "1", "tailnet bind refused"),
+        ("not json", "0", "tailnet bind refused"),
+        (
+            r#"{"BackendState": "Running"}"#,
+            "0",
+            "tailnet bind refused",
+        ),
+    ] {
+        let db = dir.path().join(format!("actions-{want}-{exit}.db"));
+        let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+            .env("ZESTROKU_DB", &db)
+            .env("PATH", tail.path())
+            .env("TAILSCALE_FIXTURE", fixture)
+            .env("TAILSCALE_EXIT", exit)
+            .args(["serve", "--bind", "100.93.84.11:8070"])
+            .output()
+            .expect("run serve");
+        assert_eq!(out.status.code(), Some(2), "{fixture}/{exit}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(want), "{fixture}/{exit}: {err}");
+        assert!(!db.exists(), "store opened before source check");
+    }
+}
+
+#[test]
+fn serve_tailnet_bind_passes_membership_then_fails_listen() {
+    // Fake source owns the bind address: the membership branch passes and the
+    // failure moves to the listen/store stage (this machine cannot bind
+    // 100.x). If the branch is bypassed-with-accept, an unowned address would
+    // behave identically, so the negative above is the paired guard.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let tail = fake_tailscale_dir();
+    let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &db)
+        .env("PATH", tail.path())
+        .env("TAILSCALE_FIXTURE", r#"{"TailscaleIPs": ["100.93.84.11"]}"#)
+        .env("TAILSCALE_EXIT", "0")
+        .args(["serve", "--bind", "100.93.84.11:8070"])
+        .output()
+        .expect("run serve");
+    assert!(!out.status.success());
+    assert!(db.exists(), "store opened: membership branch passed");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.contains("not this node") && !err.contains("only loopback"),
+        "membership must pass, got: {err}"
+    );
+}
+
+#[test]
+fn serve_loopback_needs_no_tailscale_source() {
+    // Empty PATH: no `tailscale` binary at all. Loopback startup must not
+    // consult the source; refusal or timeout here means a regression.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let empty = tempfile::tempdir().expect("tempdir");
+    let port = free_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &db)
+        .env("PATH", empty.path())
+        .args(["serve", "--bind", &format!("127.0.0.1:{port}")])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn serve");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut ready = false;
+    while Instant::now() < deadline {
+        if TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(ready, "loopback serve did not start without tailscale");
+}
+
 fn seed_sim_device(db: &std::path::Path, target: &str) {
     let (host, port) = target
         .rsplit_once(':')

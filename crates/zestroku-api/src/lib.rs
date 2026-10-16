@@ -47,35 +47,89 @@ where
 struct HealthView {
     status: &'static str,
 }
-
-/// Bind guard for the daemon listener: loopback and private (RFC 1918 or
-/// link-local) addresses only. A wildcard (`0.0.0.0`, `::`) listens on every
-/// interface and needs the explicit override flag; a public address is never
-/// accepted. Returns the parsed socket address.
-pub fn check_bind(bind: &str, allow_wildcard: bool) -> Result<std::net::SocketAddr> {
+/// Bind guard for the daemon listener: loopback and Tailscale ranges only.
+/// A wildcard (`0.0.0.0`, `::`) listens on every interface and is never
+/// accepted; RFC 1918, link-local, public and IPv4-mapped IPv6 addresses are
+/// refused. Tailnet membership is NOT decided here: a tailnet-range bind
+/// additionally requires own-node membership (see `node_owns_address`),
+/// checked at startup. Returns the parsed socket address.
+pub fn check_bind(bind: &str) -> Result<std::net::SocketAddr> {
     let addr: std::net::SocketAddr = bind
         .parse()
         .map_err(|_| Error::Malformed(format!("--bind {bind:?}: expected ip:port")))?;
-    let ip = addr.ip();
-    if ip.is_unspecified() {
-        return if allow_wildcard {
-            Ok(addr)
-        } else {
-            Err(Error::Malformed(format!(
-                "--bind {bind}: wildcard listens on every interface; pass --allow-unsafe-bind to accept that"
-            )))
-        };
-    }
-    let local = match ip {
-        std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
-        std::net::IpAddr::V6(v6) => v6.is_loopback(),
-    };
-    if !local {
+    if !bind_ip_allowed(&addr.ip()) {
         return Err(Error::Malformed(format!(
-            "--bind {bind}: only loopback or private-LAN addresses are served"
+            "--bind {bind}: only loopback and this node's Tailscale addresses are served"
         )));
     }
     Ok(addr)
+}
+
+/// Pure range policy: IPv4 loopback, IPv6 loopback, the 100.64.0.0/10
+/// shared-address range and fd7a:115c:a1e0::/48. Everything else,
+/// including IPv4-mapped IPv6 (even mapped loopback), is refused.
+fn bind_ip_allowed(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            if v4.is_loopback() {
+                return true;
+            }
+            let o = v4.octets();
+            o[0] == 100 && (64..=127).contains(&o[1])
+        }
+        std::net::IpAddr::V6(v6) => {
+            if v6.to_ipv4_mapped().is_some() {
+                return false;
+            }
+            if v6.is_loopback() {
+                return true;
+            }
+            let s = v6.segments();
+            s[0] == 0xfd7a && s[1] == 0x115c && s[2] == 0xa1e0
+        }
+    }
+}
+
+/// Parse the `TailscaleIPs` array from `tailscale status --json` output.
+pub fn parse_tailscale_ips(json: &str) -> Result<Vec<std::net::IpAddr>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("tailscale status is not JSON: {e}"))?;
+    let ips = value
+        .get("TailscaleIPs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "tailscale status has no TailscaleIPs array".to_string())?;
+    ips.iter()
+        .map(|entry| {
+            entry
+                .as_str()
+                .ok_or_else(|| "tailscale address is not a string".to_string())
+                .and_then(|text| {
+                    text.parse()
+                        .map_err(|_| format!("tailscale address is not an IP: {text:?}"))
+                })
+        })
+        .collect()
+}
+
+/// Own-node membership: the bind address must equal one of this node's
+/// Tailscale addresses. Range membership alone is not enough because
+/// RFC 6598 CGNAT space is not Tailscale-exclusive.
+pub fn node_owns_address(ip: &std::net::IpAddr, self_ips: &[std::net::IpAddr]) -> bool {
+    self_ips.contains(ip)
+}
+
+/// Read this node's Tailscale addresses from the local Tailscale source.
+pub fn tailscale_self_ips() -> Result<Vec<std::net::IpAddr>, String> {
+    let output = std::process::Command::new("tailscale")
+        .args(["status", "--json"])
+        .output()
+        .map_err(|e| format!("tailscale status failed to run: {e}"))?;
+    if !output.status.success() {
+        return Err("tailscale status exited unsuccessfully".to_string());
+    }
+    let text = String::from_utf8(output.stdout)
+        .map_err(|_| "tailscale status is not UTF-8".to_string())?;
+    parse_tailscale_ips(&text)
 }
 
 #[derive(Debug, Serialize, fastapi::JsonSchema)]
@@ -632,25 +686,70 @@ mod tests {
     }
 
     #[test]
-    fn check_bind_allows_loopback_and_private_refuses_wildcard_and_public() {
-        assert!(super::check_bind("127.0.0.1:8099", false).is_ok());
-        assert!(super::check_bind("192.168.1.20:8099", false).is_ok());
+    fn check_bind_allows_loopback_and_tailnet_ranges() {
+        assert!(super::check_bind("127.0.0.1:8099").is_ok());
+        assert!(super::check_bind("127.0.0.2:8099").is_ok());
+        assert!(super::check_bind("[::1]:8099").is_ok());
+        assert!(super::check_bind("100.64.0.0:8099").is_ok());
+        assert!(super::check_bind("100.127.255.255:8099").is_ok());
+        assert!(super::check_bind("100.93.84.11:8099").is_ok());
+        assert!(super::check_bind("[fd7a:115c:a1e0::1]:8099").is_ok());
+        assert!(super::check_bind("[fd7a:115c:a1e0:ffff:ffff:ffff:ffff:ffff]:8099").is_ok());
+        assert!(
+            super::check_bind("127.0.0.1:0").is_ok(),
+            "port 0 stays valid"
+        );
         // Planted negatives: each guard removed turns one of these red.
+        assert!(super::check_bind("100.63.255.255:8099").is_err());
+        assert!(super::check_bind("100.128.0.0:8099").is_err());
         assert!(
-            super::check_bind("0.0.0.0:8099", false).is_err(),
-            "wildcard"
+            super::check_bind("[fd7a:115c:a1df:ffff::1]:8099").is_err(),
+            "adjacent /48"
         );
         assert!(
-            super::check_bind("[::]:8099", false).is_err(),
-            "v6 wildcard"
+            super::check_bind("[fd7a:115c:a1e1::1]:8099").is_err(),
+            "adjacent /48"
         );
-        assert!(super::check_bind("8.8.8.8:8099", false).is_err(), "public");
+        assert!(super::check_bind("192.168.1.20:8099").is_err(), "RFC1918");
+        assert!(super::check_bind("10.0.0.5:8099").is_err(), "RFC1918");
+        assert!(super::check_bind("169.254.1.2:8099").is_err(), "link-local");
+        assert!(super::check_bind("0.0.0.0:8099").is_err(), "wildcard");
+        assert!(super::check_bind("[::]:8099").is_err(), "v6 wildcard");
+        assert!(super::check_bind("8.8.8.8:8099").is_err(), "public");
         assert!(
-            super::check_bind("not-an-addr", false).is_err(),
-            "malformed"
+            super::check_bind("[::ffff:127.0.0.1]:8099").is_err(),
+            "mapped loopback"
         );
-        // The explicit override admits the wildcard, and only the wildcard.
-        assert!(super::check_bind("0.0.0.0:8099", true).is_ok());
-        assert!(super::check_bind("8.8.8.8:8099", true).is_err());
+        assert!(
+            super::check_bind("[::ffff:100.64.0.1]:8099").is_err(),
+            "mapped tailnet"
+        );
+        assert!(super::check_bind("not-an-addr").is_err(), "malformed");
+    }
+
+    #[test]
+    fn tailscale_self_ips_parse_and_membership() {
+        let json = r#"{"TailscaleIPs": ["100.93.84.11", "fd7a:115c:a1e0::8d3b:540c"], "BackendState": "Running"}"#;
+        let ips = super::parse_tailscale_ips(json).expect("fixture parses");
+        assert_eq!(ips.len(), 2);
+        let own_v4: std::net::IpAddr = "100.93.84.11".parse().unwrap();
+        let own_v6: std::net::IpAddr = "fd7a:115c:a1e0::8d3b:540c".parse().unwrap();
+        let other_cgnat: std::net::IpAddr = "100.93.84.12".parse().unwrap();
+        assert!(super::node_owns_address(&own_v4, &ips));
+        assert!(super::node_owns_address(&own_v6, &ips));
+        assert!(
+            !super::node_owns_address(&other_cgnat, &ips),
+            "non-node CGNAT is not owned"
+        );
+        assert!(super::parse_tailscale_ips("{}").is_err(), "missing array");
+        assert!(
+            super::parse_tailscale_ips(r#"{"TailscaleIPs": ["999.1.1.1"]}"#).is_err(),
+            "malformed entry"
+        );
+        assert!(
+            super::parse_tailscale_ips(r#"{"TailscaleIPs": [42]}"#).is_err(),
+            "non-string entry"
+        );
+        assert!(super::parse_tailscale_ips("not json").is_err());
     }
 }
