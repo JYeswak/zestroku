@@ -1,0 +1,21 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_6ff061065e2692b7cb37e99bbe6a381fb9768b440e42c32806528194312e8295",
+ "limitations": [
+  "hosted CI only; no local/RCH run; nonauthor VERDICT still required"
+ ],
+ "operation": "n1f hosted acceptance CI38893838463",
+ "parameters": {
+  "bead_id": "zestroku-n1f",
+  "source": "57755cb"
+ },
+ "producer": "QuietStream",
+ "result_ref": {
+  "ci_run": "https://github.com/JYeswak/zestroku/actions/runs/38893838463",
+  "command": "hosted CI gates on exact 57755cb",
+  "decisive_output": "run 38893838463 success; fmt/check/clippy/test/offline/one-asupersync/tokio-ban/identifier-scrub all success, no skips",
+  "source": "57755cb",
+  "worker": "hosted"
+ }
+}
