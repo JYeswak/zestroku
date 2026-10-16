@@ -239,7 +239,7 @@ fn mint_cli_approval(db: &Path, target: &str, key: &str, transcript: &Path) -> S
     );
     String::from_utf8_lossy(&output.stdout)
         .split_whitespace()
-        .find(|word| word.len() == 64 && word.bytes().all(u8::is_ascii_hexdigit))
+        .find(|word| word.len() == 64 && word.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .map(str::to_owned)
         .unwrap_or_else(|| {
             panic!(
