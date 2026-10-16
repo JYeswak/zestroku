@@ -193,9 +193,9 @@ pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         Some("--script") if args.len() == 2 && args[1] == "bash" => {
             print!("{script}", script = bash_adapter());
-            return ExitCode::SUCCESS;
+            ExitCode::SUCCESS
         }
-        Some("--script") => return usage_error("supported shells: bash"),
+        Some("--script") => usage_error("supported shells: bash"),
         Some("devices") if args.len() <= 2 => {
             complete_devices(args.get(1).map_or("", String::as_str))
         }
