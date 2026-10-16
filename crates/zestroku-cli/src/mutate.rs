@@ -95,7 +95,7 @@ fn build_command(kind: &str, target: &str) -> std::result::Result<Command, Strin
                 .map_err(|_| format!("app id must be a number, got {target:?}"))?;
             Ok(zestroku_proto::launch(app_id))
         }
-        "key" => Ok(zestroku_proto::keypress_raw(&target.to_uppercase())),
+        "key" => Ok(zestroku_proto::keypress_raw(target)),
         "install" if target == "sideload" => Ok(Command {
             method: zestroku_proto::Method::Post,
             path: "/plugin_install".to_string(),

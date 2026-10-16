@@ -197,6 +197,57 @@ fn mint_mcp_approval(
     )
     .expect("mint one-use MCP approval")
 }
+/// Mint a real CLI approval through `script` so the terminal-only CLI gate
+/// stays active in this process-level regression.
+fn mint_cli_approval(db: &Path, target: &str, key: &str, transcript: &Path) -> String {
+    let binary = env!("CARGO_BIN_EXE_zestroku");
+    let mut command = Command::new("script");
+    #[cfg(target_os = "macos")]
+    command
+        .args(["-q", "-e"])
+        .arg(transcript)
+        .arg(binary)
+        .args(["approve", "key", target, key]);
+    #[cfg(target_os = "linux")]
+    command
+        .args(["-q", "-e", "-c"])
+        .arg(format!("{binary} approve key {target} {key}"))
+        .arg(transcript);
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    panic!("CLI approval PTY test requires macOS or Linux `script`");
+
+    let mut child = command
+        .env("ZESTROKU_DB", db)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start CLI approval under PTY");
+    let phrase = format!("approve key {target} {key}\n");
+    child
+        .stdin
+        .take()
+        .expect("PTY stdin")
+        .write_all(phrase.as_bytes())
+        .expect("write exact approval phrase");
+    let output = child.wait_with_output().expect("wait for CLI approval");
+    assert!(
+        output.status.success(),
+        "CLI approval failed; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .find(|word| word.len() == 64 && word.bytes().all(u8::is_ascii_hexdigit))
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            panic!(
+                "CLI approval emitted no token; stdout={}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        })
+}
 
 fn initialize_session(session: &mut Session) {
     session.send(&json!({
@@ -484,8 +535,18 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
         .expect("system clock")
         .as_secs() as i64;
     let launch_token = mint_mcp_approval(&db, &target, &launch(1001), now);
-    let wrong_case_token = mint_mcp_approval(&db, &target, &keypress_raw("HOME"), now);
-    let key_token = mint_mcp_approval(&db, &target, &keypress_raw("Home"), now);
+    let wrong_case_token = mint_cli_approval(
+        &db,
+        &target,
+        "HOME",
+        &dir.path().join("wrong-case-approval.typescript"),
+    );
+    let key_token = mint_cli_approval(
+        &db,
+        &target,
+        "Home",
+        &dir.path().join("home-approval.typescript"),
+    );
 
     let daemon_port = free_port();
     let _daemon = Daemon::start(&db, daemon_port);
