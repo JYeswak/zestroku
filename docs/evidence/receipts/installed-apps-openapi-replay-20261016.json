@@ -1,0 +1,23 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_ed1ab661828bfb336d203dbb9d2782a245e21693576d942b19f0a855eb058c82",
+ "limitations": [
+  "Hosted Ubuntu actual daemon and loopback simulator only; no physical Roku, installed Mac, RCH pool-growth or local-floor proof"
+ ],
+ "operation": "installed-apps-openapi-hosted-replay",
+ "parameters": {
+  "attempt": "2",
+  "gates": "7-of-7-success",
+  "job": "117002521100",
+  "negatives": "malformed-vs-unknown,limited-vs-absent,registered-openapi-schema",
+  "real_binary_test": "real_serve_reads_and_documents_simulator_installed_apps",
+  "run": "38893838463",
+  "source": "57755cbefe9f6e818158039c55905f1f564a60bb"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 193752,
+  "sha256": "80890325e69d302d390103011ea289e3e8b6517d6cb166bb5d41e2f077a9f00e"
+ }
+}
