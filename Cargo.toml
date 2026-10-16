@@ -66,3 +66,7 @@ fastapi = { git = "https://github.com/Dicklesworthstone/fastapi_rust", rev = "cb
 [patch."https://github.com/Dicklesworthstone/fastapi_rust"]
 fastapi-http = { path = "vendor/fastapi-http" }
 
+# Test inherits dev; retain file/line backtraces without full linked DWARF.
+[profile.dev]
+debug = "line-tables-only"
+
