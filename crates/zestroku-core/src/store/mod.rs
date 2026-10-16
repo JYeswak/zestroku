@@ -416,11 +416,13 @@ impl Store for SqliteStore {
         identity: &str,
     ) -> Result<(), StoreError> {
         let moved = self.in_transaction(|conn| {
-            // Occupancy gate before any writes: a destination row owned by
-            // a distinct (or unknown) identity refuses the move, so the
-            // INSERT OR REPLACE below can never merge two identities. A
-            // destination already carrying the moving identity (retry)
-            // proceeds.
+            // Occupancy gate before any writes: a destination identity
+            // record owned by anyone but the moving identity refuses the
+            // move, so the INSERT OR REPLACE below can never merge two
+            // identities -- even when the destination has an identity
+            // record but no device row (orphan mapping), or a row with no
+            // identity. A destination already carrying the moving identity
+            // (retry) proceeds.
             let same_occupant = !conn
                 .query_with_params_sync(
                     "SELECT device_id FROM device_identity WHERE device_id = ?1 AND identity = ?2 LIMIT 1",
@@ -428,13 +430,19 @@ impl Store for SqliteStore {
                 )?
                 .is_empty();
             if !same_occupant {
-                let occupied = !conn
+                let foreign_identity = !conn
+                    .query_with_params_sync(
+                        "SELECT device_id FROM device_identity WHERE device_id = ?1 LIMIT 1",
+                        &[s(&new_device.id)],
+                    )?
+                    .is_empty();
+                let foreign_row = !conn
                     .query_with_params_sync(
                         "SELECT id FROM devices WHERE id = ?1 LIMIT 1",
                         &[s(&new_device.id)],
                     )?
                     .is_empty();
-                if occupied {
+                if foreign_identity || foreign_row {
                     return Ok(false);
                 }
             }

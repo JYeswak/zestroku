@@ -477,3 +477,51 @@ fn identity_move_refuses_destination_row_without_identity() {
     );
     st.close().unwrap();
 }
+
+#[test]
+fn identity_move_refuses_orphan_destination_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("identity-orphan.db");
+    let old_id = "127.0.0.1:1111";
+    let new_id = "127.0.0.1:2222";
+    let old_device = device(old_id, "open");
+
+    let st = SqliteStore::open(&path).unwrap();
+    st.upsert_device(&old_device).unwrap();
+    st.set_alias(&AliasRow {
+        alias: "living-room".into(),
+        device_id: old_id.into(),
+    })
+    .unwrap();
+    st.record_device_identity(old_id, "key-device-a").unwrap();
+    // Destination carries B's identity record but no device row.
+    st.record_device_identity(new_id, "key-device-b").unwrap();
+    assert_eq!(st.get_device(new_id).unwrap(), None);
+
+    let err = st
+        .move_device_identity(old_id, &device(new_id, "open"), "key-device-a")
+        .expect_err("orphan destination identity must refuse the move");
+    assert!(
+        err.to_string().contains("distinct identity"),
+        "refusal must name the collision, got: {err}"
+    );
+    // A stays mapped, B keeps new_id, no destination row is created.
+    assert_eq!(st.get_device(old_id).unwrap(), Some(old_device));
+    assert_eq!(st.get_device(new_id).unwrap(), None);
+    assert_eq!(
+        st.find_device_id_by_identity("key-device-a").unwrap(),
+        Some(old_id.to_string())
+    );
+    assert_eq!(
+        st.find_device_id_by_identity("key-device-b").unwrap(),
+        Some(new_id.to_string())
+    );
+    assert_eq!(
+        st.list_aliases().unwrap(),
+        vec![AliasRow {
+            alias: "living-room".into(),
+            device_id: old_id.into(),
+        }]
+    );
+    st.close().unwrap();
+}
