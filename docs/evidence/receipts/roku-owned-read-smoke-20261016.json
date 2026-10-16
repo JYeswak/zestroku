@@ -1,0 +1,18 @@
+{
+ "authority": "live",
+ "confidence": "observed",
+ "evidence_id": "ev_4dc0d63e9914de603046994e9b3adf9f16cf6cf4231d5dd1b45439e37e5d74a0",
+ "limitations": [
+  "Own-LAN read-only historical executable smoke only; no n1f/current-source/installation/resident-service/mutation/mission acceptance."
+ ],
+ "operation": "zestroku.owned-read-smoke.20261016",
+ "parameters": {
+  "decisive_output_json": "{\"after_discovery_info\":{\"exit\":0,\"stdout\":\"Roku Express 4K+ (3941X2) software=15.2.4 tv=false tier=permissive tv-active-channel=absent\"},\"before_discovery_info\":{\"error\":\"HTTP404 device_not_found\",\"exit\":1},\"binary\":\"target/deployed/92cbdf7/zestroku\",\"binary_sha256\":\"eec1ea3fce7687c3efbf3e78a5edf12a02f4e025dd1fccdeb583cf22540262ad\",\"default_info\":{\"error\":\"DAEMON_UNAVAILABLE: Connection refused (os error 61)\",\"exit\":1},\"limitations\":[\"Preserved deployed executable, not current n1f source acceptance\",\"Owned ephemeral daemon, not installed resident service\",\"Read-only own-LAN smoke, no mutation or full mission proof\"],\"on_path\":{\"command\":\"zestroku --version\",\"exit\":127,\"result\":\"command not found\"},\"owned_daemon\":{\"bind\":\"127.0.0.1:18070\",\"isolated_state\":true,\"pid\":97081,\"ready\":true,\"sigterm_exit\":0},\"single_target_discovery\":{\"cidr\":\"192.168.1.182/32\",\"device_rows\":1,\"exit\":0,\"hosts_answered\":1,\"hosts_scanned\":1,\"no_ssdp\":true}}",
+  "subject_sha256": "eec1ea3fce7687c3efbf3e78a5edf12a02f4e025dd1fccdeb583cf22540262ad"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 945,
+  "sha256": "a0f3bb416c000774e1bd9ee4611394f6c19e2d338913a13f76585e71a7960f46"
+ }
+}
