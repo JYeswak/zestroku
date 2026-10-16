@@ -43,21 +43,21 @@ jobs:
         run: cargo fmt --check --all
 
       - name: check
-        run: cargo check --workspace --all-targets
+        run: cargo check --locked --workspace --all-targets
         timeout-minutes: 75
 
       - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
         timeout-minutes: 75
 
       - name: test (offline; live-LAN legs are --ignored by design)
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
         timeout-minutes: 60
 
       # ── Franken-stack invariant: ONE asupersync version in the graph ──
       - name: one asupersync (Cx type universe)
         run: |
-          cargo tree -i asupersync --workspace | tee /tmp/asup-tree.txt
+          cargo tree --locked -i asupersync --workspace | tee /tmp/asup-tree.txt
           versions=$(grep -c '^asupersync v' /tmp/asup-tree.txt || true)
           test "$versions" -le 1 || { echo "::error::asupersync version fork — Cx is not one type"; exit 1; }
 
