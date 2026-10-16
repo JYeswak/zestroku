@@ -1,14 +1,85 @@
 #![forbid(unsafe_code)]
 
-#[path = "common/mod.rs"]
-mod common;
-use common::*;
+//! Local fixture mirror: this target exercises routes/OpenAPI only, so it
+//! must not compile the ECP-mutation helpers in common/mod.rs (`calls`,
+//! `response`, `error_code`, `assert_no_cors`), which other targets consume.
+//! The items below mirror common exactly; keep them in sync if it changes.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use fastapi::{TestClient, core::Method as HttpMethod};
 use serde_json::Value;
 use zestroku_api::build_app;
+use zestroku_core::store::{AccessTierRow, DeviceRow, SqliteStore, Store};
+use zestroku_proto::{Command, EcpResponse, Transport};
+use zestroku_types::{Error, Result};
+
+const HOST: &str = "192.0.2.10";
+const PORT: u16 = 18_063;
+
+struct ResponseTransport {
+    responses: Mutex<VecDeque<EcpResponse>>,
+    calls: Mutex<Vec<(String, u16, Command)>>,
+}
+
+impl ResponseTransport {
+    fn new(responses: impl IntoIterator<Item = EcpResponse>) -> Self {
+        Self {
+            responses: Mutex::new(responses.into_iter().collect()),
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn calls(&self) -> Vec<(String, u16, Command)> {
+        self.calls.lock().expect("calls lock").clone()
+    }
+}
+
+impl Transport for ResponseTransport {
+    async fn send(&self, host: &str, port: u16, command: &Command) -> Result<EcpResponse> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push((host.to_owned(), port, command.clone()));
+        self.responses
+            .lock()
+            .expect("responses lock")
+            .pop_front()
+            .ok_or_else(|| Error::Unreachable("fixture response exhausted".into()))
+    }
+}
+
+fn store_with_device(
+    host: &str,
+    port: u16,
+    access_tier: &str,
+) -> (tempfile::TempDir, Arc<Mutex<SqliteStore>>) {
+    let directory = tempfile::tempdir().expect("create store directory");
+    let store = SqliteStore::open(&directory.path().join("api.db")).expect("open store");
+    store
+        .upsert_device(&DeviceRow {
+            id: zestroku_core::tier::device_id(host, port),
+            name: "Fixture Roku".into(),
+            ip: host.into(),
+            model: "Roku Fixture".into(),
+            model_num: "FIXTURE1".into(),
+            firmware: "15.2.4".into(),
+            wifi_driver: "fixture".into(),
+            access_tier: access_tier.into(),
+            last_seen: 1_700_000_000,
+        })
+        .expect("seed device");
+    store
+        .upsert_access_tier(&AccessTierRow {
+            device_id: zestroku_core::tier::device_id(host, port),
+            tier: access_tier.into(),
+            probe_at: 1_700_000_000,
+            probe_map: "{}".into(),
+        })
+        .expect("seed recorded tier");
+    (directory, Arc::new(Mutex::new(store)))
+}
 
 fn resolve_schema<'a>(spec: &'a Value, schema: &'a Value) -> &'a Value {
     match schema.get("$ref").and_then(Value::as_str) {
@@ -25,7 +96,8 @@ fn resolve_schema<'a>(spec: &'a Value, schema: &'a Value) -> &'a Value {
 #[test]
 fn key_and_launch_mutation_routes_document_closed_request_bodies() {
     let (_directory, store) = store_with_device(HOST, PORT, "permissive");
-    let app = build_app(store, Arc::new(ResponseTransport::new([])));
+    let transport = Arc::new(ResponseTransport::new([]));
+    let app = build_app(store, Arc::clone(&transport));
     let routes: Vec<_> = app.routes().collect();
     for (method, path) in [
         (HttpMethod::Post, "/v1/devices/{host}/key"),
@@ -106,4 +178,8 @@ fn key_and_launch_mutation_routes_document_closed_request_bodies() {
             );
         }
     }
+    assert!(
+        transport.calls().is_empty(),
+        "schema/routes-only test must not dispatch ECP"
+    );
 }
