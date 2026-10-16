@@ -763,7 +763,7 @@ fn mcp_key_and_launch_daemon_down_preserves_tokens_for_restart() {
         baseline_posts,
         "daemon-down mutations must not reach the device: {down_posts:?}"
     );
-    let _restarted_daemon = Daemon::start(&db, daemon_port);
+    daemon = Daemon::start(&db, daemon_port);
     let keyed = session.call(
         4,
         "key",
@@ -785,6 +785,7 @@ fn mcp_key_and_launch_daemon_down_preserves_tokens_for_restart() {
         .map(|(_, path)| path)
         .collect();
     assert_eq!(posts[baseline_posts..], ["/keypress/Home", "/launch/1001"]);
+    daemon.stop();
 }
 #[test]
 fn mcp_rejects_non_loopback_daemon_endpoint_before_startup() {
