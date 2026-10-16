@@ -1,0 +1,21 @@
+{
+ "authority": "live",
+ "confidence": "observed",
+ "evidence_id": "ev_0ad923ebbf6c28d09bb993d92c4e5900eb20fcad20bb4ce2ea44fa334e417977",
+ "limitations": [
+  "LIVE is readonly process-report collection with failing verdicts, not Roku/device/build/performance success. No new product close or qualified lever.",
+  "Review/reopens and several conformance inputs UNKNOWN; retained-cohort arithmetic is not complete event flow. Deferred mining is not completed mining."
+ ],
+ "operation": "daily-red-review-readonly-producers",
+ "parameters": {
+  "decisive_output": "{\"conformance_exit\":0,\"daily_mining\":\"deferred-not-complete\",\"fleet_exit\":0,\"lever\":\"none\",\"must_score\":0.526,\"results\":{\"P01\":\"PASS\",\"P02\":\"PASS\",\"P03\":\"PASS\",\"P04\":\"PASS\",\"P05\":\"PASS\",\"P06\":\"PASS\",\"P07\":\"FAIL\",\"P08\":\"FAIL\",\"P09\":\"UNKNOWN\",\"P10\":\"PASS\",\"P11\":\"UNKNOWN\",\"P12\":\"UNKNOWN\",\"P13\":\"UNKNOWN\",\"P14\":\"UNKNOWN\",\"P15\":\"PASS\",\"P16\":\"PASS\",\"P17\":\"FAIL\",\"P18\":\"PASS\",\"P19\":\"UNKNOWN\",\"P20\":\"PASS\",\"P21\":\"UNTESTED\"}}",
+  "repo": "/Users/josh/Developer/zestroku",
+  "subject_sha256": "ee7cc793315710dd6523b4fc6c1effd862638682a6db885c66eab9865692da0c",
+  "window": "2026-10-15T22:04:15Z/2026-10-16T22:04:15Z"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 2783,
+  "sha256": "bc9fbbf453bcd9cc5567dc1f63584b0a5a40c52ea33beaf69587dd28dda01579"
+ }
+}
