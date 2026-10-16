@@ -106,6 +106,9 @@ fn status_code(response: &[u8]) -> Option<u16> {
         .parse()
         .ok()
 }
+fn listener_is_closed(port: u16) -> bool {
+    TcpStream::connect(("127.0.0.1", port)).is_err()
+}
 
 fn read_req(stream: &mut TcpStream) -> std::io::Result<(Vec<u8>, String)> {
     let mut reader = std::io::BufReader::new(stream.try_clone()?);
@@ -462,7 +465,7 @@ fn c3_partial_info_body_completes_after_term_and_admission_stop() {
         exit.map(|status| status.code()),
         term_at.elapsed()
     );
-    let listener_closed = TcpStream::connect(("127.0.0.1", port)).is_err();
+    let listener_closed = listener_is_closed(port);
     assert!(send_cd.is_ok(), "C3 failed to send the request remainder");
     assert_eq!(status_code(&response), Some(200), "{text}");
     assert!(text.contains("SIMX1"), "{text}");
@@ -484,6 +487,21 @@ fn c3_partial_info_body_completes_after_term_and_admission_stop() {
     assert!(
         listener_closed,
         "C3 listener remained open after daemon exit"
+    );
+    let holder = start(&db, port);
+    let holder_detected = !listener_is_closed(port);
+    drop(holder);
+    let listener_closed_after_holder = listener_is_closed(port);
+    eprintln!(
+        "C3 listener_probe after_daemon_exit={listener_closed} holder_detected={holder_detected} after_holder_exit={listener_closed_after_holder}"
+    );
+    assert!(
+        holder_detected,
+        "C3 listener probe missed a separate process holding the port"
+    );
+    assert!(
+        listener_closed_after_holder,
+        "C3 listener probe did not pass after the holder process exited"
     );
 }
 
