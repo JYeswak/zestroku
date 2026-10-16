@@ -19,6 +19,13 @@ impl Drop for Daemon {
         let _ = self.0.wait();
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PortProbe {
+    Bound,
+    AddressInUse,
+}
+
 struct PortRebinder {
     child: Child,
     input: ChildStdin,
@@ -51,9 +58,23 @@ impl PortRebinder {
         self.read_message()
     }
 
+    fn probe(&mut self) -> PortProbe {
+        self.send("probe");
+        match self.read_message().as_str() {
+            "BOUND" => PortProbe::Bound,
+            "ADDR_IN_USE" => PortProbe::AddressInUse,
+            result => panic!("unexpected listener probe response: {result}"),
+        }
+    }
+
     fn release(&mut self) {
         self.send("release");
         assert_eq!(self.read_message(), "RELEASED");
+    }
+
+    fn finish(&mut self) {
+        self.send("finish");
+        assert_eq!(self.read_message(), "FINISHED");
         let status = self.child.wait().expect("wait for listener rebinder");
         assert!(status.success(), "listener rebinder failed: {status}");
     }
@@ -91,9 +112,10 @@ fn listener_rebinder_child() {
         let port = free_port();
         let mut rebinder = PortRebinder::spawn(port);
         assert_eq!(rebinder.bind(), "BOUND");
-        assert_port_held(port);
+        assert_eq!(rebinder.probe(), PortProbe::AddressInUse);
         rebinder.release();
-        assert_port_released(port);
+        assert_eq!(rebinder.probe(), PortProbe::Bound);
+        rebinder.finish();
         return;
     };
 
@@ -105,47 +127,50 @@ fn listener_rebinder_child() {
     writeln!(output, "PORT_REBINDER:READY").expect("write listener rebinder ready");
     output.flush().expect("flush listener rebinder ready");
 
+    let mut held_listener: Option<TcpListener> = None;
     let mut command = String::new();
-    input.read_line(&mut command).expect("read bind command");
-    assert_eq!(command.trim_end(), "bind");
-    let listener = match TcpListener::bind(("127.0.0.1", port)) {
-        Ok(listener) => listener,
-        Err(error) => {
-            writeln!(output, "PORT_REBINDER:BIND_ERROR:{:?}", error.kind())
-                .expect("write listener rebinder bind error");
-            output.flush().expect("flush listener rebinder bind error");
-            panic!("listener rebinder could not bind the original address: {error}");
-        }
-    };
-    writeln!(output, "PORT_REBINDER:BOUND").expect("write listener rebinder bound");
-    output.flush().expect("flush listener rebinder bound");
-
-    command.clear();
-    input.read_line(&mut command).expect("read release command");
-    assert_eq!(command.trim_end(), "release");
-    drop(listener);
-    writeln!(output, "PORT_REBINDER:RELEASED").expect("write listener rebinder released");
-    output.flush().expect("flush listener rebinder released");
-}
-
-fn assert_port_held(port: u16) {
-    match TcpListener::bind(("127.0.0.1", port)) {
-        Err(error) => assert_eq!(
-            error.kind(),
-            std::io::ErrorKind::AddrInUse,
-            "listener-held probe failed for a reason other than address ownership"
-        ),
-        Ok(listener) => {
-            drop(listener);
-            panic!("listener-held probe rebound an address still owned by another process");
+    loop {
+        command.clear();
+        let bytes = input
+            .read_line(&mut command)
+            .expect("read listener rebinder command");
+        assert!(bytes > 0, "listener rebinder input closed unexpectedly");
+        let reply = match command.trim_end() {
+            "probe" => match TcpListener::bind(("127.0.0.1", port)) {
+                Ok(listener) => {
+                    drop(listener);
+                    "BOUND"
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => "ADDR_IN_USE",
+                Err(error) => panic!("listener probe failed unexpectedly: {error}"),
+            },
+            "bind" => {
+                assert!(held_listener.is_none(), "listener already held");
+                held_listener = Some(
+                    TcpListener::bind(("127.0.0.1", port)).expect("bind original listener address"),
+                );
+                "BOUND"
+            }
+            "release" => {
+                assert!(held_listener.is_some(), "listener was not held");
+                drop(held_listener.take());
+                "RELEASED"
+            }
+            "finish" => {
+                assert!(
+                    held_listener.is_none(),
+                    "cannot finish while listener is held"
+                );
+                "FINISHED"
+            }
+            command => panic!("unexpected listener rebinder command: {command}"),
+        };
+        writeln!(output, "PORT_REBINDER:{reply}").expect("write listener rebinder response");
+        output.flush().expect("flush listener rebinder response");
+        if reply == "FINISHED" {
+            break;
         }
     }
-}
-
-fn assert_port_released(port: u16) {
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .unwrap_or_else(|error| panic!("serve address remained bound after release: {error}"));
-    drop(listener);
 }
 
 fn free_port() -> u16 {
@@ -496,6 +521,11 @@ fn c3_partial_info_body_completes_after_term_and_admission_stop() {
     let port = free_port();
     let mut rebinder = PortRebinder::spawn(port);
     let mut daemon = start(&db, port);
+    assert_eq!(
+        rebinder.probe(),
+        PortProbe::AddressInUse,
+        "C3 separate-process probe did not observe the live daemon listener"
+    );
     let host = format!("127.0.0.1:{port}");
     let (mut stream, started) = partial_info_request(port, &host, &target);
     eprintln!(
@@ -609,14 +639,12 @@ fn c3_partial_info_body_completes_after_term_and_admission_stop() {
         response_connection.is_some_and(|value| value.eq_ignore_ascii_case("close")),
         "C3 response did not request connection close: {response_head:?}"
     );
-    let bind_result = rebinder.bind();
     assert_eq!(
-        bind_result, "BOUND",
-        "C3 separate process could not rebind the original serve address after daemon exit"
+        rebinder.probe(),
+        PortProbe::Bound,
+        "C3 separate-process release probe could not rebind the original serve address after daemon exit"
     );
-    assert_port_held(port);
-    rebinder.release();
-    assert_port_released(port);
+    rebinder.finish();
 }
 
 #[derive(Debug, Clone, Copy)]
