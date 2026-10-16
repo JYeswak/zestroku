@@ -217,24 +217,46 @@ fn bash_adapter_sources_and_offers_inventory_candidates() {
         bin_dir.to_string_lossy(),
         std::env::var("PATH").unwrap_or_default()
     );
-    // (words, cword, must-contain, must-not-contain)
-    let contexts: [(&str, u32, Vec<&str>, Vec<&str>); 4] = [
-        ("zestroku complete devices", 2, vec!["devices"], vec![]),
+    // (words, cword, exact expected COMPREPLY entries, in order)
+    let contexts: [(&str, u32, Vec<&str>); 6] = [
+        ("zestroku complete devices", 2, vec!["devices"]),
         (
-            "zestroku complete apps living-room",
+            "zestroku complete apps \"\"",
             3,
             vec!["192.0.2.10:8060", "living-room"],
-            vec![],
+        ),
+        ("zestroku complete apps living", 3, vec!["living-room"]),
+        (
+            "zestroku complete apps living-room \"\"",
+            4,
+            vec!["1001", "Streaming One"],
         ),
         (
             "zestroku complete apps living-room Streaming",
             4,
             vec!["Streaming One"],
-            vec!["1001"],
         ),
-        ("zestroku", 1, vec!["info", "complete"], vec![]),
+        (
+            "zestroku",
+            1,
+            vec![
+                "active-app",
+                "alias",
+                "approve",
+                "apps",
+                "complete",
+                "devices",
+                "info",
+                "install",
+                "key",
+                "launch",
+                "mcp",
+                "serve",
+                "version",
+            ],
+        ),
     ];
-    for (words, cword, present, absent) in contexts {
+    for (words, cword, expected) in contexts {
         let probe = Command::new("bash")
             .env("ZESTROKU_DB", &db)
             .env("PATH", &path)
@@ -246,12 +268,11 @@ fn bash_adapter_sources_and_offers_inventory_candidates() {
             .output()
             .expect("run bash probe");
         assert_eq!(probe.status.code(), Some(0), "{words} {probe:?}");
-        let offered = String::from_utf8_lossy(&probe.stdout);
-        for candidate in present {
-            assert!(offered.contains(candidate), "{words}: {offered}");
-        }
-        for candidate in absent {
-            assert!(!offered.contains(candidate), "{words}: {offered}");
-        }
+        let offered: Vec<String> = String::from_utf8_lossy(&probe.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let expected: Vec<String> = expected.into_iter().map(str::to_owned).collect();
+        assert_eq!(offered, expected, "{words}");
     }
 }
