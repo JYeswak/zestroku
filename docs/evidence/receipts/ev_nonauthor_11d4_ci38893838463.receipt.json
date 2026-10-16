@@ -1,0 +1,20 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_1c408cb427661297b550acaf04f9d87f21e2a6404f0ce95c03f94f04f2e208a8",
+ "limitations": [
+  "Hosted ubuntu offline CI; live-LAN legs ignored by design; no live Roku proof.",
+  "Outcomes observed via read-only gh API; no rerun."
+ ],
+ "operation": "zestroku.mcp-read-tools.nonauthor-acceptance-11.4",
+ "parameters": {
+  "base": "57755cbefe9f6e818158039c55905f1f564a60bb",
+  "bead_id": "zestroku-zestroku-doctrine-a0h.11.4",
+  "ci_run": "38893838463"
+ },
+ "producer": "SandyOrchid",
+ "result_ref": {
+  "bytes": 22888,
+  "sha256": "4d015a1f33a818765b115d3d05e1c701b2d0daff59bb9016edc68fab9082920b"
+ }
+}
