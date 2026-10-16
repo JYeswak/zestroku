@@ -703,4 +703,60 @@ mod tests {
             "alternate-loopback escape must be rejected before Transport::send"
         );
     }
+
+    #[test]
+    fn sweep_keeps_valid_responder_while_refusing_escape() {
+        // Mixed sweep: one in-scope LOCATION reconciles and probes exactly
+        // once; a same-responder escape is refused with zero extra probes.
+        let responder = UdpSocket::bind("127.0.0.1:0").expect("SSDP responder");
+        responder
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("SSDP read timeout");
+        let target = format!("127.0.0.1:{}", responder.local_addr().unwrap().port());
+        let valid_location = format!("127.0.0.1:{ECP_DEFAULT_PORT}");
+        let responder_thread = thread::spawn(move || {
+            let mut request = [0_u8; 1500];
+            let (length, peer) = responder.recv_from(&mut request).expect("receive M-SEARCH");
+            assert!(
+                String::from_utf8_lossy(&request[..length]).contains("M-SEARCH * HTTP/1.1"),
+                "unexpected SSDP request"
+            );
+            for location in [valid_location.as_str(), "127.0.0.2:8060"] {
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nLOCATION: http://{location}/\r\n\
+                     ST: roku:ecp\r\nUSN: uuid:roku:ecp:mixed-{location}\r\n\r\n"
+                );
+                responder
+                    .send_to(reply.as_bytes(), peer)
+                    .expect("send SSDP reply");
+            }
+        });
+        let transport = FixtureTransport {
+            bodies: std::collections::BTreeMap::from([(
+                ("127.0.0.1".into(), ECP_DEFAULT_PORT),
+                info_xml("Roku Express"),
+            )]),
+            probed: std::sync::RwLock::new(Vec::new()),
+        };
+
+        let (devices, notes) = runtime()
+            .block_on(async {
+                let sweep = sweep_to(&target, 1).await?;
+                discover_from_sweep(&transport, None, sweep).await
+            })
+            .expect("loopback discovery");
+        responder_thread.join().expect("SSDP responder thread");
+        assert_eq!(devices.len(), 1, "valid in-scope responder reconciles");
+        assert_eq!(devices[0].0.model_name, "Roku Express");
+        assert_eq!(notes.len(), 1, "escape refused alongside: {notes:?}");
+        assert!(
+            notes[0].contains("outside the responder scope"),
+            "{notes:?}"
+        );
+        assert_eq!(
+            *transport.probed.read().expect("probed lock"),
+            vec![("127.0.0.1".to_owned(), ECP_DEFAULT_PORT)],
+            "exactly one probe, to the valid endpoint only"
+        );
+    }
 }
