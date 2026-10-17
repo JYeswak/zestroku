@@ -128,17 +128,16 @@ pub fn authorize_mutation_at<S: Store + ?Sized>(
     // must have been minted inside an active window (fresh explicit
     // confirmation, UTC hours). A quiet-denied attempt preserves the
     // single-use approval for later use.
-    if let Some(token) = token.filter(|t| !t.trim().is_empty()) {
-        if let Some(quiet) = &policy.quiet {
-            let digest = Sha256::digest(token.as_bytes());
-            if let Some(expires_at) = store.peek_confirmation_token_expiry(&hex(&digest))? {
-                let minted_at = expires_at.saturating_sub(APPROVAL_TTL_SECS);
-                if quiet.active_at(hour_of_day_utc(now))
-                    && !quiet.active_at(hour_of_day_utc(minted_at))
-                {
-                    let action_id = insert_action(store, &context, "denied", POLICY_DENIED)?;
-                    return Err(MutationError::PolicyDenied { action_id });
-                }
+    if let Some(token) = token.filter(|t| !t.trim().is_empty())
+        && let Some(quiet) = &policy.quiet
+    {
+        let digest = Sha256::digest(token.as_bytes());
+        if let Some(expires_at) = store.peek_confirmation_token_expiry(&hex(&digest))? {
+            let minted_at = expires_at.saturating_sub(APPROVAL_TTL_SECS);
+            if quiet.active_at(hour_of_day_utc(now)) && !quiet.active_at(hour_of_day_utc(minted_at))
+            {
+                let action_id = insert_action(store, &context, "denied", POLICY_DENIED)?;
+                return Err(MutationError::PolicyDenied { action_id });
             }
         }
     }
