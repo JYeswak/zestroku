@@ -62,7 +62,7 @@ where
     routes::build_app(store, transport, inventory)
 }
 
-pub(super) fn cached_inventory_state<S, T>(
+fn cached_inventory_state<S, T>(
     state: &ApiState<S, T>,
     device_id: &str,
 ) -> std::result::Result<Option<InventoryStateView>, ()> {

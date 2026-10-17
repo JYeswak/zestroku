@@ -17,9 +17,7 @@ use zestroku_core::mutation::{
 };
 use zestroku_core::store::{ActionRow, Store};
 use zestroku_core::tier::{before_app_identity, marked_before_app_state, recorded_tier_for};
-use zestroku_core::{
-    AppsSnapshot, DeviceStateSnapshot, Inventory, InventoryStateView, MediaPlayerSnapshot,
-};
+use zestroku_core::{AppsSnapshot, Inventory, InventoryStateView, MediaPlayerSnapshot};
 use zestroku_proto::{
     EcpGate, Transport, keypress_raw, launch, parse_active_app, parse_apps, parse_ecp_response,
     query, query_apps,
