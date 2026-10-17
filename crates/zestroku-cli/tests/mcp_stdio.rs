@@ -250,13 +250,13 @@ fn mint_cli_approval(
         "approve key {target} {key} --client {}\n",
         effective_client.as_str()
     );
-    child
-        .stdin
-        .take()
-        .expect("PTY stdin")
+    // BSD script injects EOF into the PTY if its input closes before approval.
+    let mut input = child.stdin.take().expect("PTY stdin");
+    input
         .write_all(phrase.as_bytes())
         .expect("write exact approval phrase");
     let output = child.wait_with_output().expect("wait for CLI approval");
+    drop(input);
     assert!(
         output.status.success(),
         "CLI approval failed; stdout={} stderr={}",

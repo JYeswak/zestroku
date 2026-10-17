@@ -243,6 +243,13 @@ command must use the same `ZESTROKU_DB` as the daemon. A down daemon fails
 without consuming a local token or falling back to ECP. `ZESTROKU_DIRECT=1`
 retains the local diagnostic mutation path.
 
+`zestroku undo <host> --confirm <token>` restores a supported prior app through
+the daemon. Eligible history includes approved, completed CLI, MCP stdio and
+HTTP actions for the same device; older direct-mode success records remain
+readable. Restoration needs its own fresh approval. Denied or pending actions
+are not eligible, and a missing or uninstalled prior app refuses restoration
+before dispatch.
+
 `zestroku launch <host> --app <name> --confirm <token>` resolves an ASCII
 case-insensitive exact name, then a unique prefix, against the daemon's
 installed apps. Missing or ambiguous names never dispatch. The approval
