@@ -99,19 +99,34 @@ fn build_command(kind: &str, target: &str) -> Result<Command, McpError> {
 #[derive(Debug)]
 pub struct ArgError(pub String);
 
+/// Inputs to the local mutation gate; one struct keeps the seam under the
+/// argument-count lint as policy inputs grow.
+pub struct DecideInput<'a> {
+    pub kind: &'a str,
+    pub host: &'a str,
+    pub target: &'a str,
+    pub tier: AccessTier,
+    pub confirmation: Option<&'a str>,
+    pub before_state: &'a str,
+    pub policy: &'a Policy,
+}
+
 pub fn decide<S: Store + ?Sized>(
     store: &S,
-    kind: &str,
-    host: &str,
-    target: &str,
-    tier: AccessTier,
-    confirmation: Option<&str>,
-    before_state: &str,
-    policy: &Policy,
+    input: DecideInput<'_>,
 ) -> Result<Result<String, ArgError>, MutationError> {
+    let DecideInput {
+        kind,
+        host,
+        target,
+        tier,
+        confirmation,
+        before_state,
+        policy,
+    } = input;
     let command = build_command(kind, target).map_err(|e| ArgError(e.to_string()));
     let command = match command {
-        Ok(c) => c,
+        Ok(command) => command,
         Err(arg) => return Ok(Err(arg)),
     };
     let context = MutationContext {
@@ -1223,13 +1238,15 @@ mod tests {
         let (_dir, store) = store_in_tmp();
         let err = decide(
             &store,
-            "launch",
-            "192.0.2.10",
-            "12",
-            AccessTier::Permissive,
-            None,
-            "{}",
-            &Policy::default(),
+            DecideInput {
+                kind: "launch",
+                host: "192.0.2.10",
+                target: "12",
+                tier: AccessTier::Permissive,
+                confirmation: None,
+                before_state: "{}",
+                policy: &Policy::default(),
+            },
         )
         .unwrap_err();
         let MutationError::ConfirmationRequired { action_id, .. } = &err else {
@@ -1259,26 +1276,30 @@ mod tests {
             zestroku_core::mutation::issue_approval(&store, &device, &command, now).unwrap();
         let text = decide(
             &store,
-            "launch",
-            host,
-            "12",
-            AccessTier::Permissive,
-            Some(&token),
-            r#"{"app":"home"}"#,
-            &Policy::default(),
+            DecideInput {
+                kind: "launch",
+                host,
+                target: "12",
+                tier: AccessTier::Permissive,
+                confirmation: Some(&token),
+                before_state: r#"{"app":"home"}"#,
+                policy: &Policy::default(),
+            },
         )
         .expect("gate error impossible here")
         .expect("token authorizes");
         assert!(text.contains("approved: audit id"), "{text}");
         let err = decide(
             &store,
-            "launch",
-            host,
-            "12",
-            AccessTier::Permissive,
-            Some(&token),
-            "{}",
-            &Policy::default(),
+            DecideInput {
+                kind: "launch",
+                host,
+                target: "12",
+                tier: AccessTier::Permissive,
+                confirmation: Some(&token),
+                before_state: "{}",
+                policy: &Policy::default(),
+            },
         )
         .expect_err("replay refused");
         assert!(matches!(err, MutationError::ConfirmationRequired { .. }));
@@ -1297,13 +1318,15 @@ mod tests {
         let (_dir, store) = store_in_tmp();
         let arg = decide(
             &store,
-            "launch",
-            "192.0.2.10",
-            "netflix",
-            AccessTier::Permissive,
-            None,
-            "{}",
-            &Policy::default(),
+            DecideInput {
+                kind: "launch",
+                host: "192.0.2.10",
+                target: "netflix",
+                tier: AccessTier::Permissive,
+                confirmation: None,
+                before_state: "{}",
+                policy: &Policy::default(),
+            },
         )
         .expect("no gate error")
         .expect_err("non-numeric app id refuses as arg error");
@@ -1321,13 +1344,15 @@ mod tests {
         // wall precedes the confirmation gate (load-bearing ordering).
         let err = decide(
             &store,
-            "key",
-            "192.0.2.10",
-            "home",
-            AccessTier::Open,
-            None,
-            "{}",
-            &Policy::default(),
+            DecideInput {
+                kind: "key",
+                host: "192.0.2.10",
+                target: "home",
+                tier: AccessTier::Open,
+                confirmation: None,
+                before_state: "{}",
+                policy: &Policy::default(),
+            },
         )
         .expect_err("open tier refuses mutations");
         assert!(matches!(err, MutationError::TierRefused(_)));
