@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod discovery;
+pub mod doctor;
 pub mod mutation;
 pub mod ssdp_io;
 pub mod store;

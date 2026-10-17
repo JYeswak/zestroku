@@ -3,7 +3,7 @@
 //! transaction across network I/O; every method here is one short statement
 //! or one short transaction.
 
-mod migrations;
+pub(crate) mod migrations;
 
 use std::fmt::Display;
 use std::path::Path;
