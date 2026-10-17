@@ -72,10 +72,56 @@ fn post_http_request_to_daemon(
     (status, headers.to_owned(), body.to_owned())
 }
 
-fn assert_no_http_mutation_side_effects(db: &std::path::Path, sim: &zestroku_sim::SimDevice) {
+/// Diagnostic trace for the helper regression (.11.3 vs bh1): the full ECP
+/// request log with arrival order and elapsed time since the daemon was up,
+/// plus the log observed BEFORE any API request was sent, so background reads
+/// and request-caused reads are distinguishable in a failure message. It only
+/// observes: every assertion below keeps its original strength.
+struct RequestTrace {
+    up: std::time::Instant,
+    baseline: Vec<(String, String)>,
+    baseline_at_ms: u128,
+}
+
+impl RequestTrace {
+    fn begin(sim: &zestroku_sim::SimDevice) -> Self {
+        // Bounded observation window: give any background reader a chance to
+        // show itself before the first API request. Nothing is asserted here.
+        let up = std::time::Instant::now();
+        let deadline = up + std::time::Duration::from_secs(3);
+        while sim.received_requests().is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        Self {
+            up,
+            baseline: sim.received_requests(),
+            baseline_at_ms: up.elapsed().as_millis(),
+        }
+    }
+
+    fn describe(&self, sim: &zestroku_sim::SimDevice) -> String {
+        format!(
+            "log={:?} at t+{}ms; baseline-before-any-api-request={:?} at t+{}ms",
+            sim.received_requests(),
+            self.up.elapsed().as_millis(),
+            self.baseline,
+            self.baseline_at_ms
+        )
+    }
+}
+
+fn assert_no_http_mutation_side_effects(
+    db: &std::path::Path,
+    sim: &zestroku_sim::SimDevice,
+    trace: &RequestTrace,
+) {
     use zestroku_core::store::{SqliteStore, Store};
 
-    assert!(sim.received_requests().is_empty(), "guard reached ECP");
+    assert!(
+        sim.received_requests().is_empty(),
+        "guard reached ECP: {}",
+        trace.describe(sim)
+    );
     assert!(
         SqliteStore::open(db)
             .expect("open guard audit")
@@ -128,6 +174,7 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
     );
     let api_port = http_free_port();
     let daemon = start_http_daemon(&db, api_port);
+    let trace = RequestTrace::begin(&sim);
     let target = format!("127.0.0.1:{}", sim.port());
     let api_host = format!("127.0.0.1:{api_port}");
     let launch_path = format!("/v1/devices/{target}/launch");
@@ -154,7 +201,7 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
     );
     assert!(!origin_body.contains(&launch_token));
     assert_no_cors_header(&origin_headers);
-    assert_no_http_mutation_side_effects(&db, &sim);
+    assert_no_http_mutation_side_effects(&db, &sim, &trace);
 
     let (media_status, media_headers, media_body) = post_http_request_to_daemon(
         api_port,
@@ -171,7 +218,7 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
     );
     assert!(!media_body.contains(&launch_token));
     assert_no_cors_header(&media_headers);
-    assert_no_http_mutation_side_effects(&db, &sim);
+    assert_no_http_mutation_side_effects(&db, &sim, &trace);
 
     let (host_status, host_headers, host_body) = post_http_request_to_daemon(
         api_port,
@@ -187,7 +234,7 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
     );
     assert!(!host_body.contains(&launch_token));
     assert_no_cors_header(&host_headers);
-    assert_no_http_mutation_side_effects(&db, &sim);
+    assert_no_http_mutation_side_effects(&db, &sim, &trace);
 
     let mut case_variant = launch_token.clone();
     let letter_index = case_variant
@@ -232,7 +279,7 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
                 .to_ascii_lowercase()
                 .contains(&launch_token.to_ascii_lowercase())
         );
-        assert_no_http_mutation_side_effects(&db, &sim);
+        assert_no_http_mutation_side_effects(&db, &sim, &trace);
     }
 
     let same_origin = format!("http://{api_host}");
