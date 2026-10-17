@@ -23,8 +23,9 @@ every bead must carry.
 6. `#![forbid(unsafe_code)]` at every crate root. Pure core, I/O behind traits.
 7. Shared-tree: `git commit --only` your paths; Agent Mail reservations before
    shared edits; implementer ≠ verifier.
-8. Builds go through rch (`RCH_WORKER=contabo-1 RCH_REQUIRE_REMOTE=1 rch exec -- cargo …`).
-   No darwin workers — verify with remote check/test, not local artifacts.
+8. Builds go through immutable-source rch with `RCH_WORKER=contabo-1 RCH_REQUIRE_REMOTE=1`;
+   use the source-selection recipe under Test discipline. No darwin workers —
+   verify with remote check/test, not local artifacts.
 
 ## Flywheel coordination contract
 
@@ -67,8 +68,15 @@ every listener. Full recipe: plan §3 in the edge-library canonical copy.
 
 ## Test discipline
 
-`RCH_WORKER=contabo-1 RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -j 2` — all
-crates, every commit. The tier-gate tests (core) and fixture parser tests (proto)
+All compiled checks, tests, Clippy and artifact builds follow the recorded
+`.13` policy (comment 297, strengthened 2026-10-16 17:57): pin the saved
+source with `--base <full-sha> --clean-overlay --no-overlay`. Replace
+`<full-sha>` with the intended commit. For a candidate, replace `--no-overlay`
+with one `--overlay-path <path>` per reserved input; include every required
+owned change, never the whole dirty checkout.
+
+`RCH_WORKER=contabo-1 RCH_REQUIRE_REMOTE=1 rch exec --base <full-sha> --clean-overlay --no-overlay -- cargo test -j 2 --locked --workspace`
+tests all crates. The tier-gate tests (core) and fixture parser tests (proto)
 are load-bearing: they encode the Limited/Permissive finding structurally.
 
 Run `cargo fmt --all --check` (non-compiling, allowed locally) before every
