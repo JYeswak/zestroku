@@ -263,26 +263,34 @@ impl SqliteStore {
             .ok_or_else(|| backend("live path has no parent"))?;
         checkpoint_live(live)?;
         // SQLite checkpointing truncates the WAL but leaves the (now empty)
-        // file behind until last-close, so existence alone proves nothing.
-        // Only a sidecar that still holds bytes after checkpointing is
-        // refused: it may hold data no checkpoint could consolidate. An
-        // empty sidecar holds nothing and is removed so it cannot shadow
-        // the promoted snapshot.
-        for suffix in ["-wal", "-shm"] {
-            let mut sidecar = live.as_os_str().to_owned();
-            sidecar.push(suffix);
-            let sidecar = Path::new(&sidecar);
-            let bytes = std::fs::metadata(sidecar).map(|m| m.len()).unwrap_or(0);
-            if bytes > 0 {
-                return Err(backend(format!(
-                    "live WAL sidecar {} holds {bytes} un-checkpointed bytes; refusing restore",
-                    sidecar.display()
-                )));
-            }
-            if sidecar.exists() {
-                std::fs::remove_file(sidecar)
-                    .map_err(|e| backend(format!("remove empty WAL sidecar: {e}")))?;
-            }
+        // file behind until last-close, so WAL existence alone proves
+        // nothing. Only a WAL that still holds bytes after checkpointing is
+        // refused — never deleted: it may hold data no checkpoint could
+        // consolidate. An empty WAL holds nothing and is removed so it
+        // cannot shadow the promoted snapshot.
+        let mut wal = live.as_os_str().to_owned();
+        wal.push("-wal");
+        let wal = Path::new(&wal);
+        let bytes = std::fs::metadata(wal).map(|m| m.len()).unwrap_or(0);
+        if bytes > 0 {
+            return Err(backend(format!(
+                "live WAL {wal} holds {bytes} un-checkpointed bytes; refusing restore",
+                wal = wal.display()
+            )));
+        }
+        if wal.exists() {
+            std::fs::remove_file(wal).map_err(|e| backend(format!("remove empty WAL: {e}")))?;
+        }
+        // The -shm file is only a shared-memory index over the WAL (locks
+        // and frame locations), never durable bytes: with the WAL empty or
+        // gone it indexes nothing, so it is removed rather than gated on
+        // size (a live index is normally tens of kilobytes).
+        let mut shm = live.as_os_str().to_owned();
+        shm.push("-shm");
+        let shm = Path::new(&shm);
+        if shm.exists() {
+            std::fs::remove_file(shm)
+                .map_err(|e| backend(format!("remove stale shm index: {e}")))?;
         }
         let tmp = parent.join(".restore.tmp");
         std::fs::copy(backup, &tmp).map_err(|e| backend(format!("copy backup to staging: {e}")))?;
@@ -449,17 +457,21 @@ fn applied_schema_max(path: &Path) -> Result<i64, StoreError> {
 
 /// Consolidate live WAL sidecars into the live database (preserving every
 /// committed byte) so promotion replaces one self-contained file. A missing
-/// live file needs no checkpoint. Checkpoint errors are tolerated: the
-/// post-checkpoint sidecar recheck refuses what survives.
+/// live file needs no checkpoint. A failed checkpoint is fatal: masking it
+/// would hide driver regressions behind the byte recheck.
 fn checkpoint_live(live: &Path) -> Result<(), StoreError> {
     if !live.exists() {
         return Ok(());
     }
     let conn = AsyncConnection::open_sync(live.to_string_lossy().into_owned())
         .map_err(|e| backend(format!("cannot open live database for checkpoint: {e}")))?;
-    // PRAGMA returns a result row, so it must go through the query path;
-    // execute_sync does not run it (observed: sidecars survive).
-    let _ = conn.query_with_params_sync("PRAGMA wal_checkpoint(TRUNCATE)", &[]);
+    // PRAGMA returns a result row, so it must go through the query path.
+    // A failed checkpoint is fatal here (not tolerated): the byte recheck
+    // below can only refuse what it sees, and a silent skip would mask a
+    // driver regression. A busy-but-progressing checkpoint still returns
+    // Ok; un-consolidated bytes are refused by size below.
+    conn.query_with_params_sync("PRAGMA wal_checkpoint(TRUNCATE)", &[])
+        .map_err(|e| backend(format!("live checkpoint failed: {e}")))?;
     Ok(())
 }
 

@@ -165,6 +165,12 @@ fn restore_checkpoint_consolidates_live_wal_then_rolls_back() {
         dir.path().join("actions.db-wal").exists(),
         "probe must leave a WAL sidecar"
     );
+    // Record pre-restore sizes: the WAL must hold bytes (proving restore
+    // consolidates rather than taking the trivial path).
+    let wal_bytes = std::fs::metadata(dir.path().join("actions.db-wal"))
+        .unwrap()
+        .len();
+    assert!(wal_bytes > 0, "probe WAL must be nonempty, got {wal_bytes}");
 
     // Restore checkpoints (preserving committed data) instead of refusing.
     SqliteStore::restore_from(&backup, &live).unwrap();
