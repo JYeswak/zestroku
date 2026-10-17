@@ -91,7 +91,36 @@ jobs:
 
       - name: installer consumer scenario (old revision -> new revision)
         if: ${{ inputs.old_ref != '' }}
-        run: sh scripts/test-install-macos.sh old-src/target/release/zestroku "$RUNNER_TEMP/zestroku-new"
+        env:
+          TMPDIR: ${{ runner.temp }}/scenario
+        run: |
+          mkdir -p "$TMPDIR"
+          sh scripts/test-install-macos.sh old-src/target/release/zestroku "$RUNNER_TEMP/zestroku-new"
+
+      - name: retain both exact executables with source, version and digest
+        if: ${{ always() && inputs.old_ref != '' }}
+        run: |
+          cp old-src/target/release/zestroku "$RUNNER_TEMP/zestroku-old"
+          {
+            echo "new_source=${{ github.sha }}"
+            echo "old_source=$(git -C old-src rev-parse HEAD)"
+            shasum -a 256 "$RUNNER_TEMP/zestroku-old" "$RUNNER_TEMP/zestroku-new"
+            echo "old: $("$RUNNER_TEMP/zestroku-old" --version)"
+            echo "new: $("$RUNNER_TEMP/zestroku-new" --version)"
+          } > "$RUNNER_TEMP/scenario-manifest.txt"
+          cat "$RUNNER_TEMP/scenario-manifest.txt"
+
+      - name: upload both executables, manifest and per-command scenario evidence
+        if: ${{ always() && inputs.old_ref != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-scenario
+          path: |
+            ${{ runner.temp }}/zestroku-old
+            ${{ runner.temp }}/zestroku-new
+            ${{ runner.temp }}/scenario-manifest.txt
+            ${{ runner.temp }}/scenario/zestroku-install.*/evidence
+          if-no-files-found: error
 
       - name: test (offline, native macOS)
         run: cargo test --workspace
