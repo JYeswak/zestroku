@@ -628,3 +628,56 @@ fn cli_undo_refuses_uninstalled_prior_id_even_when_name_matches() {
         format!("tier_source=recorded; device_id={target}; app_id=9999; app_name=Streaming One")
     });
 }
+
+#[test]
+fn unsupported_daemon_policy_refuses_without_dispatch_or_spending_approval() {
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let directory = tempfile::tempdir().expect("isolated policy stores");
+    let daemon_db = directory.path().join("daemon.db");
+    let client_db = directory.path().join("client.db");
+    let target = seed_http_device(&daemon_db, sim.port());
+    let api_port = http_free_port();
+    let daemon_url = format!("http://127.0.0.1:{api_port}");
+    let _daemon = start_http_daemon(&daemon_db, api_port);
+    let token = mint_http_approval(&daemon_db, sim.port(), &launch(1001));
+    let policy_path = directory.path().join("policy.toml");
+    std::fs::write(&policy_path, "[quiet_hours]\nenabled = true\n")
+        .expect("write unsupported restriction");
+
+    let refused = run_cli(
+        &client_db,
+        &daemon_url,
+        &["launch", &target, "1001", "--confirm", &token],
+    );
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+    assert!(refused.stdout.is_empty(), "invalid policy reported success");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("policy_unavailable"),
+        "{refused:?}"
+    );
+    assert!(
+        sim.received_requests()
+            .iter()
+            .all(|(method, _)| method != "POST"),
+        "an invalid policy must refuse before mutation dispatch"
+    );
+
+    // A missing file is an intentional default, unlike an unsupported policy.
+    // The exact same grant still authorizes the actual operation after refusal.
+    std::fs::remove_file(&policy_path).expect("remove unsupported temporary policy");
+    let completed = run_cli(
+        &client_db,
+        &daemon_url,
+        &["launch", &target, "1001", "--confirm", &token],
+    );
+    assert_eq!(completed.status.code(), Some(0), "{completed:?}");
+    let posts: Vec<_> = sim
+        .received_requests()
+        .into_iter()
+        .filter_map(|(method, path)| (method == "POST").then_some(path))
+        .collect();
+    assert_eq!(posts, ["/launch/1001"]);
+}

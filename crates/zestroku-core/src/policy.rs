@@ -163,10 +163,20 @@ impl Policy {
         Self::load(&Self::default_path())
     }
 
-    /// Parse TOML text. Fail-closed on any malformed value.
+    /// Parse supported TOML fields, refusing unknown restrictions instead of ignoring them.
     pub fn parse(text: &str) -> Result<Self, Error> {
         let bad = |m: String| Error::Malformed(format!("policy.toml: {m}"));
         let doc: toml::Table = text.parse().map_err(|e| bad(format!("{e}")))?;
+        if let Some(name) = doc.keys().find(|name| {
+            !matches!(
+                name.as_str(),
+                "keypress_per_sec" | "launch_per_min" | "allow" | "quiet"
+            )
+        }) {
+            return Err(Error::Malformed(format!(
+                "policy.toml: unknown field {name:?}; expected keypress_per_sec, launch_per_min, allow or quiet"
+            )));
+        }
         let mut policy = Self::default();
         if let Some(value) = doc.get("keypress_per_sec") {
             policy.keypress_per_sec = value
@@ -213,6 +223,14 @@ impl Policy {
             let table = quiet
                 .as_table()
                 .ok_or_else(|| bad("`quiet` must be a table with start/end hours".into()))?;
+            if let Some(name) = table
+                .keys()
+                .find(|name| !matches!(name.as_str(), "start" | "end"))
+            {
+                return Err(Error::Malformed(format!(
+                    "policy.toml: unknown quiet field {name:?}; expected start or end"
+                )));
+            }
             let hour = |name: &str| {
                 table
                     .get(name)
@@ -280,6 +298,18 @@ mod tests {
         assert!(quiet.active_at(6));
         assert!(!quiet.active_at(7));
         assert!(!quiet.active_at(21));
+        for (text, field) in [
+            ("[quiet_hours]\nenabled = true\n", "quiet_hours"),
+            (
+                "launch_per_min = 2\nlaunch_per_minute = 1\n",
+                "launch_per_minute",
+            ),
+            ("[quiet]\nstart = 22\nend = 7\nend_hour = 6\n", "end_hour"),
+            ("[quiet]\nstart = 22\nend = 7\nenabled = false\n", "enabled"),
+        ] {
+            let error = Policy::parse(text).expect_err("unsupported restriction must fail closed");
+            assert!(error.to_string().contains(field), "{field}: {error}");
+        }
         assert!(Policy::parse("keypress_per_sec = 0\n").is_err());
         assert!(Policy::parse("keypress_per_sec = 5000000000\n").is_err());
         assert!(Policy::parse("[allow]\ncli = \"keypress\"\n").is_err());

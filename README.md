@@ -289,6 +289,24 @@ M1 discovery ✅ · M2 wire-doc ✅ · M3 tier map ✅ · M4 keypress ✅ (launc
 gated per-op) · M5 firmware lane ✅ · M6 cross-device diff ✅ · M7 = this
 repo (in progress) · M8 parity features (beaded).
 
+## Policy configuration
+
+`policy.toml` lives beside the store database. A missing file uses the
+documented budgets: eight keypresses per second and ten launches per minute.
+The supported root fields are `keypress_per_sec`, `launch_per_min`, `allow`,
+and `quiet`. Both budgets are positive integers; `allow` maps client names to
+arrays containing `keypress`, `launch`, and/or `install`.
+
+`quiet` accepts only `start` and `end`, UTC hours from 0 through 23. The start
+is inclusive and the end exclusive; windows may wrap midnight. Equal hours
+disable the window. Unknown fields or tables are errors, not ignored
+restrictions: `[quiet_hours]` is not an alias for `[quiet]`, and extra fields
+such as `quiet.enabled` are refused. Doctor reports invalid policy rather
+than endorsing a silently unused restriction.
+
+Policy code is not yet qualified as a complete cross-surface safety contract;
+trusted client identity and durable concurrent audit corrections remain open.
+
 ## Limitations
 
 - Recorded 2026-10-10: Zestroku Rust TCP/SSDP requests from an agent pane
@@ -301,7 +319,8 @@ repo (in progress) · M8 parity features (beaded).
 - `zestroku-sim` reproduces the documented wire behavior, not device firmware;
   media-player and icon bytes are placeholders until sampled read-only.
 - No live-device behavior runs in CI; live legs are owner-gated opt-in only.
-- Doctor checks, policy file, SSE state stream, and web remote are planned,
+- Doctor and policy code are present, but their original cross-surface and
+  causal acceptance remains incomplete. SSE state stream and web remote are
   not implemented.
 
 ## Status

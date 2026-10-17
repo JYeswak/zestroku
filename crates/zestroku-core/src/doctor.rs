@@ -1082,7 +1082,18 @@ mod tests {
             dir.path().join("policy.toml"),
             "[quiet_hours]\nenabled = true\n",
         )
-        .expect("write valid policy");
+        .expect("write unsupported quiet-hours table");
+        let unsupported = check_policy_file(&db);
+        assert_eq!(unsupported.verdict, Verdict::Fail);
+        assert!(
+            unsupported.detail.contains("quiet_hours"),
+            "{unsupported:?}"
+        );
+        std::fs::write(
+            dir.path().join("policy.toml"),
+            "[quiet]\nstart = 22\nend = 7\n",
+        )
+        .expect("write supported policy");
         assert_eq!(check_policy_file(&db).verdict, Verdict::Pass);
     }
 
