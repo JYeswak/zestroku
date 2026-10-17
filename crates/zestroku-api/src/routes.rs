@@ -851,8 +851,10 @@ fn is_undo_source_action(action: &ActionRow, target_id: &str) -> bool {
         |(device_id, _, _)| device_id == target_id,
     );
     let successful = match (action.client.as_str(), action.surface.as_str()) {
-        ("loopback-http" | "mcp-stdio" | "http", "launch" | "key" | "undo") => {
-            action.result == "completed"
+        ("cli" | "loopback-http" | "mcp-stdio" | "http", "launch" | "key" | "undo")
+            if action.result == "completed" =>
+        {
+            true
         }
         ("cli", "launch" | "key") => action
             .result
