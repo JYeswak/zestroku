@@ -11,6 +11,7 @@ use zestroku_core::store::Store;
 use zestroku_proto::{
     EcpGate, EcpResponse, parse_active_app, parse_device_info, parse_ecp_response, query,
 };
+use zestroku_types::ErrorCode;
 
 mod aliases;
 mod apps;
@@ -179,6 +180,17 @@ fn read_target_index(args: &[String]) -> Option<usize> {
     target
 }
 
+fn target_store_error(error: impl std::fmt::Display) -> (ExitCode, String) {
+    (
+        ExitCode::FAILURE,
+        format!(
+            "[{}] target store: {error}; hint: {}; suggestions: []",
+            ErrorCode::StoreUnavailable.as_str(),
+            ErrorCode::StoreUnavailable.hint()
+        ),
+    )
+}
+
 fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
     let Some(verb) = args.first().map(String::as_str) else {
         return Ok(());
@@ -205,18 +217,9 @@ fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
     if verb == "approve" && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal()) {
         return Ok(());
     }
-    let store = store_db::open().map_err(|error| {
-        (
-            ExitCode::FAILURE,
-            format!("target store unavailable: {error}"),
-        )
-    })?;
-    let devices = store
-        .list_devices()
-        .map_err(|error| (ExitCode::FAILURE, format!("cannot list devices: {error}")))?;
-    let aliases = store
-        .list_aliases()
-        .map_err(|error| (ExitCode::FAILURE, format!("cannot list aliases: {error}")))?;
+    let store = store_db::open().map_err(target_store_error)?;
+    let devices = store.list_devices().map_err(target_store_error)?;
+    let aliases = store.list_aliases().map_err(target_store_error)?;
     let smart_class = args[target_index].eq_ignore_ascii_case("tv")
         || args[target_index].eq_ignore_ascii_case("stick");
     match &zestroku_core::targets::resolve_target(&args[target_index], &devices, &aliases) {
@@ -229,7 +232,7 @@ fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
                 candidates,
             },
         ) => {
-            if mutation {
+            let exit = if mutation {
                 let surface = if verb == "approve" {
                     &args[1]
                 } else {
@@ -252,18 +255,29 @@ fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
                     result: "AMBIGUOUS_NAME".into(),
                     before_state: "not queried: ambiguous target".into(),
                 };
-                store.insert_action(&action).map_err(|store_error| {
-                    (
-                        ExitCode::FAILURE,
-                        format!("cannot audit ambiguous mutation: {store_error}"),
-                    )
-                })?;
-                return Err((ExitCode::from(4), error.to_string()));
-            }
-            return Err((ExitCode::from(2), error.to_string()));
+                store.insert_action(&action).map_err(target_store_error)?;
+                4
+            } else {
+                2
+            };
+            return Err((
+                ExitCode::from(exit),
+                format!(
+                    "[{}] {error}; hint: {}; suggestions: [{candidates}]",
+                    ErrorCode::AmbiguousName.as_str(),
+                    ErrorCode::AmbiguousName.hint()
+                ),
+            ));
         }
         Err(error) if strict || smart_class => {
-            return Err((ExitCode::from(2), error.to_string()));
+            return Err((
+                ExitCode::from(2),
+                format!(
+                    "[{}] {error}; hint: {}",
+                    ErrorCode::UnknownDevice.as_str(),
+                    ErrorCode::UnknownDevice.hint()
+                ),
+            ));
         }
         Err(_) => {}
     }
@@ -272,6 +286,14 @@ fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
 fn report_read_error(error: daemon_client::ReadError) -> ExitCode {
     eprintln!("zestroku: [{}] {error}", error.code());
     ExitCode::FAILURE
+}
+
+fn report_cli_error(code: ErrorCode, detail: impl std::fmt::Display, suggestions: &[&str]) {
+    eprintln!(
+        "zestroku: [{}] {detail}; hint: {}; suggestions: {suggestions:?}",
+        code.as_str(),
+        code.hint()
+    );
 }
 
 fn render_info(
@@ -342,13 +364,21 @@ fn run_direct_read(verb: &str, target: &str, json: bool) -> ExitCode {
     };
     let classification = parse_ecp_response(&response);
     if classification.gate == EcpGate::Limited403 {
-        eprintln!("zestroku: device returned the verified Limited-mode 403 gate");
+        report_cli_error(
+            ErrorCode::TierRefused,
+            "device returned the verified Limited-mode 403 gate",
+            &[],
+        );
         return ExitCode::from(3);
     }
     if classification.gate != EcpGate::Open {
-        eprintln!(
-            "zestroku: {} {} returned an unclassified response: {:?}",
-            command.method, command.path, classification
+        report_cli_error(
+            ErrorCode::ProtocolError,
+            format_args!(
+                "{} {} returned an unclassified response: {:?}",
+                command.method, command.path, classification
+            ),
+            &[],
         );
         return ExitCode::FAILURE;
     }
@@ -357,7 +387,7 @@ fn run_direct_read(verb: &str, target: &str, json: bool) -> ExitCode {
         let info = match parse_device_info(&response.body) {
             Ok(info) => info,
             Err(error) => {
-                eprintln!("zestroku: {error}");
+                report_cli_error(error.code(), &error, &[]);
                 return ExitCode::FAILURE;
             }
         };
@@ -400,7 +430,7 @@ fn run_direct_read(verb: &str, target: &str, json: bool) -> ExitCode {
         let app = match parse_active_app(&response.body) {
             Ok(app) => app,
             Err(error) => {
-                eprintln!("zestroku: {error}");
+                report_cli_error(error.code(), &error, &[]);
                 return ExitCode::FAILURE;
             }
         };
@@ -468,25 +498,33 @@ fn run_action_log(args: &[String]) -> ExitCode {
         [] => false,
         [flag] if flag == "--json" => true,
         [flag] => {
-            eprintln!("zestroku log: unknown option {flag}");
+            report_cli_error(
+                ErrorCode::InvalidArgument,
+                format_args!("log: unknown option {flag}"),
+                &[],
+            );
             return ExitCode::from(2);
         }
         _ => {
-            eprintln!("zestroku log: expected at most --json");
+            report_cli_error(
+                ErrorCode::InvalidArgument,
+                "log: expected at most --json",
+                &[],
+            );
             return ExitCode::from(2);
         }
     };
     let store = match store_db::open() {
         Ok(store) => store,
         Err(error) => {
-            eprintln!("zestroku log: action log unavailable: {error}");
+            report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
             return ExitCode::FAILURE;
         }
     };
     let mut actions = match store.list_actions() {
         Ok(actions) => actions,
         Err(error) => {
-            eprintln!("zestroku log: cannot read action log: {error}");
+            report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
             return ExitCode::FAILURE;
         }
     };
@@ -547,7 +585,7 @@ fn main() -> ExitCode {
         Some("mcp") => match zestroku_mcp::run_stdio() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("zestroku mcp: {e}");
+                report_cli_error(ErrorCode::RuntimeUnavailable, e, &[]);
                 ExitCode::from(1)
             }
         },
@@ -572,17 +610,17 @@ fn main() -> ExitCode {
             match parse_read_opts(&args[1..], direct_env.as_deref()) {
                 Ok(opts) => run_read_command(&args[0], &opts),
                 Err((code, error)) => {
-                    eprintln!("zestroku: {error}");
+                    report_cli_error(ErrorCode::InvalidArgument, error, &[]);
                     code
                 }
             }
         }
-        Some("approve") => mutate::approve(&args[1..]),
+        Some("approve") => mutate::approval::run(&args[1..]),
         Some("install") if args.len() >= 3 => install::run(&args[1..]),
         Some("launch") if args.len() >= 3 => mutate::run("launch", &args[1..]),
         Some("key") if args.len() >= 3 => mutate::run("key", &args[1..]),
         _ => {
-            eprintln!("{}", usage());
+            report_cli_error(ErrorCode::InvalidArgument, usage(), &[]);
             ExitCode::from(2)
         }
     }

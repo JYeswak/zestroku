@@ -13,6 +13,7 @@
 use std::process::ExitCode;
 
 use zestroku_core::store::{SqliteStore, Store};
+use zestroku_types::ErrorCode;
 
 use crate::store_db;
 
@@ -100,7 +101,7 @@ fn complete_devices(prefix: &str) -> ExitCode {
     let store = match store_db::open() {
         Ok(store) => store,
         Err(error) => {
-            eprintln!("zestroku complete: store unavailable: {error}");
+            crate::report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
             return ExitCode::FAILURE;
         }
     };
@@ -108,14 +109,14 @@ fn complete_devices(prefix: &str) -> ExitCode {
     match store.list_devices() {
         Ok(devices) => candidates.extend(devices.into_iter().map(|row| row.id)),
         Err(error) => {
-            eprintln!("zestroku complete: cannot list devices: {error}");
+            crate::report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
             return ExitCode::FAILURE;
         }
     }
     match store.list_aliases() {
         Ok(aliases) => candidates.extend(aliases.into_iter().map(|row| row.alias)),
         Err(error) => {
-            eprintln!("zestroku complete: cannot list aliases: {error}");
+            crate::report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
             return ExitCode::FAILURE;
         }
     }
@@ -146,7 +147,7 @@ fn complete_apps(operand: &str, prefix: &str) -> ExitCode {
     let store = match store_db::open() {
         Ok(store) => store,
         Err(error) => {
-            eprintln!("zestroku complete: store unavailable: {error}");
+            crate::report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
             return ExitCode::FAILURE;
         }
     };
@@ -154,7 +155,7 @@ fn complete_apps(operand: &str, prefix: &str) -> ExitCode {
     let rows = match store.list_apps(&device_id) {
         Ok(rows) => rows,
         Err(error) => {
-            eprintln!("zestroku complete: cannot list cached apps: {error}");
+            crate::report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
             return ExitCode::FAILURE;
         }
     };
@@ -182,7 +183,11 @@ fn complete_verbs(prefix: &str) -> ExitCode {
 }
 
 fn usage_error(message: &str) -> ExitCode {
-    eprintln!("zestroku complete: {message}");
+    crate::report_cli_error(
+        ErrorCode::InvalidArgument,
+        format_args!("complete: {message}"),
+        &[],
+    );
     eprintln!("usage: zestroku complete <devices|apps|verbs> [prefix]");
     eprintln!("       zestroku complete apps <device-id> [prefix]");
     eprintln!("       zestroku complete --script bash");

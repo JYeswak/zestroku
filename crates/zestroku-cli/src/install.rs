@@ -9,7 +9,7 @@ use zestroku_core::mutation::{
 };
 use zestroku_core::policy::Policy;
 use zestroku_proto::{Command, Method, parse_active_app, query};
-use zestroku_types::{AccessTier, Device};
+use zestroku_types::{AccessTier, Device, ErrorCode};
 
 use crate::installer;
 use crate::store_db;
@@ -105,7 +105,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let options = match parse_options(args) {
         Ok(options) => options,
         Err(error) => {
-            eprintln!("zestroku: {error}");
+            crate::report_cli_error(ErrorCode::InvalidArgument, error, &[]);
             return ExitCode::from(2);
         }
     };
@@ -116,7 +116,11 @@ pub fn run(args: &[String]) -> ExitCode {
     let archive = match std::fs::read(&options.archive) {
         Ok(archive) => archive,
         Err(error) => {
-            eprintln!("zestroku: cannot read owner-provided ZIP: {error}");
+            crate::report_cli_error(
+                ErrorCode::InvalidArgument,
+                format_args!("cannot read owner-provided ZIP: {error}"),
+                &[],
+            );
             return ExitCode::from(2);
         }
     };
@@ -126,7 +130,11 @@ pub fn run(args: &[String]) -> ExitCode {
     {
         Some(filename) => filename.to_string(),
         None => {
-            eprintln!("zestroku: ZIP path has no valid filename");
+            crate::report_cli_error(
+                ErrorCode::InvalidArgument,
+                "ZIP path has no valid filename",
+                &[],
+            );
             return ExitCode::from(2);
         }
     };
@@ -138,14 +146,14 @@ pub fn run(args: &[String]) -> ExitCode {
     let store = match store_db::open() {
         Ok(store) => store,
         Err(error) => {
-            eprintln!("zestroku: action log unavailable: {error}");
+            crate::report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
             return ExitCode::FAILURE;
         }
     };
     let recorded = match zestroku_core::tier::recorded_tier_for(&store, &dial_host, 8060) {
         Ok(recorded) => recorded,
         Err(error) => {
-            eprintln!("zestroku: cannot read recorded ECP tier: {error}");
+            crate::report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
             return ExitCode::FAILURE;
         }
     };
@@ -155,9 +163,10 @@ pub fn run(args: &[String]) -> ExitCode {
             match recorded {
                 Some(tier) => ("recorded", tier.access_tier()),
                 None => {
-                    eprintln!(
-                        "zestroku: no recorded tier for {} — run zestroku info first or set ZESTROKU_TIER=permissive",
-                        dial_host
+                    crate::report_cli_error(
+                        ErrorCode::TierRefused,
+                        format_args!("no recorded tier for {dial_host}; run zestroku info first"),
+                        &[],
                     );
                     return ExitCode::from(3);
                 }
@@ -166,9 +175,10 @@ pub fn run(args: &[String]) -> ExitCode {
         _ => match recorded {
             Some(tier) => ("recorded", tier.access_tier()),
             None => {
-                eprintln!(
-                    "zestroku: no recorded tier for {} — run zestroku info first or set ZESTROKU_TIER=permissive",
-                    dial_host
+                crate::report_cli_error(
+                    ErrorCode::TierRefused,
+                    format_args!("no recorded tier for {dial_host}; run zestroku info first"),
+                    &[],
                 );
                 return ExitCode::from(3);
             }
@@ -186,7 +196,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let runtime = match runtime() {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("zestroku: could not start asupersync runtime: {error}");
+            crate::report_cli_error(ErrorCode::RuntimeUnavailable, error, &[]);
             return ExitCode::FAILURE;
         }
     };
@@ -220,7 +230,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let policy = match Policy::load_default() {
         Ok(policy) => policy,
         Err(error) => {
-            eprintln!("zestroku: policy.toml invalid, refusing to run: {error}");
+            crate::report_cli_error(ErrorCode::ConfigurationError, error, &[]);
             return ExitCode::FAILURE;
         }
     };
@@ -234,38 +244,49 @@ pub fn run(args: &[String]) -> ExitCode {
     ) {
         Ok(action_id) => action_id,
         Err(MutationError::ConfirmationRequired { action_id, .. }) => {
-            eprintln!(
-                "zestroku: CONFIRMATION_REQUIRED — run zestroku approve install {} sideload --installer-port {} then retry with --confirm <token> (audit id {action_id})",
-                dial_host, options.port
+            crate::report_cli_error(
+                ErrorCode::ConfirmationRequired,
+                format_args!(
+                    "run zestroku approve install {dial_host} sideload --installer-port {} then retry with --confirm <token> (audit id {action_id})",
+                    options.port
+                ),
+                &[],
             );
             return ExitCode::from(4);
         }
         Err(MutationError::PolicyDenied { action_id }) => {
-            eprintln!("zestroku: POLICY_DENIED (denial audited, id {action_id})");
+            crate::report_cli_error(
+                ErrorCode::PolicyDenied,
+                format_args!("denial audited, id {action_id}"),
+                &[],
+            );
             return ExitCode::from(5);
         }
         Err(MutationError::TierRefused(error)) => {
-            eprintln!("zestroku: {error} (denial audited)");
+            crate::report_cli_error(error.code(), format_args!("{error}; denial audited"), &[]);
             return ExitCode::from(3);
         }
         Err(error) => {
-            eprintln!("zestroku: mutation gate failed: {error}");
+            crate::report_cli_error(crate::mutate::mutation_error_code(&error), &error, &[]);
             return ExitCode::FAILURE;
         }
     };
-    let result = read_password().and_then(|password| {
-        installer::install(
-            &dial_host,
-            options.port,
-            &archive,
-            &filename,
-            &options.username,
-            &password,
-        )
-    });
+    let result = read_password()
+        .map_err(|error| (ErrorCode::InvalidArgument, error))
+        .and_then(|password| {
+            installer::install(
+                &dial_host,
+                options.port,
+                &archive,
+                &filename,
+                &options.username,
+                &password,
+            )
+            .map_err(|error| (ErrorCode::InstallFailed, error))
+        });
     let outcome = match &result {
         Ok(()) => "installer reported success".to_string(),
-        Err(error) => format!("installer failed: {error}"),
+        Err((code, error)) => format!("installer failed: {}: {error}", code.as_str()),
     };
     if let Err(error) = finish_mutation(&store, action_id, &outcome) {
         eprintln!("zestroku: warning: could not record install outcome: {error}");
@@ -275,8 +296,8 @@ pub fn run(args: &[String]) -> ExitCode {
             println!("ok: sideloaded owner ZIP (audit id {action_id})");
             ExitCode::SUCCESS
         }
-        Err(error) => {
-            eprintln!("zestroku: {error}");
+        Err((code, error)) => {
+            crate::report_cli_error(code, error, &[]);
             ExitCode::from(5)
         }
     }

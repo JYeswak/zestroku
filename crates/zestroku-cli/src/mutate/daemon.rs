@@ -22,7 +22,10 @@ pub(super) fn run(kind: &str, opts: &MutationOpts) -> ExitCode {
                 };
                 let target = match resolve_app_id(&apps, name) {
                     Ok(target) => target,
-                    Err(error) => return usage_error(&error),
+                    Err(error) => {
+                        crate::report_cli_error(error.code(), &error, error.suggestions());
+                        return ExitCode::from(2);
+                    }
                 };
                 parse_app_id(target)
             } else {
@@ -86,22 +89,7 @@ pub(super) fn undo_last(args: &[String]) -> ExitCode {
     };
     let plan = match client.undo_plan(host) {
         Ok(plan) => plan,
-        Err(ReadError::DaemonRequestFailed { status: 404, error })
-            if error == "undo_app_not_installed" =>
-        {
-            eprintln!("zestroku: could not restore the previous app: it is not installed");
-            return ExitCode::from(5);
-        }
-        Err(ReadError::DaemonRequestFailed { status: 409, error })
-            if matches!(
-                error.as_str(),
-                "undo_state_unavailable" | "undo_app_ambiguous" | "undo_app_not_launchable"
-            ) =>
-        {
-            eprintln!("zestroku: could not restore the previous app: {error}");
-            return ExitCode::from(5);
-        }
-        Err(error) => return report_error(error),
+        Err(error) => return report_undo_plan_error(error),
     };
     match client.undo_last(host, plan.action_id, confirm) {
         Ok(completed) => {
@@ -111,13 +99,22 @@ pub(super) fn undo_last(args: &[String]) -> ExitCode {
             );
             ExitCode::SUCCESS
         }
-        Err(ReadError::DaemonRequestFailed { status: 403, error })
-            if error == "confirmation_required" =>
+        Err(error)
+            if matches!(
+                &error,
+                ReadError::DaemonRequestFailed {
+                    status: 403,
+                    error: cause,
+                    ..
+                } if cause == "confirmation_required"
+            ) =>
         {
             eprintln!(
-                "zestroku: CONFIRMATION_REQUIRED — undo of {} requires approval; run \
+                "zestroku: [{}] {error}; undo of {} requires approval; run \
                  `zestroku approve launch {host} {}` then retry with --confirm <token>",
-                plan.app_name, plan.app_id
+                error.code(),
+                plan.app_name,
+                plan.app_id
             );
             ExitCode::from(4)
         }
@@ -125,21 +122,57 @@ pub(super) fn undo_last(args: &[String]) -> ExitCode {
     }
 }
 
+fn report_undo_plan_error(error: ReadError) -> ExitCode {
+    let cannot_restore = matches!(
+        &error,
+        ReadError::DaemonRequestFailed {
+            status: 404,
+            error: cause,
+            ..
+        } if cause == "undo_app_not_installed"
+    ) || matches!(
+        &error,
+        ReadError::DaemonRequestFailed {
+            status: 409,
+            error: cause,
+            ..
+        } if matches!(
+            cause.as_str(),
+            "undo_state_unavailable" | "undo_app_ambiguous" | "undo_app_not_launchable"
+        )
+    );
+    if cannot_restore {
+        eprintln!(
+            "zestroku: [{}] could not restore the previous app: {error}",
+            error.code()
+        );
+        ExitCode::from(5)
+    } else {
+        report_error(error)
+    }
+}
+
 fn usage_error(error: &str) -> ExitCode {
-    eprintln!("zestroku: {error}");
+    crate::report_cli_error(zestroku_types::ErrorCode::InvalidArgument, error, &[]);
     ExitCode::from(2)
 }
 
 fn report_error(error: ReadError) -> ExitCode {
     match &error {
-        ReadError::DaemonRequestFailed { status: 403, error }
-            if error == "confirmation_required" =>
-        {
-            eprintln!("zestroku: CONFIRMATION_REQUIRED — daemon refused the approval");
+        ReadError::DaemonRequestFailed {
+            status: 403,
+            error: cause,
+            ..
+        } if cause == "confirmation_required" => {
+            eprintln!("zestroku: [{}] {error}", error.code());
             return ExitCode::from(4);
         }
-        ReadError::DaemonRequestFailed { status: 403, error } if error == "tier_refused" => {
-            eprintln!("zestroku: TIER_REFUSED — daemon refused the device tier");
+        ReadError::DaemonRequestFailed {
+            status: 403,
+            error: cause,
+            ..
+        } if cause == "tier_refused" => {
+            eprintln!("zestroku: [{}] {error}", error.code());
             return ExitCode::from(3);
         }
         _ => {}
@@ -147,7 +180,9 @@ fn report_error(error: ReadError) -> ExitCode {
     let code = match &error {
         ReadError::InvalidDaemonUrl(_) | ReadError::InvalidDeviceTarget(_) => 2,
         ReadError::DaemonRequestFailed { status: 400, .. } => 2,
-        ReadError::DaemonRequestFailed { status: 404, error } if error == "device_not_found" => 2,
+        ReadError::DaemonRequestFailed {
+            status: 404, error, ..
+        } if error == "device_not_found" => 2,
         ReadError::DaemonRequestFailed { status: 500, .. } => 1,
         _ => 5,
     };

@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::ssdp_io::discover;
-use zestroku_types::Result;
+use zestroku_types::{ErrorCode, Result};
 
 use crate::inventory;
 use crate::store_db;
@@ -96,7 +96,7 @@ fn cached_inventory(json: bool) -> ExitCode {
         .map_err(std::io::Error::other)
         .and_then(|()| output.write_all(b"\n"));
         if let Err(error) = result {
-            eprintln!("zestroku devices: could not write JSON: {error}");
+            crate::report_cli_error(ErrorCode::OutputError, error, &[]);
             return ExitCode::FAILURE;
         }
     } else {
@@ -121,8 +121,10 @@ pub fn run(args: &[String]) -> ExitCode {
             if argument == "--json" {
                 json = true;
             } else {
-                eprintln!(
-                    "zestroku devices: discovery option {argument} requires ZESTROKU_DIRECT=1"
+                crate::report_cli_error(
+                    ErrorCode::InvalidArgument,
+                    format_args!("devices: discovery option {argument} requires ZESTROKU_DIRECT=1"),
+                    &[],
                 );
                 return ExitCode::from(2);
             }
@@ -132,14 +134,14 @@ pub fn run(args: &[String]) -> ExitCode {
     let opts = match parse_opts(args) {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("zestroku devices: {e}");
+            crate::report_cli_error(ErrorCode::InvalidArgument, e, &[]);
             return ExitCode::from(2);
         }
     };
     let seeds = match inventory::read_seeds(opts.targets.as_ref()) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("zestroku devices: {e}");
+            crate::report_cli_error(ErrorCode::ConfigurationError, e, &[]);
             return ExitCode::FAILURE;
         }
     };
@@ -149,7 +151,7 @@ pub fn run(args: &[String]) -> ExitCode {
             let hosts = match zestroku_core::discovery::expand_cidr(cidr) {
                 Ok(h) => h,
                 Err(e) => {
-                    eprintln!("zestroku devices: {e}");
+                    crate::report_cli_error(ErrorCode::InvalidArgument, e, &[]);
                     return ExitCode::from(2);
                 }
             };
@@ -167,8 +169,10 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     };
     if opts.no_ssdp && seeds.is_none() {
-        eprintln!(
-            "zestroku devices: --no-ssdp needs a targets.toml (--targets or ZESTROKU_TARGETS)"
+        crate::report_cli_error(
+            ErrorCode::InvalidArgument,
+            "devices: --no-ssdp needs a targets.toml (--targets or ZESTROKU_TARGETS)",
+            &[],
         );
         return ExitCode::from(2);
     }
@@ -180,7 +184,7 @@ pub fn run(args: &[String]) -> ExitCode {
     }) {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("zestroku: could not start asupersync runtime: {e}");
+            crate::report_cli_error(ErrorCode::RuntimeUnavailable, e, &[]);
             return ExitCode::FAILURE;
         }
     };
@@ -234,7 +238,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 Err(e) => Some(format!("store unavailable: {e}")),
             };
             if let Some(note) = &store_err {
-                eprintln!("zestroku devices: store note: {note}");
+                crate::report_cli_error(ErrorCode::StoreUnavailable, note, &[]);
             }
             if opts.json {
                 // Machine-checkable output for scripted/live verification
@@ -270,7 +274,11 @@ pub fn run(args: &[String]) -> ExitCode {
                 }
             }
             if devices.is_empty() {
-                eprintln!("zestroku devices: no devices found");
+                crate::report_cli_error(
+                    ErrorCode::DeviceUnreachable,
+                    "devices: no devices found",
+                    &[],
+                );
                 ExitCode::FAILURE
             } else if store_err.is_some() {
                 // Devices were found and printed; the persist failure is
@@ -281,7 +289,7 @@ pub fn run(args: &[String]) -> ExitCode {
             }
         }
         Err(e) => {
-            eprintln!("zestroku devices: {e}");
+            crate::report_cli_error(e.code(), &e, &[]);
             ExitCode::FAILURE
         }
     }

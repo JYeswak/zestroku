@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::doctor::{self, ConnectOutcome, Ctx, Verdict};
+use zestroku_types::ErrorCode;
 
 use crate::inventory;
 use crate::store_db;
@@ -57,7 +58,11 @@ pub fn run(args: &[String]) -> ExitCode {
         match arg.as_str() {
             "--json" => json = true,
             _ => {
-                eprintln!("usage: zestroku doctor [--json]");
+                crate::report_cli_error(
+                    ErrorCode::InvalidArgument,
+                    "usage: zestroku doctor [--json]",
+                    &[],
+                );
                 return ExitCode::from(2);
             }
         }
@@ -65,7 +70,11 @@ pub fn run(args: &[String]) -> ExitCode {
     let store = match store_db::open() {
         Ok(store) => store,
         Err(error) => {
-            eprintln!("zestroku doctor: {error}");
+            crate::report_cli_error(
+                ErrorCode::StoreUnavailable,
+                format_args!("doctor store: {error}"),
+                &[],
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -73,7 +82,11 @@ pub fn run(args: &[String]) -> ExitCode {
     let seeds = match inventory::read_seeds(None) {
         Ok(seeds) => seeds,
         Err(error) => {
-            eprintln!("zestroku doctor: {error}");
+            crate::report_cli_error(
+                ErrorCode::ConfigurationError,
+                format_args!("doctor targets: {error}"),
+                &[],
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -87,7 +100,11 @@ pub fn run(args: &[String]) -> ExitCode {
         }) {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("zestroku doctor: could not start runtime: {error}");
+            crate::report_cli_error(
+                ErrorCode::RuntimeUnavailable,
+                format_args!("doctor could not start runtime: {error}"),
+                &[],
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -137,8 +154,10 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     }
     if findings.iter().any(|f| f.verdict == Verdict::Fail) {
+        crate::report_cli_error(ErrorCode::DoctorFail, "doctor found failing checks", &[]);
         ExitCode::from(7)
     } else if findings.iter().any(|f| f.verdict == Verdict::Warn) {
+        crate::report_cli_error(ErrorCode::DoctorWarn, "doctor found warnings", &[]);
         ExitCode::from(6)
     } else {
         ExitCode::SUCCESS

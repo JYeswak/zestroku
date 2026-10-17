@@ -4,18 +4,23 @@
 use std::process::ExitCode;
 
 use zestroku_core::store::Store;
+use zestroku_types::ErrorCode;
 
 use crate::store_db;
 
 pub fn run(args: &[String]) -> ExitCode {
     if args.is_empty() {
-        eprintln!("usage: zestroku alias <set|rm|ls> [<alias> [<device>]]");
+        crate::report_cli_error(
+            ErrorCode::InvalidArgument,
+            "usage: zestroku alias <set|rm|ls> [<alias> [<device>]]",
+            &[],
+        );
         return ExitCode::from(2);
     }
     let store = match store_db::open() {
         Ok(store) => store,
         Err(error) => {
-            eprintln!("zestroku alias: store unavailable: {error}");
+            crate::report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
             return ExitCode::FAILURE;
         }
     };
@@ -24,18 +29,22 @@ pub fn run(args: &[String]) -> ExitCode {
         "set" if args.len() == 3 => {
             let alias = args[1].trim();
             if alias.is_empty() {
-                eprintln!("zestroku alias: alias must not be blank");
+                crate::report_cli_error(ErrorCode::InvalidArgument, "alias must not be blank", &[]);
                 return ExitCode::from(2);
             }
             let device_id = &args[2];
             match store.get_device(device_id) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
-                    eprintln!("zestroku alias: unknown device {device_id:?}");
+                    crate::report_cli_error(
+                        ErrorCode::UnknownDevice,
+                        format_args!("unknown device {device_id:?}"),
+                        &[],
+                    );
                     return ExitCode::from(2);
                 }
                 Err(error) => {
-                    eprintln!("zestroku alias: cannot read device: {error}");
+                    crate::report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
                     return ExitCode::FAILURE;
                 }
             }
@@ -49,7 +58,7 @@ pub fn run(args: &[String]) -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(error) => {
-                    eprintln!("zestroku alias: cannot save alias: {error}");
+                    crate::report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
                     ExitCode::FAILURE
                 }
             }
@@ -59,12 +68,16 @@ pub fn run(args: &[String]) -> ExitCode {
             let exists = match store.list_aliases() {
                 Ok(aliases) => aliases.iter().any(|row| row.alias == alias),
                 Err(error) => {
-                    eprintln!("zestroku alias: cannot list aliases: {error}");
+                    crate::report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
                     return ExitCode::FAILURE;
                 }
             };
             if !exists {
-                eprintln!("zestroku alias: no alias named {alias:?}");
+                crate::report_cli_error(
+                    ErrorCode::InvalidArgument,
+                    format_args!("no alias named {alias:?}"),
+                    &[],
+                );
                 return ExitCode::from(2);
             }
             match store.delete_alias(alias) {
@@ -73,7 +86,7 @@ pub fn run(args: &[String]) -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(error) => {
-                    eprintln!("zestroku alias: cannot remove alias: {error}");
+                    crate::report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
                     ExitCode::FAILURE
                 }
             }
@@ -90,12 +103,16 @@ pub fn run(args: &[String]) -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                eprintln!("zestroku alias: cannot list aliases: {error}");
+                crate::report_cli_error(ErrorCode::StoreUnavailable, error, &[]);
                 ExitCode::FAILURE
             }
         },
         _ => {
-            eprintln!("usage: zestroku alias <set|rm|ls> [<alias> [<device>]]");
+            crate::report_cli_error(
+                ErrorCode::InvalidArgument,
+                "usage: zestroku alias <set|rm|ls> [<alias> [<device>]]",
+                &[],
+            );
             ExitCode::from(2)
         }
     }

@@ -9,22 +9,23 @@
 //! tests/mutation_cli.rs; no simulator result claims a live-device mutation.
 #![forbid(unsafe_code)]
 
+pub(crate) mod approval;
+mod command;
 mod daemon;
 
-use std::{
-    io::{self, IsTerminal, Write},
-    process::ExitCode,
-};
+pub(crate) use command::mutation_error_code;
+use command::{build_command, parse_app_id, resolve_app_id};
+
+use std::process::ExitCode;
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::mutation::{
     ClientPrincipal, MutationContext, MutationError, authorize_mutation, finish_mutation,
-    issue_approval,
 };
 use zestroku_proto::{
-    Command, EcpGate, parse_active_app, parse_apps, parse_ecp_response, query, query_apps,
+    EcpGate, parse_active_app, parse_apps, parse_ecp_response, query, query_apps,
 };
-use zestroku_types::{AccessTier, Device, Error};
+use zestroku_types::{AccessTier, Device, Error, ErrorCode};
 
 use crate::store_db;
 use crate::transport::{AsupersyncTransport, send_selected};
@@ -85,58 +86,6 @@ fn parse_opts(kind: &str, args: &[String]) -> std::result::Result<MutationOpts, 
     })
 }
 
-fn parse_app_id(target: &str) -> std::result::Result<u32, String> {
-    target
-        .parse()
-        .map_err(|_| format!("app id must be a number, got {target:?}"))
-}
-
-fn build_command(kind: &str, target: &str) -> std::result::Result<Command, String> {
-    match kind {
-        "launch" => parse_app_id(target).map(zestroku_proto::launch),
-        "key" => Ok(zestroku_proto::keypress_raw(target)),
-        "install" if target == "sideload" => Ok(Command {
-            method: zestroku_proto::Method::Post,
-            path: "/plugin_install".to_string(),
-            tier: AccessTier::Permissive,
-        }),
-        "install" => Err("install approval target must be sideload".to_string()),
-        other => Err(format!("unknown mutation kind {other}")),
-    }
-}
-/// Resolve an installed-app display name to its opaque id (a4b): a
-/// case-insensitive exact match wins, else a unique case-insensitive prefix.
-/// Zero matches yield APP_NOT_INSTALLED; several yield AMBIGUOUS_APP with the
-/// candidate names. Matching touches display strings only, never ids.
-fn resolve_app_id<'a>(
-    apps: &'a [zestroku_proto::InstalledApp],
-    name: &str,
-) -> std::result::Result<&'a str, String> {
-    let want = name.to_lowercase();
-    if let Some(app) = apps.iter().find(|app| app.name.to_lowercase() == want) {
-        return Ok(app.id.as_str());
-    }
-    let candidates: Vec<&str> = apps
-        .iter()
-        .filter(|app| app.name.to_lowercase().starts_with(&want))
-        .map(|app| app.name.as_str())
-        .collect();
-    match candidates.as_slice() {
-        [] => Err("APP_NOT_INSTALLED: no installed app matches the requested name".to_owned()),
-        [only] => Ok(apps
-            .iter()
-            .find(|app| app.name == *only)
-            .expect("prefix candidate comes from the installed list")
-            .id
-            .as_str()),
-        many => Err(format!(
-            "AMBIGUOUS_APP: requested name matches {} installed apps: {}",
-            many.len(),
-            many.join(", ")
-        )),
-    }
-}
-
 fn start_runtime() -> std::result::Result<asupersync::runtime::Runtime, String> {
     let reactor = create_reactor().map_err(|e| e.to_string())?;
     RuntimeBuilder::current_thread()
@@ -156,7 +105,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
     let opts = match parse_opts(kind, args) {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("zestroku: {e}");
+            crate::report_cli_error(ErrorCode::InvalidArgument, e, &[]);
             return ExitCode::from(2);
         }
     };
@@ -172,14 +121,14 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
     let store = match store_db::open() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("zestroku: action log unavailable: {e}");
+            crate::report_cli_error(ErrorCode::StoreUnavailable, e, &[]);
             return ExitCode::FAILURE;
         }
     };
     let recorded = match zestroku_core::tier::recorded_tier_for(&store, &host, port) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("zestroku: cannot read recorded tier: {e}");
+            crate::report_cli_error(ErrorCode::StoreUnavailable, e, &[]);
             return ExitCode::FAILURE;
         }
     };
@@ -195,9 +144,12 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         _ => match recorded {
             Some(t) => ("recorded", t.access_tier()),
             None => {
-                eprintln!(
-                    "zestroku: no recorded tier for {} — run `zestroku info {}` first (or set ZESTROKU_TIER=permissive explicitly)",
-                    host, host
+                crate::report_cli_error(
+                    ErrorCode::TierRefused,
+                    format_args!(
+                        "no recorded tier for {host}; run `zestroku info {host}` first (or set ZESTROKU_TIER=permissive explicitly)"
+                    ),
+                    &[],
                 );
                 return ExitCode::from(3);
             }
@@ -218,7 +170,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
     let runtime = match start_runtime() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("zestroku: could not start asupersync runtime: {e}");
+            crate::report_cli_error(ErrorCode::RuntimeUnavailable, e, &[]);
             return ExitCode::FAILURE;
         }
     };
@@ -234,7 +186,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         Some(name) => {
             let probe = query_apps();
             if let Err(error) = zestroku_core::check_tier(&probe, &device) {
-                eprintln!("zestroku: {error}");
+                crate::report_cli_error(error.code(), &error, &[]);
                 return ExitCode::from(3);
             }
             let response = match runtime.block_on(send_selected(
@@ -245,14 +197,14 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             )) {
                 Ok(response) => response,
                 Err(error) => {
-                    eprintln!("zestroku: cannot fetch installed apps: {error}");
+                    crate::report_cli_error(error.code(), &error, &[]);
                     return ExitCode::from(5);
                 }
             };
             let apps = match parse_apps(&response.body) {
                 Ok(apps) => apps,
                 Err(error) => {
-                    eprintln!("zestroku: cannot parse installed apps: {error}");
+                    crate::report_cli_error(error.code(), &error, &[]);
                     if matches!(error, Error::TierRefused { .. }) {
                         return ExitCode::from(3);
                     }
@@ -262,7 +214,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             let id = match resolve_app_id(&apps, name) {
                 Ok(id) => id,
                 Err(error) => {
-                    eprintln!("zestroku: {error}");
+                    crate::report_cli_error(error.code(), &error, error.suggestions());
                     return ExitCode::from(2);
                 }
             };
@@ -272,16 +224,14 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
     let command = match build_command(kind, &target) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("zestroku: {e}");
+            crate::report_cli_error(ErrorCode::InvalidArgument, e, &[]);
             return ExitCode::from(2);
         }
     };
     let policy = match zestroku_core::policy::Policy::load_default() {
         Ok(policy) => policy,
-        Err(_) => {
-            eprintln!(
-                "zestroku: POLICY_DENIED — owner policy could not be loaded (no mutation dispatched)"
-            );
+        Err(error) => {
+            crate::report_cli_error(ErrorCode::ConfigurationError, error, &[]);
             return ExitCode::from(5);
         }
     };
@@ -320,43 +270,58 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
     let action_id = match authorize_mutation(&store, &device, &command, context, token, &policy) {
         Ok(id) => id,
         Err(MutationError::ConfirmationRequired { action_id, .. }) => {
-            eprintln!(
-                "zestroku: CONFIRMATION_REQUIRED — pass --confirm <token> to approve `{kind} {}` (audit id {action_id})",
-                target
+            crate::report_cli_error(
+                ErrorCode::ConfirmationRequired,
+                format_args!(
+                    "pass --confirm <token> to approve `{kind} {target}` (audit id {action_id})"
+                ),
+                &[],
             );
             return ExitCode::from(4);
         }
         Err(MutationError::PolicyDenied { action_id }) => {
-            eprintln!("zestroku: POLICY_DENIED (action {action_id}; denial audited)");
+            crate::report_cli_error(
+                ErrorCode::PolicyDenied,
+                format_args!("action {action_id}; denial audited"),
+                &[],
+            );
             return ExitCode::from(5);
         }
         Err(MutationError::TierRefused(e)) => {
-            eprintln!("zestroku: {e} (denial audited)");
+            crate::report_cli_error(e.code(), format_args!("{e}; denial audited"), &[]);
             return ExitCode::from(3);
         }
         Err(MutationError::NotMutation) => {
-            eprintln!("zestroku: internal: non-POST command reached the mutation gate");
+            crate::report_cli_error(
+                ErrorCode::ProtocolError,
+                "non-POST command reached the mutation gate",
+                &[],
+            );
             return ExitCode::FAILURE;
         }
         Err(e) => {
-            eprintln!("zestroku: mutation gate failed: {e}");
+            crate::report_cli_error(mutation_error_code(&e), &e, &[]);
             return ExitCode::FAILURE;
         }
     };
 
     // Approved: dispatch, then record the wire outcome either way.
     let dispatch = runtime.block_on(async {
-        let response = send_selected(AsupersyncTransport, &device.host, device.port, &command)
-            .await
-            .map_err(|e| e.to_string())?;
+        let response =
+            send_selected(AsupersyncTransport, &device.host, device.port, &command).await?;
         let classification = parse_ecp_response(&response);
         if classification.gate == EcpGate::Limited403 {
-            return Err("device returned the Limited-mode 403 gate".to_string());
+            return Err(Error::TierRefused {
+                cmd: command.path,
+                mode: AccessTier::Open,
+            });
         }
         if classification.gate != EcpGate::Open {
-            return Err(format!("unclassified response: {classification:?}"));
+            return Err(Error::Malformed(format!(
+                "unclassified response: {classification:?}"
+            )));
         }
-        Ok::<(), String>(())
+        Ok::<(), Error>(())
     });
     let outcome = match &dispatch {
         Ok(()) => format!("{kind} dispatched; after_state snapshot on next active-app read"),
@@ -371,154 +336,12 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("zestroku: {e}");
+            crate::report_cli_error(e.code(), &e, &[]);
             ExitCode::from(5)
         }
     }
 }
 
-/// Mint a one-use approval only from an interactive owner terminal.
-pub fn approve(args: &[String]) -> ExitCode {
-    let Some(verb) = args.first().map(String::as_str) else {
-        eprintln!(
-            "usage: zestroku approve <launch|key|install> <host> <target> [--client <cli|mcp-stdio|loopback-http>] [--installer-port <port>]"
-        );
-        return ExitCode::from(2);
-    };
-    let install = verb == "install";
-    if (!install && !matches!(verb, "launch" | "key")) || args.len() < 3 {
-        eprintln!(
-            "usage: zestroku approve <launch|key> <host> <target> [--client <cli|mcp-stdio|loopback-http>] | approve install <host> sideload [--installer-port <port>] [--client <cli|mcp-stdio|loopback-http>]"
-        );
-        return ExitCode::from(2);
-    }
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        eprintln!("zestroku approve requires an interactive terminal");
-        return ExitCode::from(2);
-    }
-    let host_label = &args[1];
-    let target = &args[2];
-    let mut client = ClientPrincipal::Cli;
-    let mut client_seen = false;
-    let mut installer_port = 80;
-    let mut installer_port_seen = false;
-    let mut index = 3;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--client" => {
-                if client_seen {
-                    eprintln!("zestroku: approve takes one --client");
-                    return ExitCode::from(2);
-                }
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    eprintln!("zestroku: --client needs cli, mcp-stdio, or loopback-http");
-                    return ExitCode::from(2);
-                };
-                let Some(parsed) = ClientPrincipal::parse(value) else {
-                    eprintln!("zestroku: unsupported approval client {value:?}");
-                    return ExitCode::from(2);
-                };
-                client = parsed;
-                client_seen = true;
-            }
-            "--installer-port" if install => {
-                if installer_port_seen {
-                    eprintln!("zestroku: approve install takes one --installer-port");
-                    return ExitCode::from(2);
-                }
-                index += 1;
-                let Some(value) = args.get(index) else {
-                    eprintln!("zestroku: --installer-port needs a port");
-                    return ExitCode::from(2);
-                };
-                installer_port = match crate::install::parse_port(value) {
-                    Ok(port) => port,
-                    Err(error) => {
-                        eprintln!("zestroku: {error}");
-                        return ExitCode::from(2);
-                    }
-                };
-                installer_port_seen = true;
-            }
-            "--installer-port" => {
-                eprintln!("zestroku: --installer-port needs install approval");
-                return ExitCode::from(2);
-            }
-            other => {
-                eprintln!("zestroku: unknown approval option {other}");
-                return ExitCode::from(2);
-            }
-        }
-        index += 1;
-    }
-    if install && target != "sideload" {
-        eprintln!("zestroku: install approval target must be sideload");
-        return ExitCode::from(2);
-    }
-    let (host, port) = if install {
-        (host_label.clone(), installer_port)
-    } else {
-        crate::split_host_port(host_label)
-    };
-    let command = match build_command(verb, target) {
-        Ok(command) => command,
-        Err(error) => {
-            eprintln!("zestroku: {error}");
-            return ExitCode::from(2);
-        }
-    };
-    let phrase = if install {
-        format!(
-            "approve install {host_label} sideload --installer-port {port} --client {}",
-            client.as_str()
-        )
-    } else {
-        format!(
-            "approve {verb} {host_label} {target} --client {}",
-            client.as_str()
-        )
-    };
-    eprint!("Type exactly '{phrase}' to authorize this action: ");
-    let _ = io::stderr().flush();
-    let mut typed = String::new();
-    if io::stdin().read_line(&mut typed).is_err() || typed.trim_end_matches(['\r', '\n']) != phrase
-    {
-        eprintln!("approval phrase did not match");
-        return ExitCode::from(2);
-    }
-    let store = match store_db::open() {
-        Ok(store) => store,
-        Err(error) => {
-            eprintln!("zestroku: action log unavailable: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let device = Device {
-        host,
-        port,
-        model_name: String::new(),
-        model_number: String::new(),
-        software_version: String::new(),
-        is_tv: false,
-        access_tier: AccessTier::Permissive,
-    };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .min(i64::MAX as u64) as i64;
-    match issue_approval(&store, &device, &command, client, now) {
-        Ok(token) => {
-            println!("{token}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("zestroku: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
 #[cfg(test)]
 mod key_command_tests {
     use super::*;

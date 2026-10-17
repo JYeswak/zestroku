@@ -4,7 +4,7 @@ use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::check_tier;
 use zestroku_core::store::Store;
 use zestroku_proto::{EcpGate, InstalledApp, parse_apps, parse_ecp_response, query_apps};
-use zestroku_types::{AccessTier, Device, Error};
+use zestroku_types::{AccessTier, Device, Error, ErrorCode};
 
 use crate::transport::{AsupersyncTransport, send_selected};
 
@@ -108,8 +108,12 @@ pub fn run(args: &[String]) -> ExitCode {
     let opts = match parse_opts(args) {
         Ok(opts) => opts,
         Err(error) => {
-            eprintln!(
-                "zestroku apps: {error}; usage: zestroku apps <host> [--json] [--daemon <url>] [--direct]"
+            crate::report_cli_error(
+                ErrorCode::InvalidArgument,
+                format_args!(
+                    "apps: {error}; usage: zestroku apps <host> [--json] [--daemon <url>] [--direct]"
+                ),
+                &[],
             );
             return ExitCode::from(2);
         }
@@ -124,13 +128,18 @@ pub fn run(args: &[String]) -> ExitCode {
     let access_tier = match access_tier_for(&host, port) {
         Ok(access_tier) => access_tier,
         Err(TierLookupError::Store(error)) => {
-            eprintln!("zestroku: cannot read recorded tier: {error}");
+            crate::report_cli_error(
+                ErrorCode::StoreUnavailable,
+                format_args!("cannot read recorded tier: {error}"),
+                &[],
+            );
             return ExitCode::FAILURE;
         }
         Err(TierLookupError::NotObserved) => {
-            eprintln!(
-                "zestroku: no recorded tier for {} — run `zestroku info {}` first (or set ZESTROKU_TIER=permissive explicitly)",
-                host, host
+            crate::report_cli_error(
+                ErrorCode::TierRefused,
+                format_args!("no recorded tier for {host}; run `zestroku info {host}` first"),
+                &[],
             );
             return ExitCode::from(3);
         }
@@ -175,7 +184,7 @@ fn execute_direct(host: &str, port: u16, access_tier: AccessTier, json: bool) ->
     };
     let command = query_apps();
     if let Err(error) = check_tier(&command, &device) {
-        eprintln!("zestroku: {error}");
+        crate::report_cli_error(error.code(), &error, &[]);
         return ExitCode::from(3);
     }
 
@@ -189,7 +198,7 @@ fn execute_direct(host: &str, port: u16, access_tier: AccessTier, json: bool) ->
         }) {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("zestroku: could not start asupersync runtime: {error}");
+            crate::report_cli_error(ErrorCode::RuntimeUnavailable, error, &[]);
             return ExitCode::FAILURE;
         }
     };
@@ -202,7 +211,7 @@ fn execute_direct(host: &str, port: u16, access_tier: AccessTier, json: bool) ->
             return parse_apps(&response.body);
         }
         if classification.gate != EcpGate::Open {
-            return Err(Error::Unreachable(format!(
+            return Err(Error::Malformed(format!(
                 "{} {} returned an unclassified response: {:?}",
                 command.method, command.path, classification
             )));
@@ -216,7 +225,7 @@ fn execute_direct(host: &str, port: u16, access_tier: AccessTier, json: bool) ->
             print_apps(apps, json)
         }
         Err(error) => {
-            eprintln!("zestroku: {error}");
+            crate::report_cli_error(error.code(), &error, &[]);
             if matches!(error, Error::TierRefused { .. }) {
                 ExitCode::from(3)
             } else {

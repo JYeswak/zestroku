@@ -58,6 +58,16 @@ pub enum Error {
     Malformed(String),
 }
 
+impl Error {
+    pub const fn code(&self) -> ErrorCode {
+        match self {
+            Self::Unreachable(_) => ErrorCode::DeviceUnreachable,
+            Self::TierRefused { .. } => ErrorCode::TierRefused,
+            Self::Malformed(_) => ErrorCode::ProtocolError,
+        }
+    }
+}
+
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Stable error-code registry (bead zestroku-m8-error-codes-d2u).
@@ -65,6 +75,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// and renaming any code turns the snapshot test red. The same code renders
 /// in CLI output, HTTP JSON bodies, and MCP error payloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     UnknownDevice,
     AmbiguousName,
@@ -80,6 +91,15 @@ pub enum ErrorCode {
     DaemonUnavailable,
     DoctorWarn,
     DoctorFail,
+    DirectConnectionFailed,
+    InvalidDaemonUrl,
+    InvalidDeviceTarget,
+    ProtocolError,
+    InvalidArgument,
+    ConfigurationError,
+    RuntimeUnavailable,
+    OutputError,
+    InstallFailed,
 }
 
 impl ErrorCode {
@@ -100,6 +120,15 @@ impl ErrorCode {
             Self::DaemonUnavailable => "DAEMON_UNAVAILABLE",
             Self::DoctorWarn => "DOCTOR_WARN",
             Self::DoctorFail => "DOCTOR_FAIL",
+            Self::DirectConnectionFailed => "DIRECT_CONNECTION_FAILED",
+            Self::InvalidDaemonUrl => "INVALID_DAEMON_URL",
+            Self::InvalidDeviceTarget => "INVALID_DEVICE_TARGET",
+            Self::ProtocolError => "PROTOCOL_ERROR",
+            Self::InvalidArgument => "INVALID_ARGUMENT",
+            Self::ConfigurationError => "CONFIGURATION_ERROR",
+            Self::RuntimeUnavailable => "RUNTIME_UNAVAILABLE",
+            Self::OutputError => "OUTPUT_ERROR",
+            Self::InstallFailed => "INSTALL_FAILED",
         }
     }
 
@@ -120,12 +149,29 @@ impl ErrorCode {
             Self::DaemonUnavailable => "start the daemon or pass --direct for diagnosis",
             Self::DoctorWarn => "review the WARN findings and their remedies",
             Self::DoctorFail => "review the FAIL findings and their remedies",
+            Self::DirectConnectionFailed => "check the diagnostic target is powered and reachable",
+            Self::InvalidDaemonUrl => "use a valid daemon URL and the documented address scope",
+            Self::InvalidDeviceTarget => {
+                "use a device id or host:port without path or control characters"
+            }
+            Self::ProtocolError => {
+                "check the response format and use matching CLI and daemon versions"
+            }
+            Self::InvalidArgument => "check the command usage with --help",
+            Self::ConfigurationError => {
+                "check the configured target or policy file and its permissions"
+            }
+            Self::RuntimeUnavailable => "check the local runtime resources and retry",
+            Self::OutputError => "check stdout is writable and the output destination is open",
+            Self::InstallFailed => {
+                "check the owner ZIP, installer credentials, and Roku developer mode"
+            }
         }
     }
 
-    /// The CLI exit class carrying this failure. Per decision1213 the
-    /// mapping is total but many-to-one: several semantic codes share one
-    /// documented exit class; exits are never renumbered for the registry.
+    /// The documented default CLI exit class, not a replacement for an
+    /// operation's numeric contract. Several semantic codes share a class;
+    /// reads may use 1 and ambiguous read targets use 2 rather than 4.
     /// Classes follow tested consumers: launch --app resolution refusals
     /// (APP_NOT_INSTALLED, AMBIGUOUS_APP) exit 2 alongside usage errors
     /// (cli_daemon_mutations refusal table); the daemon undo 404 path
@@ -146,11 +192,20 @@ impl ErrorCode {
             Self::DaemonUnavailable => 1,
             Self::DoctorWarn => 6,
             Self::DoctorFail => 7,
+            Self::DirectConnectionFailed => 1,
+            Self::InvalidDaemonUrl => 1,
+            Self::InvalidDeviceTarget => 2,
+            Self::ProtocolError => 1,
+            Self::InvalidArgument => 2,
+            Self::ConfigurationError => 1,
+            Self::RuntimeUnavailable => 1,
+            Self::OutputError => 1,
+            Self::InstallFailed => 5,
         }
     }
 
     /// Every registry code in declaration order (snapshot test).
-    pub const fn all() -> [Self; 14] {
+    pub const fn all() -> [Self; 23] {
         [
             Self::UnknownDevice,
             Self::AmbiguousName,
@@ -166,12 +221,20 @@ impl ErrorCode {
             Self::DaemonUnavailable,
             Self::DoctorWarn,
             Self::DoctorFail,
+            Self::DirectConnectionFailed,
+            Self::InvalidDaemonUrl,
+            Self::InvalidDeviceTarget,
+            Self::ProtocolError,
+            Self::InvalidArgument,
+            Self::ConfigurationError,
+            Self::RuntimeUnavailable,
+            Self::OutputError,
+            Self::InstallFailed,
         ]
     }
 
-    /// All codes carried by one CLI exit class, in registry order. Empty
-    /// for exits no code claims: callers must refuse unmapped classes
-    /// rather than guess a code.
+    /// Codes whose documented default uses this exit class. Operation-specific
+    /// overrides remain in their CLI callers; unknown classes return no codes.
     pub fn codes_for_exit(exit: i32) -> Vec<Self> {
         Self::all()
             .into_iter()
@@ -215,18 +278,27 @@ mod tests {
                 "DAEMON_UNAVAILABLE",
                 "DOCTOR_WARN",
                 "DOCTOR_FAIL",
+                "DIRECT_CONNECTION_FAILED",
+                "INVALID_DAEMON_URL",
+                "INVALID_DEVICE_TARGET",
+                "PROTOCOL_ERROR",
+                "INVALID_ARGUMENT",
+                "CONFIGURATION_ERROR",
+                "RUNTIME_UNAVAILABLE",
+                "OUTPUT_ERROR",
+                "INSTALL_FAILED",
             ]
         );
     }
 
     /// Total exit-class mapping per decision1213: every documented exit in
-    /// {0, 1, 2, 3, 4, 5, 6, 7} accepts only registry codes, every exit in
-    /// {2, 3, 4, 5, 6, 7} is claimed by at least one code, and the lookup
+    /// {1, 2, 3, 4, 5, 6, 7} accepts only registry codes, every failure class
+    /// is claimed by at least one code, and the lookup
     /// rejects unmapped classes. Several codes share one documented class;
     /// exits are never renumbered for the registry.
     #[test]
     fn cli_exits_map_to_registry() {
-        const DOCUMENTED_EXITS: [i32; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+        const DOCUMENTED_EXITS: [i32; 7] = [1, 2, 3, 4, 5, 6, 7];
         for code in ErrorCode::all() {
             assert!(
                 DOCUMENTED_EXITS.contains(&code.cli_exit()),
@@ -235,7 +307,7 @@ mod tests {
                 code.cli_exit()
             );
         }
-        for exit in [2, 3, 4, 5, 6, 7] {
+        for exit in DOCUMENTED_EXITS {
             assert!(
                 !ErrorCode::codes_for_exit(exit).is_empty(),
                 "CLI exit {exit} has no registry code"
