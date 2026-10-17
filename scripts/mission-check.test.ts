@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   captureVerifiedImplementation,
@@ -113,9 +113,7 @@ describe("registered implementation closure", () => {
     const root = join(scratch, "import-repo");
     await mkdir(root);
     await writeFile(join(root, "helper.ts"), "export const value = 7;\n");
-    // Keep this import as test data, not a module dependency of the test file.
-    const helperSpecifier = "./helper.ts";
-    const source = [`import {value} from '`, helperSpecifier, "'; export {value};\n"].join("");
+    const source = await readFile(new URL("./mission-check-unregistered-import.ts.fixture", import.meta.url));
     await writeFile(join(root, "checker.ts"), source);
     const digest = createHash("sha256").update(source).digest("hex");
     await expect(captureVerifiedImplementation(root, "checker.ts", digest)).rejects.toThrow("UNREGISTERED_IMPLEMENTATION_IMPORT");
