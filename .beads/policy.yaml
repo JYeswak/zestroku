@@ -1,0 +1,14 @@
+# Scoped workflow declaration authorized by AM61026 / lead61004.
+# Statuses and transitions match the approved CFS native workflow.
+# Existing safety gates and strictness defaults are not changed here.
+workflow:
+  statuses: [open, in_progress, in_review, rework, blocked, deferred, closed]
+  transitions:
+    initial: [open]
+    open: [in_progress, blocked, deferred, closed]
+    in_progress: [in_review, open, blocked, deferred]
+    in_review: [closed, rework]
+    rework: [in_progress]
+    blocked: [open, in_progress]
+    deferred: [open]
+    closed: [open]
