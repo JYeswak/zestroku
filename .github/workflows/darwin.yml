@@ -6,6 +6,14 @@ name: darwin
 # macOS. Manual only; it is not a merge gate.
 on:
   workflow_dispatch:
+    inputs:
+      old_ref:
+        description: >-
+          Optional real saved revision (commit/tag) of an OLDER source. When
+          set, it is built under its own identity and the installer consumer
+          scenario runs old -> new (scripts/test-install-macos.sh, 1r4.9).
+        required: false
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,7 +24,7 @@ env:
 jobs:
   build:
     runs-on: macos-14
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -52,6 +60,38 @@ jobs:
           name: zestroku-aarch64-apple-darwin
           path: target/release/zestroku
           if-no-files-found: error
+
+      - name: keep the new build for the installer scenario
+        if: ${{ inputs.old_ref != '' }}
+        run: cp target/release/zestroku "$RUNNER_TEMP/zestroku-new"
+
+      - name: checkout the old revision (a real saved source, not a relabel)
+        if: ${{ inputs.old_ref != '' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.old_ref }}
+          path: old-src
+
+      - name: build the old revision under its own identity
+        if: ${{ inputs.old_ref != '' }}
+        working-directory: old-src
+        env:
+          ZESTROKU_BUILD_DIRTY: "false"
+        # The old revision may still carry the cross-build linker config that
+        # 2oz.1 removed; the clang overrides make it build on a stock runner.
+        run: |
+          ZESTROKU_BUILD_SHA="$(git rev-parse HEAD)" cargo \
+            --config 'env.CC_aarch64_apple_darwin.value="clang"' \
+            --config 'env.CC_aarch64_apple_darwin.relative=false' \
+            --config 'env.CC_aarch64_apple_darwin.force=true' \
+            --config 'target.aarch64-apple-darwin.linker="clang"' \
+            build --release --locked -p zestroku-cli
+          file target/release/zestroku
+          target/release/zestroku --version
+
+      - name: installer consumer scenario (old revision -> new revision)
+        if: ${{ inputs.old_ref != '' }}
+        run: sh scripts/test-install-macos.sh old-src/target/release/zestroku "$RUNNER_TEMP/zestroku-new"
 
       - name: test (offline, native macOS)
         run: cargo test --workspace
