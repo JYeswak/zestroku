@@ -111,6 +111,37 @@ pub fn marked_before_state(source: &str, snapshot: &str) -> String {
     format!("{TIER_SOURCE_PREFIX}{source}; {snapshot}")
 }
 
+/// Builds an undoable snapshot. Device identity and numeric app ID, not the
+/// display name alone, identify the restore target.
+pub fn marked_before_app_state(
+    source: &str,
+    device_id: &str,
+    app_id: Option<u32>,
+    app_name: &str,
+) -> String {
+    match app_id {
+        Some(app_id) => format!(
+            "{TIER_SOURCE_PREFIX}{source}; device_id={device_id}; app_id={app_id}; app_name={app_name}"
+        ),
+        None => format!(
+            "{TIER_SOURCE_PREFIX}{source}; device_id={device_id}; app_id=unknown; app_name={app_name}"
+        ),
+    }
+}
+
+/// Extracts the stored device-bound launch identity. Name-only legacy
+/// snapshots cannot be reversed because installed apps may reuse names.
+pub fn before_app_identity(before_state: &str) -> Option<(&str, u32, &str)> {
+    let (source, snapshot) = before_state.split_once("; ")?;
+    if !source.starts_with(TIER_SOURCE_PREFIX) {
+        return None;
+    }
+    let snapshot = snapshot.strip_prefix("device_id=")?;
+    let (device_id, snapshot) = snapshot.split_once("; app_id=")?;
+    let (app_id, app_name) = snapshot.split_once("; app_name=")?;
+    Some((device_id, app_id.parse().ok()?, app_name))
+}
+
 /// Persist one probe: access_tier row + devices.access_tier refresh.
 /// `probe_map` is the JSON the acceptance names (command class -> outcome).
 pub fn record_probe<S: Store + ?Sized>(
@@ -266,6 +297,34 @@ mod tests {
         assert_eq!(
             marked_before_state("env-override", r#"{"app":"home"}"#),
             "tier_source=env-override; {\"app\":\"home\"}"
+        );
+    }
+
+    #[test]
+    fn before_app_identity_requires_device_and_app_ids() {
+        let snapshot =
+            marked_before_app_state("recorded", "127.0.0.1:8060", Some(1001), "Streaming One");
+        assert_eq!(
+            snapshot,
+            "tier_source=recorded; device_id=127.0.0.1:8060; app_id=1001; app_name=Streaming One"
+        );
+        assert_eq!(
+            before_app_identity(&snapshot),
+            Some(("127.0.0.1:8060", 1001, "Streaming One"))
+        );
+        assert!(
+            before_app_identity(&marked_before_state("recorded", "Streaming One")).is_none(),
+            "legacy name-only snapshots cannot establish the prior app identity"
+        );
+        assert!(
+            before_app_identity(&marked_before_app_state(
+                "recorded",
+                "127.0.0.1:8060",
+                None,
+                "Roku"
+            ))
+            .is_none(),
+            "a snapshot without an app id is not reversible"
         );
     }
 

@@ -53,6 +53,78 @@ pub(super) fn run(kind: &str, opts: &MutationOpts) -> ExitCode {
     }
 }
 
+pub(super) fn undo_last(args: &[String]) -> ExitCode {
+    let Some(host) = args.first() else {
+        return usage_error("undo needs <host>");
+    };
+    let mut confirm: Option<&str> = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--confirm" => {
+                if confirm.is_some() {
+                    return usage_error("undo takes one --confirm token");
+                }
+                index += 1;
+                let Some(token) = args.get(index) else {
+                    return usage_error("--confirm needs a token");
+                };
+                confirm = Some(token);
+            }
+            flag if flag.starts_with('-') => {
+                return usage_error(&format!("undo: unknown option {flag}"));
+            }
+            other => {
+                return usage_error(&format!("undo: unexpected argument {other:?}"));
+            }
+        }
+        index += 1;
+    }
+    let client = match MutationClient::from_env() {
+        Ok(client) => client,
+        Err(error) => return report_error(error),
+    };
+    let plan = match client.undo_plan(host) {
+        Ok(plan) => plan,
+        Err(ReadError::DaemonRequestFailed { status: 404, error })
+            if error == "undo_app_not_installed" =>
+        {
+            eprintln!("zestroku: could not restore the previous app: it is not installed");
+            return ExitCode::from(5);
+        }
+        Err(ReadError::DaemonRequestFailed { status: 409, error })
+            if matches!(
+                error.as_str(),
+                "undo_state_unavailable" | "undo_app_ambiguous" | "undo_app_not_launchable"
+            ) =>
+        {
+            eprintln!("zestroku: could not restore the previous app: {error}");
+            return ExitCode::from(5);
+        }
+        Err(error) => return report_error(error),
+    };
+    match client.undo_last(host, plan.action_id, confirm) {
+        Ok(completed) => {
+            println!(
+                "dispatched: audit id {} (undo {} from action #{})",
+                completed.action_id, plan.app_name, plan.action_id
+            );
+            ExitCode::SUCCESS
+        }
+        Err(ReadError::DaemonRequestFailed { status: 403, error })
+            if error == "confirmation_required" =>
+        {
+            eprintln!(
+                "zestroku: CONFIRMATION_REQUIRED — undo of {} requires approval; run \
+                 `zestroku approve launch {host} {}` then retry with --confirm <token>",
+                plan.app_name, plan.app_id
+            );
+            ExitCode::from(4)
+        }
+        Err(error) => report_error(error),
+    }
+}
+
 fn usage_error(error: &str) -> ExitCode {
     eprintln!("zestroku: {error}");
     ExitCode::from(2)

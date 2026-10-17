@@ -125,7 +125,15 @@ fn tier_refusal_precedes_http_token_consumption_and_snapshot_is_audited() {
         actions[1].intent,
         format!("launch {HOST}:{PORT} /launch/1001")
     );
-    assert_eq!(actions[1].before_state, "tier_source=recorded; Roku");
+    assert_eq!(
+        actions[1].before_state,
+        zestroku_core::tier::marked_before_app_state(
+            "recorded",
+            &zestroku_core::tier::device_id(HOST, PORT),
+            None,
+            "Roku",
+        ),
+    );
     assert_eq!(actions[1].result, "completed");
     assert_eq!(approved_json["action_id"].as_i64(), Some(actions[1].id));
     assert_eq!(actions[2].decision, "denied");

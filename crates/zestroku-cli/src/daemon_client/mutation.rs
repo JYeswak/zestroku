@@ -21,6 +21,19 @@ pub(crate) struct CompletedMutation {
     _outcome: MutationCompletion,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct UndoPlan {
+    pub(crate) action_id: i64,
+    pub(crate) app_id: u32,
+    pub(crate) app_name: String,
+}
+
+#[derive(Serialize)]
+struct UndoRequest<'a> {
+    action_id: i64,
+    confirm: Option<&'a str>,
+}
+
 #[derive(Serialize)]
 struct KeyRequest<'a> {
     key: &'a str,
@@ -70,6 +83,15 @@ impl MutationClient {
         let response = super::daemon_get_at_endpoint(&self.endpoint, &path)?;
         super::decode_installed_apps(&response.body)
     }
+    pub(crate) fn undo_plan(&self, target: &str) -> Result<UndoPlan, ReadError> {
+        let path = device_path(target, "undo-plan")?;
+        let response = super::daemon_get_at_endpoint(&self.endpoint, &path)?;
+        if !(200..300).contains(&response.status) {
+            return Err(daemon_http_error(response));
+        }
+        serde_json::from_str(&response.body)
+            .map_err(|_| ReadError::InvalidResponse("daemon returned an invalid undo plan".into()))
+    }
 
     pub(crate) fn key(
         &self,
@@ -96,6 +118,14 @@ impl MutationClient {
                 requested_app,
             },
         )
+    }
+    pub(crate) fn undo_last(
+        &self,
+        target: &str,
+        action_id: i64,
+        confirm: Option<&str>,
+    ) -> Result<CompletedMutation, ReadError> {
+        self.post(target, "undo", &UndoRequest { action_id, confirm })
     }
 
     fn post(

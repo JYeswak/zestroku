@@ -147,6 +147,10 @@ fn start_runtime() -> std::result::Result<asupersync::runtime::Runtime, String> 
 /// Exit code contract (extends main.rs: 3 = tier/403 refused locally):
 /// 0 dispatched · 2 usage · 3 tier refused (audited) · 4 confirmation
 /// required (audited) · 5 dispatch/wire failure.
+pub fn undo_last(args: &[String]) -> ExitCode {
+    daemon::undo_last(args)
+}
+
 pub fn run(kind: &str, args: &[String]) -> ExitCode {
     let opts = match parse_opts(kind, args) {
         Ok(o) => o,
@@ -271,6 +275,15 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let policy = match zestroku_core::policy::Policy::load_default() {
+        Ok(policy) => policy,
+        Err(_) => {
+            eprintln!(
+                "zestroku: POLICY_DENIED — owner policy could not be loaded (no mutation dispatched)"
+            );
+            return ExitCode::from(5);
+        }
+    };
     let host = device.host.clone();
     let before = runtime.block_on(async {
         match send_selected(
@@ -282,11 +295,12 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         .await
         {
             Ok(response) => parse_active_app(&response.body)
-                .map(|app| app.name)
-                .unwrap_or_else(|_| "unparseable".to_string()),
-            Err(_) => "unreachable".to_string(),
+                .map(|app| (app.app_id, app.name))
+                .unwrap_or((None, "unparseable".to_string())),
+            Err(_) => (None, "unreachable".to_string()),
         }
     });
+    let device_id = zestroku_core::tier::device_id(&host, device.port);
 
     let context = MutationContext {
         client: "cli",
@@ -294,10 +308,15 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
         intent: &intent,
         // Tier-source marker (zestroku-tier-discovery-jt8 [c]) prepended to
         // the snapshot; removing this marker turns the audit-row test red.
-        before_state: &zestroku_core::tier::marked_before_state(tier_source, &before),
+        before_state: &zestroku_core::tier::marked_before_app_state(
+            tier_source,
+            &device_id,
+            before.0,
+            &before.1,
+        ),
     };
     let token = opts.confirm.as_deref();
-    let action_id = match authorize_mutation(&store, &device, &command, context, token) {
+    let action_id = match authorize_mutation(&store, &device, &command, context, token, &policy) {
         Ok(id) => id,
         Err(MutationError::ConfirmationRequired { action_id, .. }) => {
             eprintln!(
@@ -305,6 +324,10 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
                 target
             );
             return ExitCode::from(4);
+        }
+        Err(MutationError::PolicyDenied { action_id }) => {
+            eprintln!("zestroku: POLICY_DENIED (action {action_id}; denial audited)");
+            return ExitCode::from(5);
         }
         Err(MutationError::TierRefused(e)) => {
             eprintln!("zestroku: {e} (denial audited)");

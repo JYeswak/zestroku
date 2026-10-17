@@ -164,7 +164,23 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
     assert_no_cors_header(&host_headers);
     assert_no_http_mutation_side_effects(&db, &sim);
 
-    for requested_app in [" ".to_owned(), format!("label:{launch_token}")] {
+    let mut case_variant = launch_token.clone();
+    let letter_index = case_variant
+        .bytes()
+        .position(|byte| byte.is_ascii_alphabetic())
+        .expect("hex approval token contains an alphabetic digit");
+    let letter = case_variant.as_bytes()[letter_index] as char;
+    let replacement = if letter.is_ascii_lowercase() {
+        letter.to_ascii_uppercase()
+    } else {
+        letter.to_ascii_lowercase()
+    };
+    case_variant.replace_range(letter_index..letter_index + 1, &replacement.to_string());
+    for requested_app in [
+        " ".to_owned(),
+        format!("label:{launch_token}"),
+        format!("label:{case_variant}"),
+    ] {
         let (status, headers, body) = post_json_to_daemon(
             api_port,
             &launch_path,
@@ -180,8 +196,16 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
             serde_json::from_str::<serde_json::Value>(&body).unwrap()["error"],
             "invalid_requested_app"
         );
-        assert!(!headers.contains(&launch_token));
-        assert!(!body.contains(&launch_token));
+        assert!(
+            !headers
+                .to_ascii_lowercase()
+                .contains(&launch_token.to_ascii_lowercase())
+        );
+        assert!(
+            !body
+                .to_ascii_lowercase()
+                .contains(&launch_token.to_ascii_lowercase())
+        );
         assert_no_http_mutation_side_effects(&db, &sim);
     }
 
@@ -270,12 +294,13 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
     let store = SqliteStore::open(&db).expect("read action audit");
     let actions = store.list_actions().expect("list action rows");
     assert_eq!(actions.len(), 3);
-    for (action, response, surface, path, before) in [
+    for (action, response, surface, path, before_app_id, before) in [
         (
             &actions[0],
             &launch_response,
             "launch",
             "/launch/1001",
+            None,
             "Roku",
         ),
         (
@@ -283,6 +308,7 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
             &key_response,
             "key",
             "/keypress/Home",
+            Some(1001),
             "Streaming One",
         ),
     ] {
@@ -292,14 +318,22 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
         assert_eq!(action.intent, format!("{surface} {device_id} {path}"));
         assert_eq!(
             action.before_state,
-            format!("tier_source=recorded; {before}")
+            zestroku_core::tier::marked_before_app_state(
+                "recorded",
+                &device_id,
+                before_app_id,
+                before
+            )
         );
         assert_eq!(action.decision, "approved");
         assert_eq!(action.result, "completed");
     }
     assert_eq!(actions[2].decision, "approved");
     assert_eq!(actions[2].result, "dispatch_failed");
-    assert_eq!(actions[2].before_state, "tier_source=recorded; unreachable");
+    assert_eq!(
+        actions[2].before_state,
+        zestroku_core::tier::marked_before_app_state("recorded", &device_id, None, "unreachable")
+    );
     assert!(!failure_body.contains(&failure_token));
     for secret in [&launch_token, &key_token, &failure_token] {
         for response in [

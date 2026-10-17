@@ -144,16 +144,22 @@ fn cli_mutations_use_daemon_authority_and_completed_audit() {
         .list_actions()
         .expect("read daemon actions");
     assert_eq!(actions.len(), 8);
-    for (action, before) in actions[..3]
-        .iter()
-        .zip(["Roku", "Streaming One", "Streaming One"])
-    {
+    for (action, (before_app_id, before)) in actions[..3].iter().zip([
+        (None, "Roku"),
+        (Some(1001), "Streaming One"),
+        (Some(1001), "Streaming One"),
+    ]) {
         assert_eq!(action.client, "http");
         assert_eq!(action.decision, "approved");
         assert_eq!(action.result, "completed");
         assert_eq!(
             action.before_state,
-            format!("tier_source=recorded; {before}")
+            zestroku_core::tier::marked_before_app_state(
+                "recorded",
+                &target,
+                before_app_id,
+                before
+            )
         );
     }
     assert_eq!(actions[0].surface, "launch");
@@ -166,7 +172,10 @@ fn cli_mutations_use_daemon_authority_and_completed_audit() {
     );
     assert_eq!(actions[7].decision, "approved");
     assert_eq!(actions[7].result, "dispatch_failed");
-    assert_eq!(actions[7].before_state, "tier_source=recorded; unreachable");
+    assert_eq!(
+        actions[7].before_state,
+        zestroku_core::tier::marked_before_app_state("recorded", &target, None, "unreachable")
+    );
     assert!(
         SqliteStore::open(&client_db)
             .expect("open client audit")
@@ -338,7 +347,10 @@ fn cli_app_name_launch_preserves_requested_name_in_daemon_audit() {
     assert_eq!(actions.len(), 1);
     assert_eq!(actions[0].decision, "approved");
     assert_eq!(actions[0].result, "completed");
-    assert_eq!(actions[0].before_state, "tier_source=recorded; Roku");
+    assert_eq!(
+        actions[0].before_state,
+        zestroku_core::tier::marked_before_app_state("recorded", &target, None, "Roku")
+    );
     assert!(
         actions[0]
             .intent
@@ -415,4 +427,193 @@ fn cli_daemon_down_preserves_approval_for_restart() {
             .expect("read client audit after restart")
             .is_empty()
     );
+}
+
+#[test]
+fn cli_log_reads_action_rows_without_device_requests() {
+    use zestroku_core::store::{ActionRow, Store};
+
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let directory = tempfile::tempdir().expect("isolated action log store");
+    let db = directory.path().join("actions.db");
+    let store = SqliteStore::open(&db).expect("open action log store");
+    for (at, surface, decision, result) in [
+        (10, "launch", "approved", "completed"),
+        (11, "undo", "denied", "CONFIRMATION_REQUIRED"),
+    ] {
+        store
+            .insert_action(&ActionRow {
+                id: 0,
+                at,
+                client: "http".into(),
+                surface: surface.into(),
+                intent: format!("{surface} 127.0.0.1:{} /launch/1001", sim.port()),
+                decision: decision.into(),
+                result: result.into(),
+                before_state: "tier_source=recorded; Roku".into(),
+            })
+            .expect("insert action log row");
+    }
+    drop(store);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &db)
+        .args(["log", "--json"])
+        .output()
+        .expect("run read-only log command");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let view: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON action log");
+    let actions = view["actions"].as_array().expect("actions array");
+    assert_eq!(actions.len(), 2, "{view}");
+    assert_eq!(actions[0]["surface"], "undo");
+    assert_eq!(actions[0]["decision"], "denied");
+    assert_eq!(actions[0]["result"], "CONFIRMATION_REQUIRED");
+    assert_eq!(actions[1]["surface"], "launch");
+    assert_eq!(actions[1]["client"], "http");
+    assert_eq!(actions[1]["before_state"], "tier_source=recorded; Roku");
+    let human = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &db)
+        .arg("log")
+        .output()
+        .expect("run human action log");
+    assert_eq!(human.status.code(), Some(0), "{human:?}");
+    let table = String::from_utf8_lossy(&human.stdout);
+    for field in [
+        "client=http",
+        "surface=undo",
+        "decision=denied",
+        "result=\"CONFIRMATION_REQUIRED\"",
+    ] {
+        assert!(table.contains(field), "{table}");
+    }
+    assert!(
+        sim.received_requests().is_empty(),
+        "reading the action log must not contact the device"
+    );
+}
+
+#[test]
+fn cli_undo_requires_confirmation_and_logs_the_restored_app() {
+    let mut sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let directory = tempfile::tempdir().expect("isolated undo stores");
+    let db = directory.path().join("actions.db");
+    let target = seed_http_device(&db, sim.port());
+    let api_port = http_free_port();
+    let daemon_url = format!("http://127.0.0.1:{api_port}");
+    let _daemon = start_http_daemon(&db, api_port);
+
+    for app_id in [1001, 1002] {
+        let token = mint_http_approval(&db, sim.port(), &launch(app_id));
+        let output = run_cli(
+            &db,
+            &daemon_url,
+            &["launch", &target, &app_id.to_string(), "--confirm", &token],
+        );
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+    }
+
+    let undo_token = mint_http_approval(&db, sim.port(), &launch(1001));
+    let denied = run_cli(&db, &daemon_url, &["undo", &target]);
+    assert_eq!(denied.status.code(), Some(4), "{denied:?}");
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("CONFIRMATION_REQUIRED"),
+        "{denied:?}"
+    );
+    assert_eq!(sim.launch_count(), 2, "denied undo must not dispatch");
+
+    let restored = run_cli(
+        &db,
+        &daemon_url,
+        &["undo", &target, "--confirm", &undo_token],
+    );
+    assert_eq!(restored.status.code(), Some(0), "{restored:?}");
+    assert_eq!(sim.launch_count(), 3);
+    assert_eq!(
+        sim.received_requests()
+            .into_iter()
+            .filter(|(method, _)| method == "POST")
+            .map(|(_, path)| path)
+            .collect::<Vec<_>>(),
+        ["/launch/1001", "/launch/1002", "/launch/1001"]
+    );
+
+    let actions = SqliteStore::open(&db)
+        .expect("open undo audit")
+        .list_actions()
+        .expect("read undo audit");
+    assert_eq!(actions[2].surface, "undo");
+    assert_eq!(actions[2].decision, "denied");
+    assert_eq!(actions[2].result, "CONFIRMATION_REQUIRED");
+    assert_eq!(actions[3].surface, "undo");
+    assert_eq!(actions[3].decision, "approved");
+    assert_eq!(actions[3].result, "completed");
+    assert!(
+        actions[3].intent.contains("Streaming One"),
+        "{:?}",
+        actions[3]
+    );
+    assert!(
+        actions[3].before_state.contains("Streaming Two"),
+        "{:?}",
+        actions[3]
+    );
+}
+
+fn assert_undo_refuses_unrestorable_snapshot(before_state: impl FnOnce(&str) -> String) {
+    use zestroku_core::store::{ActionRow, Store};
+
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let directory = tempfile::tempdir().expect("isolated undo store");
+    let db = directory.path().join("actions.db");
+    let target = seed_http_device(&db, sim.port());
+    SqliteStore::open(&db)
+        .expect("open action store")
+        .insert_action(&ActionRow {
+            id: 0,
+            at: 10,
+            client: "http".into(),
+            surface: "launch".into(),
+            intent: format!("launch {target} /launch/1001"),
+            decision: "approved".into(),
+            result: "completed".into(),
+            before_state: before_state(&target),
+        })
+        .expect("seed prior action");
+    let api_port = http_free_port();
+    let daemon_url = format!("http://127.0.0.1:{api_port}");
+    let _daemon = start_http_daemon(&db, api_port);
+
+    let output = run_cli(&db, &daemon_url, &["undo", &target]);
+    assert_ne!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("could not restore"),
+        "{output:?}"
+    );
+    assert!(
+        sim.received_requests()
+            .iter()
+            .all(|(method, _)| method != "POST"),
+        "an unverifiable previous app identity must never be launched"
+    );
+}
+
+#[test]
+fn cli_undo_refuses_legacy_name_only_snapshot() {
+    assert_undo_refuses_unrestorable_snapshot(|_| "tier_source=recorded; Streaming One".to_owned());
+}
+
+#[test]
+fn cli_undo_refuses_uninstalled_prior_id_even_when_name_matches() {
+    assert_undo_refuses_unrestorable_snapshot(|target| {
+        format!("tier_source=recorded; device_id={target}; app_id=9999; app_name=Streaming One")
+    });
 }
