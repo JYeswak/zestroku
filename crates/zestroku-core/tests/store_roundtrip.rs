@@ -1,11 +1,11 @@
 //! Real fsqlite temp-file database; no mocks. Device identifiers below are
 //! synthetic placeholders, never real serials/UDNs/MACs.
 
-use fsqlite::AsyncConnection;
+use fsqlite::{AsyncConnection, SqliteValue};
 
 use zestroku_core::store::{
-    AccessTierRow, ActionRow, AliasRow, AppRow, DeviceRow, DiffRow, MIGRATIONS, SqliteStore, Store,
-    is_contiguous,
+    AccessTierRow, ActionRow, AliasRow, AppRow, ConfirmationTokenRow, DeviceRow, DiffRow,
+    MIGRATIONS, SqliteStore, Store, is_contiguous,
 };
 
 fn device(id: &str, tier: &str) -> DeviceRow {
@@ -188,11 +188,94 @@ fn migrations_are_append_only_and_upgrade_in_place() {
     assert!(
         st.schema_versions()
             .unwrap()
-            .starts_with(&[1, 2, 3, 4, 5, 6])
+            .starts_with(&[1, 2, 3, 4, 5, 6, 7])
     );
     assert!(st.get_device("dev-a").unwrap().is_some());
     st.insert_action(&action("x")).unwrap();
     st.close().unwrap();
+}
+#[test]
+fn client_grant_epoch_preserves_legacy_rows_as_unbound() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("client-grants.db");
+    let old_store = SqliteStore::open_with(&path, &MIGRATIONS[..7]).unwrap();
+    old_store.close().unwrap();
+
+    // An old binary writes a valid pre-v8 token row without a client binding.
+    let old_conn = AsyncConnection::open_sync(path.to_string_lossy().into_owned()).unwrap();
+    old_conn
+        .execute_with_params_sync(
+            "INSERT INTO confirmation_tokens (token_hash, device_id, action, expires_at, consumed_at) VALUES (?1, ?2, ?3, ?4, NULL)",
+            &[
+                SqliteValue::Text("legacy-hash".into()),
+                SqliteValue::Text("192.0.2.10:8060".into()),
+                SqliteValue::Text("/launch/12".into()),
+                SqliteValue::Integer(1_700_000_400),
+            ],
+        )
+        .unwrap();
+    drop(old_conn);
+
+    let store = SqliteStore::open(&path).unwrap();
+    let legacy_grant = store
+        .peek_confirmation_grant("legacy-hash")
+        .unwrap()
+        .unwrap();
+    assert_eq!(legacy_grant.client, None);
+    assert_eq!(legacy_grant.expires_at, 1_700_000_400);
+    assert_eq!(
+        store.peek_confirmation_token_expiry("legacy-hash").unwrap(),
+        Some(1_700_000_400)
+    );
+    assert!(
+        !store
+            .consume_confirmation_token(
+                "legacy-hash",
+                "192.0.2.10:8060",
+                "/launch/12",
+                "cli",
+                1_700_000_100,
+            )
+            .unwrap(),
+        "a legacy token must not acquire an implicit CLI principal"
+    );
+
+    store
+        .insert_confirmation_token(&ConfirmationTokenRow {
+            token_hash: "mcp-hash".into(),
+            device_id: "192.0.2.10:8060".into(),
+            action: "/launch/12".into(),
+            client: Some("mcp-stdio".into()),
+            expires_at: 1_700_000_400,
+        })
+        .unwrap();
+    let mcp_grant = store.peek_confirmation_grant("mcp-hash").unwrap().unwrap();
+    assert_eq!(mcp_grant.client.as_deref(), Some("mcp-stdio"));
+    assert_eq!(mcp_grant.expires_at, 1_700_000_400);
+    assert!(
+        !store
+            .consume_confirmation_token(
+                "mcp-hash",
+                "192.0.2.10:8060",
+                "/launch/12",
+                "cli",
+                1_700_000_100,
+            )
+            .unwrap(),
+        "a client mismatch must not consume the MCP grant"
+    );
+    assert!(
+        store
+            .consume_confirmation_token(
+                "mcp-hash",
+                "192.0.2.10:8060",
+                "/launch/12",
+                "mcp-stdio",
+                1_700_000_101,
+            )
+            .unwrap()
+    );
+    store.close().unwrap();
 }
 
 #[test]

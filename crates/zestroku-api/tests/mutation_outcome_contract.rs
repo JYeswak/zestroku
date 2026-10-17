@@ -35,7 +35,14 @@ fn approved_http_dispatch_failures_finish_as_failures() {
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system clock")
                 .as_secs() as i64;
-            issue_approval(&*store_guard, &device, &launch(1001), now).expect("mint approval")
+            issue_approval(
+                &*store_guard,
+                &device,
+                &launch(1001),
+                zestroku_core::mutation::ClientPrincipal::LoopbackHttp,
+                now,
+            )
+            .expect("mint approval")
         };
         let mut responses = vec![response(200, "<active-app><app>Roku</app></active-app>")];
         if absent {
@@ -46,7 +53,11 @@ fn approved_http_dispatch_failures_finish_as_failures() {
         let result = client
             .post(&format!("/v1/devices/{HOST}:{PORT}/launch"))
             .header_str("host", HOST)
-            .json(&serde_json::json!({"app_id": 1001, "confirm": &token}))
+            .json(&serde_json::json!({
+                "client": "loopback-http",
+                "app_id": 1001,
+                "confirm": &token
+            }))
             .send();
         let expected_status = if absent { 404 } else { 502 };
         assert_eq!(result.status().as_u16(), expected_status, "absent={absent}");
@@ -107,7 +118,14 @@ fn foreign_origin_and_non_json_posts_never_consume_confirmation() {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock")
             .as_secs() as i64;
-        issue_approval(&*store_guard, &device, &launch(1001), now).expect("mint approval")
+        issue_approval(
+            &*store_guard,
+            &device,
+            &launch(1001),
+            zestroku_core::mutation::ClientPrincipal::LoopbackHttp,
+            now,
+        )
+        .expect("mint approval")
     };
     let transport = Arc::new(ResponseTransport::new([
         response(200, "<active-app><app>Roku</app></active-app>"),
@@ -116,8 +134,13 @@ fn foreign_origin_and_non_json_posts_never_consume_confirmation() {
     let client = TestClient::new(build_app(Arc::clone(&store), Arc::clone(&transport)));
     let path = format!("/v1/devices/{HOST}:{PORT}/launch");
     let authority = format!("{HOST}:{PORT}");
-    let body = serde_json::json!({"app_id": 1001, "confirm": &token});
-    let malformed_body = format!(r#"{{"app_id":1001,"confirm":"{token}",broken}}"#);
+    let body = serde_json::json!({
+        "client": "loopback-http",
+        "app_id": 1001,
+        "confirm": &token
+    });
+    let malformed_body =
+        format!(r#"{{"client":"loopback-http","app_id":1001,"confirm":"{token}",broken}}"#);
     let foreign_host = client
         .post(&path)
         .header_str("host", "attacker.example")

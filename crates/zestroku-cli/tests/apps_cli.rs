@@ -53,6 +53,7 @@ fn mint_launch_token(db: &std::path::Path, app_id: u32, ecp_port: u16) -> String
             path: format!("/launch/{app_id}"),
             tier: AccessTier::Permissive,
         },
+        zestroku_core::mutation::ClientPrincipal::Cli,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")

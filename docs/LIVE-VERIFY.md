@@ -116,8 +116,13 @@ Leg (box 1 of zestroku-m7e-mutation-gate-svq):
    limit 3;'` — newest row: decision=denied, result=CONFIRMATION_REQUIRED,
    surface=launch, before_state=<pre-launch app>.
 3. **Approved launch (needs explicit owner go)**:
-   `zestroku launch <express-host> <app-id> --confirm <token>` (token = any
-   non-blank acknowledgment; Josh's go IS the approval).
+   First run `zestroku approve launch <express-host> <app-id> --client cli` in
+   the owner TTY and provide the resulting token only to the matching CLI call.
+   The grant is bound to that frontend, device endpoint and exact command;
+   never treat arbitrary non-blank text as approval.
+   The daemon verifies the adapter's expected client against the stored grant;
+   it never trusts a request label or header by itself. Raw HTTP defaults to
+   `loopback-http`; previously issued unbound grants must be reissued.
    Expected: exit 0, stdout `ok: launch <app-id> (audit id M)`; device
    switches to the app.
 4. **After-state**: `zestroku active-app <express-host>` — shows the launched

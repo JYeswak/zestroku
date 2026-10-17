@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::mutation::{
-    MutationContext, MutationError, authorize_mutation, finish_mutation,
+    ClientPrincipal, MutationContext, MutationError, authorize_mutation, finish_mutation,
 };
 use zestroku_core::policy::Policy;
 use zestroku_proto::{Command, Method, parse_active_app, query};
@@ -212,7 +212,7 @@ pub fn run(args: &[String]) -> ExitCode {
         None => zestroku_core::tier::marked_before_state(tier_source, "unreachable"),
     };
     let context = MutationContext {
-        client: "cli",
+        client: ClientPrincipal::Cli.as_str(),
         surface: "install",
         intent: "install developer sideload ZIP",
         before_state: &marked_before,

@@ -43,7 +43,7 @@ USAGE:
     zestroku complete --script bash
         shell adapter registration (source it from ~/.bashrc)
     zestroku key <host> <KEY> [--confirm <token>]   keypress (Permissive)
-    zestroku approve <verb> <host> <target> [--installer-port <port>]   owner TTY approval
+    zestroku approve <verb> <host> <target> [--client <cli|mcp-stdio|loopback-http>] [--installer-port <port>]  owner TTY approval
     zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)
     zestroku launch <host> --app <name> [--confirm <token>]  resolve an installed app
     zestroku install <host> <zip> --password-stdin [--installer-port <port>] [--confirm <token>]
@@ -60,7 +60,10 @@ ZESTROKU_DIRECT=1 / ZESTROKU_DAEMON_URL, then http://127.0.0.1:8070.
 Devices lists cached metadata; discovery flags require ZESTROKU_DIRECT=1.
 Default key/launch forward the opaque token to a loopback daemon, which owns
 the recorded-tier/approval gate and operation audit. Owner approve must use
-the daemon's ZESTROKU_DB. ZESTROKU_DIRECT=1 selects local diagnostic execution.
+the daemon's ZESTROKU_DB. `approve --client` binds the one-use grant to the
+selected frontend (defaults to `cli`); use `mcp-stdio` for MCP or
+`loopback-http` for raw HTTP. Grants created before client binding are refused
+and must be re-approved. ZESTROKU_DIRECT=1 selects local diagnostic execution.
 A down daemon returns DAEMON_UNAVAILABLE, never a direct ECP fallback.
 Machine output (--json) goes to stdout only; diagnostics stay stderr.
 Mutations require a single-use token minted by approve in an interactive owner terminal.

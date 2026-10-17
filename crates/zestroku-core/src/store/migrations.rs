@@ -69,6 +69,12 @@ pub const MIGRATIONS: &[Migration] = &[
               CREATE INDEX idx_policy_hits_client_verb_at \
               ON policy_hits (client, verb, at)",
     },
+    Migration {
+        version: 8,
+        name: "client_bound_confirmation_tokens",
+        sql: "ALTER TABLE confirmation_tokens ADD COLUMN client TEXT \
+              CHECK (client IS NULL OR client IN ('cli', 'mcp-stdio', 'loopback-http'))",
+    },
 ];
 
 /// A migration list is valid when versions are 1..=N with no gaps or repeats.

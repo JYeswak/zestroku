@@ -18,7 +18,8 @@ use std::{
 
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::mutation::{
-    MutationContext, MutationError, authorize_mutation, finish_mutation, issue_approval,
+    ClientPrincipal, MutationContext, MutationError, authorize_mutation, finish_mutation,
+    issue_approval,
 };
 use zestroku_proto::{
     Command, EcpGate, parse_active_app, parse_apps, parse_ecp_response, query, query_apps,
@@ -303,7 +304,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
     let device_id = zestroku_core::tier::device_id(&host, device.port);
 
     let context = MutationContext {
-        client: "cli",
+        client: ClientPrincipal::Cli.as_str(),
         surface: kind,
         intent: &intent,
         // Tier-source marker (zestroku-tier-discovery-jt8 [c]) prepended to
@@ -380,14 +381,14 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
 pub fn approve(args: &[String]) -> ExitCode {
     let Some(verb) = args.first().map(String::as_str) else {
         eprintln!(
-            "usage: zestroku approve <launch|key|install> <host> <target> [--installer-port <port>]"
+            "usage: zestroku approve <launch|key|install> <host> <target> [--client <cli|mcp-stdio|loopback-http>] [--installer-port <port>]"
         );
         return ExitCode::from(2);
     };
     let install = verb == "install";
-    if (!install && args.len() != 3) || (install && args.len() != 3 && args.len() != 5) {
+    if (!install && !matches!(verb, "launch" | "key")) || args.len() < 3 {
         eprintln!(
-            "usage: zestroku approve <launch|key> <host> <target> | approve install <host> sideload [--installer-port <port>]"
+            "usage: zestroku approve <launch|key> <host> <target> [--client <cli|mcp-stdio|loopback-http>] | approve install <host> sideload [--installer-port <port>] [--client <cli|mcp-stdio|loopback-http>]"
         );
         return ExitCode::from(2);
     }
@@ -397,27 +398,66 @@ pub fn approve(args: &[String]) -> ExitCode {
     }
     let host_label = &args[1];
     let target = &args[2];
-    let (host, port) = if install {
-        if target != "sideload" {
-            eprintln!("zestroku: install approval target must be sideload");
-            return ExitCode::from(2);
-        }
-        let port = if args.len() == 5 {
-            if args[3] != "--installer-port" {
-                eprintln!("zestroku: expected --installer-port <port>");
-                return ExitCode::from(2);
-            }
-            match crate::install::parse_port(&args[4]) {
-                Ok(port) => port,
-                Err(error) => {
-                    eprintln!("zestroku: {error}");
+    let mut client = ClientPrincipal::Cli;
+    let mut client_seen = false;
+    let mut installer_port = 80;
+    let mut installer_port_seen = false;
+    let mut index = 3;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--client" => {
+                if client_seen {
+                    eprintln!("zestroku: approve takes one --client");
                     return ExitCode::from(2);
                 }
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("zestroku: --client needs cli, mcp-stdio, or loopback-http");
+                    return ExitCode::from(2);
+                };
+                let Some(parsed) = ClientPrincipal::parse(value) else {
+                    eprintln!("zestroku: unsupported approval client {value:?}");
+                    return ExitCode::from(2);
+                };
+                client = parsed;
+                client_seen = true;
             }
-        } else {
-            80
-        };
-        (host_label.clone(), port)
+            "--installer-port" if install => {
+                if installer_port_seen {
+                    eprintln!("zestroku: approve install takes one --installer-port");
+                    return ExitCode::from(2);
+                }
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("zestroku: --installer-port needs a port");
+                    return ExitCode::from(2);
+                };
+                installer_port = match crate::install::parse_port(value) {
+                    Ok(port) => port,
+                    Err(error) => {
+                        eprintln!("zestroku: {error}");
+                        return ExitCode::from(2);
+                    }
+                };
+                installer_port_seen = true;
+            }
+            "--installer-port" => {
+                eprintln!("zestroku: --installer-port needs install approval");
+                return ExitCode::from(2);
+            }
+            other => {
+                eprintln!("zestroku: unknown approval option {other}");
+                return ExitCode::from(2);
+            }
+        }
+        index += 1;
+    }
+    if install && target != "sideload" {
+        eprintln!("zestroku: install approval target must be sideload");
+        return ExitCode::from(2);
+    }
+    let (host, port) = if install {
+        (host_label.clone(), installer_port)
     } else {
         crate::split_host_port(host_label)
     };
@@ -429,9 +469,15 @@ pub fn approve(args: &[String]) -> ExitCode {
         }
     };
     let phrase = if install {
-        format!("approve install {host_label} sideload --installer-port {port}")
+        format!(
+            "approve install {host_label} sideload --installer-port {port} --client {}",
+            client.as_str()
+        )
     } else {
-        format!("approve {verb} {host_label} {target}")
+        format!(
+            "approve {verb} {host_label} {target} --client {}",
+            client.as_str()
+        )
     };
     eprint!("Type exactly '{phrase}' to authorize this action: ");
     let _ = io::stderr().flush();
@@ -462,7 +508,7 @@ pub fn approve(args: &[String]) -> ExitCode {
         .unwrap_or_default()
         .as_secs()
         .min(i64::MAX as u64) as i64;
-    match issue_approval(&store, &device, &command, now) {
+    match issue_approval(&store, &device, &command, client, now) {
         Ok(token) => {
             println!("{token}");
             ExitCode::SUCCESS

@@ -109,8 +109,14 @@ fn concurrent_info_downgrade_during_snapshot_denies_without_consuming_approval()
         .as_secs() as i64;
     let token = {
         let store_guard = store.lock().expect("store lock");
-        zestroku_core::mutation::issue_approval(&*store_guard, &device, &launch(1001), now)
-            .expect("mint launch token")
+        zestroku_core::mutation::issue_approval(
+            &*store_guard,
+            &device,
+            &launch(1001),
+            zestroku_core::mutation::ClientPrincipal::LoopbackHttp,
+            now,
+        )
+        .expect("mint launch token")
     };
 
     let (transport, snapshot_started, release_snapshot) = SnapshotBarrierTransport::new();
@@ -126,7 +132,11 @@ fn concurrent_info_downgrade_during_snapshot_denies_without_consuming_approval()
         let response = client
             .post(&thread_path)
             .header_str("host", HOST)
-            .json(&serde_json::json!({"app_id": 1001, "confirm": thread_token}))
+            .json(&serde_json::json!({
+                "client": "loopback-http",
+                "app_id": 1001,
+                "confirm": thread_token
+            }))
             .send();
         (response.status().as_u16(), response.text().to_owned())
     });
@@ -194,7 +204,11 @@ fn concurrent_info_downgrade_during_snapshot_denies_without_consuming_approval()
     let approved = client
         .post(&mutation_path)
         .header_str("host", HOST)
-        .json(&serde_json::json!({"app_id": 1001, "confirm": &token}))
+        .json(&serde_json::json!({
+            "client": "loopback-http",
+            "app_id": 1001,
+            "confirm": &token
+        }))
         .send();
     assert_eq!(approved.status().as_u16(), 200);
     let approved_json: Value = serde_json::from_str(approved.text()).expect("approval JSON");
@@ -203,7 +217,11 @@ fn concurrent_info_downgrade_during_snapshot_denies_without_consuming_approval()
     let replay = client
         .post(&mutation_path)
         .header_str("host", HOST)
-        .json(&serde_json::json!({"app_id": 1001, "confirm": &token}))
+        .json(&serde_json::json!({
+            "client": "loopback-http",
+            "app_id": 1001,
+            "confirm": &token
+        }))
         .send();
     assert_eq!(replay.status().as_u16(), 403);
     assert_eq!(error_code(&replay), "confirmation_required");

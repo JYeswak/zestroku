@@ -13,7 +13,7 @@ use fastapi::fastapi_openapi;
 use fastapi::router::Route;
 use serde::{Deserialize, Serialize};
 use zestroku_core::mutation::{
-    MutationContext, MutationError, authorize_mutation, finish_mutation,
+    ClientPrincipal, MutationContext, MutationError, authorize_mutation, finish_mutation,
 };
 use zestroku_core::store::{ActionRow, Store};
 use zestroku_core::tier::{before_app_identity, marked_before_app_state, recorded_tier_for};
@@ -42,6 +42,8 @@ const UNDO_PATH: &str = "/v1/devices/{host}/undo";
 #[serde(deny_unknown_fields)]
 struct KeyMutationRequest {
     key: String,
+    #[serde(default = "default_http_client")]
+    client: String,
     confirm: Option<String>,
 }
 
@@ -49,6 +51,8 @@ struct KeyMutationRequest {
 #[serde(deny_unknown_fields)]
 struct LaunchMutationRequest {
     app_id: u32,
+    #[serde(default = "default_http_client")]
+    client: String,
     confirm: Option<String>,
     requested_app: Option<String>,
 }
@@ -57,6 +61,8 @@ struct LaunchMutationRequest {
 #[serde(deny_unknown_fields)]
 struct UndoMutationRequest {
     action_id: i64,
+    #[serde(default = "default_http_client")]
+    client: String,
     confirm: Option<String>,
 }
 
@@ -76,6 +82,7 @@ impl fastapi_openapi::JsonSchema for UndoMutationRequest {
                     "action_id".to_owned(),
                     <i64 as fastapi_openapi::JsonSchema>::schema(),
                 ),
+                ("client".to_owned(), client_schema()),
                 (
                     "confirm".to_owned(),
                     <Option<String> as fastapi_openapi::JsonSchema>::schema(),
@@ -101,6 +108,17 @@ fn closed_request_schema(
     }
     schema
 }
+fn client_schema() -> fastapi_openapi::Schema {
+    fastapi_openapi::Schema::string_enum(vec![
+        "cli".to_owned(),
+        "mcp-stdio".to_owned(),
+        "loopback-http".to_owned(),
+    ])
+}
+
+fn default_http_client() -> String {
+    ClientPrincipal::LoopbackHttp.as_str().to_owned()
+}
 
 impl fastapi_openapi::JsonSchema for KeyMutationRequest {
     fn schema() -> fastapi_openapi::Schema {
@@ -111,6 +129,7 @@ impl fastapi_openapi::JsonSchema for KeyMutationRequest {
                     "key".to_owned(),
                     <String as fastapi_openapi::JsonSchema>::schema(),
                 ),
+                ("client".to_owned(), client_schema()),
                 (
                     "confirm".to_owned(),
                     <Option<String> as fastapi_openapi::JsonSchema>::schema(),
@@ -134,6 +153,7 @@ impl fastapi_openapi::JsonSchema for LaunchMutationRequest {
                     "app_id".to_owned(),
                     <u32 as fastapi_openapi::JsonSchema>::schema(),
                 ),
+                ("client".to_owned(), client_schema()),
                 (
                     "confirm".to_owned(),
                     <Option<String> as fastapi_openapi::JsonSchema>::schema(),
@@ -502,6 +522,7 @@ where
                         &target,
                         "undo",
                         launch(plan.app_id),
+                        ClientPrincipal::parse(&body.client),
                         body.confirm.as_deref(),
                         Some((&plan.app_name, plan.app_id)),
                         Some(plan.action_id),
@@ -562,6 +583,7 @@ where
                         &target,
                         "key",
                         command,
+                        ClientPrincipal::parse(&body.client),
                         body.confirm.as_deref(),
                         None,
                         None,
@@ -618,6 +640,7 @@ where
                         &target,
                         "launch",
                         launch(body.app_id),
+                        ClientPrincipal::parse(&body.client),
                         body.confirm.as_deref(),
                         body.requested_app
                             .as_deref()
@@ -813,15 +836,17 @@ async fn resolve_undo_plan<S: Store, T: Transport>(
 }
 
 // Only completed actions with a device-bound active-app identity are eligible
-// for undo. Legacy HTTP rows may be selected by their recorded target solely
-// to return an explicit non-restorable-state error.
+// for undo. The legacy `http` label is read only for historical action rows;
+// new HTTP and MCP calls use canonical client identities.
 fn is_undo_source_action(action: &ActionRow, target_id: &str) -> bool {
     let target_matches = before_app_identity(&action.before_state).map_or_else(
         || action.intent.split_whitespace().nth(1) == Some(target_id),
         |(device_id, _, _)| device_id == target_id,
     );
     let successful = match (action.client.as_str(), action.surface.as_str()) {
-        ("http", "launch" | "key" | "undo") => action.result == "completed",
+        ("loopback-http" | "mcp-stdio" | "http", "launch" | "key" | "undo") => {
+            action.result == "completed"
+        }
         ("cli", "launch" | "key") => action
             .result
             .strip_prefix(action.surface.as_str())
@@ -882,6 +907,7 @@ async fn execute_mutation<S: Store, T: Transport>(
     raw_target: &str,
     surface: &'static str,
     command: zestroku_proto::Command,
+    expected_client: Option<ClientPrincipal>,
     confirmation: Option<&str>,
     requested_app: Option<(&str, u32)>,
     source_action_id: Option<i64>,
@@ -982,7 +1008,7 @@ async fn execute_mutation<S: Store, T: Transport>(
             &device,
             &command,
             MutationContext {
-                client: "http",
+                client: expected_client.map_or("unknown", ClientPrincipal::as_str),
                 surface,
                 intent: &intent,
                 before_state: &before_state,

@@ -94,7 +94,7 @@ fn resolve_schema<'a>(spec: &'a Value, schema: &'a Value) -> &'a Value {
 }
 
 #[test]
-fn key_and_launch_mutation_routes_document_closed_request_bodies() {
+fn mutation_routes_document_closed_request_bodies() {
     let (_directory, store) = store_with_device(HOST, PORT, "permissive");
     let transport = Arc::new(ResponseTransport::new([]));
     let app = build_app(store, Arc::clone(&transport));
@@ -102,6 +102,7 @@ fn key_and_launch_mutation_routes_document_closed_request_bodies() {
     for (method, path) in [
         (HttpMethod::Post, "/v1/devices/{host}/key"),
         (HttpMethod::Post, "/v1/devices/{host}/launch"),
+        (HttpMethod::Post, "/v1/devices/{host}/undo"),
     ] {
         assert!(
             routes.contains(&(method, path)),
@@ -115,8 +116,10 @@ fn key_and_launch_mutation_routes_document_closed_request_bodies() {
     let spec: Value = serde_json::from_str(response.text()).expect("OpenAPI JSON");
     let key = &spec["paths"]["/v1/devices/{host}/key"]["post"];
     let launch = &spec["paths"]["/v1/devices/{host}/launch"]["post"];
+    let undo = &spec["paths"]["/v1/devices/{host}/undo"]["post"];
     assert_eq!(key["requestBody"]["required"], true);
     assert_eq!(launch["requestBody"]["required"], true);
+    assert_eq!(undo["requestBody"]["required"], true);
     let schemas = &spec["components"]["schemas"];
     let key_schema = resolve_schema(
         &spec,
@@ -124,15 +127,21 @@ fn key_and_launch_mutation_routes_document_closed_request_bodies() {
     );
     assert_eq!(key_schema["type"], "object");
     assert_eq!(key_schema["additionalProperties"], false);
+    assert_eq!(key_schema["required"], serde_json::json!(["key"]));
     let launch_schema = resolve_schema(
         &spec,
         &launch["requestBody"]["content"]["application/json"]["schema"],
     );
     assert_eq!(launch_schema["type"], "object");
     assert_eq!(launch_schema["additionalProperties"], false);
+    assert_eq!(launch_schema["required"], serde_json::json!(["app_id"]));
     assert_eq!(key_schema["properties"]["key"]["type"], "string");
+    assert_eq!(key_schema["properties"]["client"]["type"], "string");
+    assert_eq!(
+        key_schema["properties"]["client"]["enum"],
+        serde_json::json!(["cli", "mcp-stdio", "loopback-http"])
+    );
     assert!(key_schema["properties"]["confirm"].is_object());
-    assert_eq!(key_schema["required"], serde_json::json!(["key"]));
     for forbidden in ["host", "port", "tier", "principal", "backend_url"] {
         assert!(
             key_schema["properties"].get(forbidden).is_none(),
@@ -144,14 +153,32 @@ fn key_and_launch_mutation_routes_document_closed_request_bodies() {
         &launch["requestBody"]["content"]["application/json"]["schema"],
     );
     assert_eq!(launch_schema["properties"]["app_id"]["type"], "integer");
+    assert_eq!(launch_schema["properties"]["client"]["type"], "string");
+    assert_eq!(
+        launch_schema["properties"]["client"]["enum"],
+        serde_json::json!(["cli", "mcp-stdio", "loopback-http"])
+    );
     assert!(launch_schema["properties"]["confirm"].is_object());
-    assert_eq!(launch_schema["required"], serde_json::json!(["app_id"]));
     for forbidden in ["host", "port", "tier", "principal", "backend_url"] {
         assert!(
             launch_schema["properties"].get(forbidden).is_none(),
             "launch body must not supply {forbidden}"
         );
     }
+    let undo_schema = resolve_schema(
+        &spec,
+        &undo["requestBody"]["content"]["application/json"]["schema"],
+    );
+    assert_eq!(undo_schema["type"], "object");
+    assert_eq!(undo_schema["additionalProperties"], false);
+    assert_eq!(undo_schema["required"], serde_json::json!(["action_id"]));
+    assert_eq!(undo_schema["properties"]["action_id"]["type"], "integer");
+    assert_eq!(undo_schema["properties"]["client"]["type"], "string");
+    assert_eq!(
+        undo_schema["properties"]["client"]["enum"],
+        serde_json::json!(["cli", "mcp-stdio", "loopback-http"])
+    );
+    assert!(undo_schema["properties"]["confirm"].is_object());
     assert!(schemas.is_object());
     for operation in [key, launch] {
         let response = &operation["responses"]["200"]["content"]["application/json"]["schema"];
@@ -177,6 +204,19 @@ fn key_and_launch_mutation_routes_document_closed_request_bodies() {
                 "{status}"
             );
         }
+    }
+    let undo_response = &undo["responses"]["200"]["content"]["application/json"]["schema"];
+    let undo_response_schema = resolve_schema(&spec, undo_response);
+    assert_eq!(
+        undo_response_schema["properties"]["action_id"]["type"],
+        "integer"
+    );
+    for status in ["400", "403", "404", "409", "500", "502"] {
+        let error_schema = resolve_schema(
+            &spec,
+            &undo["responses"][status]["content"]["application/json"]["schema"],
+        );
+        assert_eq!(error_schema["properties"]["error"]["type"], "string");
     }
     assert!(
         transport.calls().is_empty(),

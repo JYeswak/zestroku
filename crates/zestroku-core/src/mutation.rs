@@ -19,6 +19,33 @@ pub const POLICY_DENIED: &str = "POLICY_DENIED";
 pub const RESULT_PENDING: &str = "pending";
 pub const APPROVAL_TTL_SECS: i64 = 300;
 
+/// The closed set of frontends that can receive owner-issued mutation grants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientPrincipal {
+    Cli,
+    McpStdio,
+    LoopbackHttp,
+}
+
+impl ClientPrincipal {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::McpStdio => "mcp-stdio",
+            Self::LoopbackHttp => "loopback-http",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "cli" => Some(Self::Cli),
+            "mcp-stdio" => Some(Self::McpStdio),
+            "loopback-http" => Some(Self::LoopbackHttp),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum MutationError {
     #[error(transparent)]
@@ -35,7 +62,8 @@ pub enum MutationError {
     Store(#[from] StoreError),
 }
 
-/// Audit context supplied by a CLI or MCP boundary.
+/// Expected frontend label. It is trusted only when its client-bound grant exists.
+#[derive(Clone, Copy)]
 pub struct MutationContext<'a> {
     pub client: &'a str,
     pub surface: &'a str,
@@ -48,12 +76,14 @@ pub fn is_mutation(command: &Command) -> bool {
     command.method == Method::Post
 }
 
-/// Mint a 256-bit token bound to one device and the exact command path.
+/// Mint a 256-bit token bound to one device, the exact command path, and one frontend.
+/// Legacy rows keep a NULL client binding and are never assigned a default.
 /// `now` is injectable so expiry behavior is deterministic in tests.
 pub fn issue_approval<S: Store + ?Sized>(
     store: &S,
     device: &Device,
     command: &Command,
+    client: ClientPrincipal,
     now: i64,
 ) -> Result<String, MutationError> {
     if !is_mutation(command) {
@@ -67,6 +97,7 @@ pub fn issue_approval<S: Store + ?Sized>(
         token_hash: hex(&digest),
         device_id: device_id(device),
         action: command.path.clone(),
+        client: Some(client.as_str().to_owned()),
         expires_at: now.saturating_add(APPROVAL_TTL_SECS),
     };
     store.insert_confirmation_token(&row)?;
@@ -96,69 +127,91 @@ pub fn authorize_mutation_at<S: Store + ?Sized>(
     policy: &Policy,
     now: i64,
 ) -> Result<i64, MutationError> {
-    if !is_mutation(command) {
-        return Err(MutationError::NotMutation);
-    }
+    let token = token.filter(|candidate| !candidate.trim().is_empty());
+    let expected_client = ClientPrincipal::parse(context.client);
+    let (token_hash, grant) = match (expected_client, token) {
+        (Some(_), Some(token)) => {
+            let digest = Sha256::digest(token.as_bytes());
+            let token_hash = hex(&digest);
+            let grant = store.peek_confirmation_grant(&token_hash)?;
+            (Some(token_hash), grant)
+        }
+        _ => (None, None),
+    };
+    let stored_client = grant.as_ref().and_then(|grant| grant.client.as_deref());
+    let grant_expiry = grant.as_ref().map(|grant| grant.expires_at);
+    let trusted_client = match (expected_client, stored_client.as_deref(), grant_expiry) {
+        (Some(expected), Some(stored), Some(_)) if stored == expected.as_str() => Some(expected),
+        _ => None,
+    };
+    let audit_context = MutationContext {
+        client: trusted_client.map_or("unknown", ClientPrincipal::as_str),
+        ..context
+    };
+
+    // Tier refusal remains before any approval consumption. The frontend
+    // identity is trusted only when the stored grant binds the same client.
     if let Err(error) = crate::check_tier(command, device) {
-        insert_action(store, &context, "denied", TIER_REFUSED)?;
+        insert_action(store, &audit_context, "denied", TIER_REFUSED)?;
         return Err(MutationError::TierRefused(error));
     }
 
+    if expected_client.is_none() {
+        let action_id = insert_action(store, &audit_context, "denied", POLICY_DENIED)?;
+        return Err(MutationError::PolicyDenied { action_id });
+    }
+    if token.is_none() {
+        let action_id = insert_action(store, &audit_context, "denied", CONFIRMATION_REQUIRED)?;
+        return Err(MutationError::ConfirmationRequired { action_id });
+    }
+    let Some(client) = trusted_client else {
+        let action_id = insert_action(store, &audit_context, "denied", CONFIRMATION_INVALID)?;
+        return Err(MutationError::ConfirmationRequired { action_id });
+    };
+    let Some(token_hash) = token_hash.as_deref() else {
+        let action_id = insert_action(store, &audit_context, "denied", CONFIRMATION_INVALID)?;
+        return Err(MutationError::ConfirmationRequired { action_id });
+    };
+
     // Shared owner-policy choke (o0r): allowlist, then rate budget, both
-    // before any token is consumed. Denials are audited POLICY_DENIED. The
-    // rate check-and-record is one store transaction: separate CLI processes
-    // must not both observe remaining budget (TOCTOU). Transient lock
-    // contention is retried immediately and boundedly (no sleep: the holder
-    // commits in microseconds); exhaustion or real failures propagate, never
-    // deny and never swallow.
+    // before any token is consumed. The client key comes from the matching
+    // stored grant, not from the frontend label alone.
     let verb = Policy::verb_of(&command.path).unwrap_or("");
-    if !policy.allows(context.client, verb) {
-        let action_id = insert_action(store, &context, "denied", POLICY_DENIED)?;
+    if !policy.allows(client.as_str(), verb) {
+        let action_id = insert_action(store, &audit_context, "denied", POLICY_DENIED)?;
         return Err(MutationError::PolicyDenied { action_id });
     }
     if let Some((budget, window)) = policy.budget(verb) {
-        let since = now.saturating_sub(window);
-        if !try_record_with_retry(store, context.client, verb, since, budget as i64, now)? {
-            let action_id = insert_action(store, &context, "denied", POLICY_DENIED)?;
+        // Half-open window (now-window, now]: a hit exactly window-old is
+        // expired. The store counts at>=since, so the bound is exclusive.
+        let since = now.saturating_sub(window).saturating_add(1);
+        if !try_record_with_retry(store, client.as_str(), verb, since, budget as i64, now)? {
+            let action_id = insert_action(store, &audit_context, "denied", POLICY_DENIED)?;
             return Err(MutationError::PolicyDenied { action_id });
         }
     }
 
-    // Quiet hours gate BEFORE any token is consumed: the presented token
-    // must have been minted inside an active window (fresh explicit
-    // confirmation, UTC hours). A quiet-denied attempt preserves the
-    // single-use approval for later use.
-    if let Some(token) = token.filter(|t| !t.trim().is_empty())
-        && let Some(quiet) = &policy.quiet
-    {
-        let digest = Sha256::digest(token.as_bytes());
-        if let Some(expires_at) = store.peek_confirmation_token_expiry(&hex(&digest))? {
-            let minted_at = expires_at.saturating_sub(APPROVAL_TTL_SECS);
-            if quiet.active_at(hour_of_day_utc(now)) && !quiet.active_at(hour_of_day_utc(minted_at))
-            {
-                let action_id = insert_action(store, &context, "denied", POLICY_DENIED)?;
-                return Err(MutationError::PolicyDenied { action_id });
-            }
+    // Quiet hours gate BEFORE any token is consumed. A quiet-denied attempt
+    // preserves the single-use approval for later use.
+    if let (Some(expires_at), Some(quiet)) = (grant_expiry, &policy.quiet) {
+        let minted_at = expires_at.saturating_sub(APPROVAL_TTL_SECS);
+        if quiet.active_at(hour_of_day_utc(now)) && !quiet.active_at(hour_of_day_utc(minted_at)) {
+            let action_id = insert_action(store, &audit_context, "denied", POLICY_DENIED)?;
+            return Err(MutationError::PolicyDenied { action_id });
         }
     }
-    let accepted = token
-        .filter(|t| !t.trim().is_empty())
-        .map(|t| {
-            let digest = Sha256::digest(t.as_bytes());
-            store.consume_confirmation_token(&hex(&digest), &device_id(device), &command.path, now)
-        })
-        .transpose()?
-        .unwrap_or(false);
+    let accepted = store.consume_confirmation_token(
+        token_hash,
+        &device_id(device),
+        &command.path,
+        client.as_str(),
+        now,
+    )?;
     if !accepted {
-        let reason = if token.is_some_and(|t| !t.trim().is_empty()) {
-            CONFIRMATION_INVALID
-        } else {
-            CONFIRMATION_REQUIRED
-        };
-        let action_id = insert_action(store, &context, "denied", reason)?;
+        let action_id = insert_action(store, &audit_context, "denied", CONFIRMATION_INVALID)?;
         return Err(MutationError::ConfirmationRequired { action_id });
     }
-    insert_action(store, &context, "approved", RESULT_PENDING)
+    insert_action(store, &audit_context, "approved", RESULT_PENDING)
 }
 
 /// UTC hour of day for an epoch timestamp.
@@ -252,7 +305,6 @@ fn insert_action<S: Store + ?Sized>(
 ) -> Result<i64, MutationError> {
     let row = ActionRow {
         id: 0,
-        at: epoch_seconds(),
         client: context.client.to_owned(),
         surface: context.surface.to_owned(),
         intent: context.intent.to_owned(),

@@ -74,8 +74,8 @@ pub struct Policy {
 
 impl Default for Policy {
     /// Documented defaults for a missing `policy.toml`: the three known
-    /// clients (`cli`, `http`, `mcp`) may use every verb within the default
-    /// budgets; no quiet hours.
+    /// clients (`cli`, `mcp-stdio`, `loopback-http`) may use every verb within
+    /// the default budgets; no quiet hours.
     fn default() -> Self {
         let verbs = vec![
             VERB_KEYPRESS.to_string(),
@@ -83,7 +83,7 @@ impl Default for Policy {
             VERB_INSTALL.to_string(),
         ];
         let mut allow = HashMap::new();
-        for client in ["cli", "http", "mcp"] {
+        for client in ["cli", "mcp-stdio", "loopback-http"] {
             allow.insert(client.to_string(), verbs.clone());
         }
         Self {
@@ -272,11 +272,13 @@ mod tests {
     #[test]
     fn default_allows_known_clients_all_verbs() {
         let policy = Policy::default();
-        for client in ["cli", "http", "mcp"] {
+        for client in ["cli", "mcp-stdio", "loopback-http"] {
             for verb in ["keypress", "launch", "install"] {
                 assert!(policy.allows(client, verb), "{client}/{verb}");
             }
         }
+        assert!(!policy.allows("http", "keypress"));
+        assert!(!policy.allows("mcp", "keypress"));
         assert!(!policy.allows(" stranger ", "keypress"));
         assert!(!policy.allows("cli", "reboot"));
         assert!(policy.quiet.is_none());

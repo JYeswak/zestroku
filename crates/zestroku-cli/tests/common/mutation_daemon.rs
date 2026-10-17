@@ -98,6 +98,7 @@ pub(super) fn mint_http_approval(
     db: &Path,
     port: u16,
     command: &zestroku_proto::Command,
+    client: zestroku_core::mutation::ClientPrincipal,
 ) -> String {
     use zestroku_core::mutation::issue_approval;
     use zestroku_types::{AccessTier, Device};
@@ -115,10 +116,11 @@ pub(super) fn mint_http_approval(
             access_tier: AccessTier::Permissive,
         },
         command,
+        client,
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock")
             .as_secs() as i64,
     )
-    .expect("mint one-use HTTP approval")
+    .expect("mint one-use client-bound approval")
 }

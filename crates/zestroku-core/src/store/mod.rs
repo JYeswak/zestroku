@@ -84,6 +84,15 @@ pub struct ConfirmationTokenRow {
     pub token_hash: String,
     pub device_id: String,
     pub action: String,
+    /// Canonical client binding; `None` is preserved for legacy grants.
+    pub client: Option<String>,
+    pub expires_at: i64,
+}
+
+/// Client binding and expiry read atomically from one approval row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmationGrant {
+    pub client: Option<String>,
     pub expires_at: i64,
 }
 
@@ -133,6 +142,7 @@ pub trait Store {
         token_hash: &str,
         device_id: &str,
         action: &str,
+        client: &str,
         now: i64,
     ) -> Result<bool, StoreError>;
 
@@ -155,8 +165,13 @@ pub trait Store {
         budget: i64,
         now: i64,
     ) -> Result<bool, StoreError>;
-    /// Non-consuming lookup of a token's expiry (quiet-hours freshness peek
-    /// preserves the unused single-use approval).
+    /// Non-consuming typed grant lookup; client and expiry come from one row.
+    fn peek_confirmation_grant(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<ConfirmationGrant>, StoreError>;
+    /// Expiry-only lookup retained for quiet-hours store checks.
+    /// Principal-aware authorization must use `peek_confirmation_grant`.
     fn peek_confirmation_token_expiry(&self, token_hash: &str) -> Result<Option<i64>, StoreError>;
     fn list_actions(&self) -> Result<Vec<ActionRow>, StoreError>;
     fn update_action_result(&self, id: i64, result: &str) -> Result<(), StoreError>;
@@ -503,8 +518,14 @@ impl Store for SqliteStore {
 
     fn insert_confirmation_token(&self, token: &ConfirmationTokenRow) -> Result<(), StoreError> {
         self.exec(
-            "INSERT INTO confirmation_tokens (token_hash, device_id, action, expires_at, consumed_at) VALUES (?1, ?2, ?3, ?4, NULL)",
-            &[s(&token.token_hash), s(&token.device_id), s(&token.action), i(token.expires_at)],
+            "INSERT INTO confirmation_tokens (token_hash, device_id, action, client, expires_at, consumed_at) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+            &[
+                s(&token.token_hash),
+                s(&token.device_id),
+                s(&token.action),
+                token.client.as_deref().map(s).unwrap_or(SqliteValue::Null),
+                i(token.expires_at),
+            ],
         )
     }
 
@@ -513,17 +534,18 @@ impl Store for SqliteStore {
         token_hash: &str,
         device_id: &str,
         action: &str,
+        client: &str,
         now: i64,
     ) -> Result<bool, StoreError> {
         self.in_transaction(|conn| {
             let rows = conn.query_with_params_sync(
-                "SELECT token_hash FROM confirmation_tokens WHERE token_hash = ?1 AND device_id = ?2 AND action = ?3 AND expires_at > ?4 AND consumed_at IS NULL",
-                &[s(token_hash), s(device_id), s(action), i(now)],
+                "SELECT token_hash FROM confirmation_tokens WHERE token_hash = ?1 AND device_id = ?2 AND action = ?3 AND client = ?4 AND expires_at > ?5 AND consumed_at IS NULL",
+                &[s(token_hash), s(device_id), s(action), s(client), i(now)],
             )?;
             if rows.is_empty() { return Ok(false); }
             conn.execute_with_params_sync(
-                "UPDATE confirmation_tokens SET consumed_at = ?4 WHERE token_hash = ?1 AND device_id = ?2 AND action = ?3 AND expires_at > ?4 AND consumed_at IS NULL",
-                &[s(token_hash), s(device_id), s(action), i(now)],
+                "UPDATE confirmation_tokens SET consumed_at = ?5 WHERE token_hash = ?1 AND device_id = ?2 AND action = ?3 AND client = ?4 AND expires_at > ?5 AND consumed_at IS NULL",
+                &[s(token_hash), s(device_id), s(action), s(client), i(now)],
             ).map(drop)?;
             Ok(true)
         })
@@ -728,6 +750,22 @@ impl Store for SqliteStore {
         .first()
         .map(|row| int(row, 0))
         .transpose()
+    }
+    fn peek_confirmation_grant(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<ConfirmationGrant>, StoreError> {
+        let rows = self.query(
+            "SELECT client, expires_at FROM confirmation_tokens WHERE token_hash = ?1",
+            &[s(token_hash)],
+        )?;
+        Ok(rows.first().map(|row| ConfirmationGrant {
+            client: row
+                .first()
+                .and_then(SqliteValue::as_text)
+                .map(str::to_owned),
+            expires_at: int(row, 1),
+        }))
     }
     fn update_action_result(&self, id: i64, result: &str) -> Result<(), StoreError> {
         self.exec(

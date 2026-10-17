@@ -6,10 +6,10 @@
 //! `echo` is local; `recent_actions` reads the shared audit store.
 //!
 //! `key` and `launch` forward the opaque owner approval token to the
-//! configured loopback daemon, which authorizes through the shared core gate
-//! and dispatches exactly once. These handlers never consume approvals
-//! locally, never open direct ECP connections, and return a tool error
-//! (never approval-only success) when the daemon refuses, fails, or is down.
+//! configured loopback daemon. Grants must be minted for `mcp-stdio`; the
+//! daemon matches that expected frontend to the stored client binding before
+//! allowlist checks, token consumption, or dispatch. These handlers never
+//! consume approvals locally or open direct ECP connections.
 //!
 //! `run_stdio` owns the MCP stdio transport and its asupersync runtime. The
 //! CLI's real-process integration test exercises it through the actual daemon
@@ -28,7 +28,9 @@ use asupersync::http::Client as HttpClient;
 use asupersync::{CancelReason, Cx, Outcome};
 use fastmcp::server::{BoxFuture, ToolExecutionMode, ToolHandler};
 use fastmcp::{Content, McpContext, McpError, McpErrorCode, McpResult, Tool, ToolAnnotations};
-use zestroku_core::mutation::{MutationContext, MutationError, authorize_mutation};
+use zestroku_core::mutation::{
+    ClientPrincipal, MutationContext, MutationError, authorize_mutation,
+};
 use zestroku_core::policy::Policy;
 use zestroku_core::store::{ActionRow, SqliteStore, Store};
 use zestroku_proto::Command;
@@ -130,7 +132,7 @@ pub fn decide<S: Store + ?Sized>(
         Err(arg) => return Ok(Err(arg)),
     };
     let context = MutationContext {
-        client: "mcp",
+        client: ClientPrincipal::McpStdio.as_str(),
         surface: kind,
         intent: &format!("{kind} {target}"),
         before_state,
@@ -246,9 +248,9 @@ impl ToolHandler for MutationTool {
             name: self.kind.to_string(),
             description: Some(format!(
                 "{} mutation through the per-op confirmation gate (m7e). \
-                 Requires a single-use approval token minted by the owner CLI. \
-                 Unconfirmed calls are refused with {CONFIRMATION_REQUIRED} \
-                 and logged as denied.",
+                 Requires a single-use owner token approved for `mcp-stdio`; \
+                 the daemon validates the stored client binding. Unconfirmed \
+                 calls are refused with {CONFIRMATION_REQUIRED} and logged as denied.",
                 self.kind
             )),
             input_schema: serde_json::json!({
@@ -322,7 +324,11 @@ impl ToolHandler for MutationTool {
             // every refusal is a tool error, never approval-only success.
             let body = match self.kind {
                 "launch" => match target.parse::<u32>() {
-                    Ok(app_id) => serde_json::json!({"app_id": app_id, "confirm": confirm}),
+                    Ok(app_id) => serde_json::json!({
+                        "client": ClientPrincipal::McpStdio.as_str(),
+                        "app_id": app_id,
+                        "confirm": confirm
+                    }),
                     Err(_) => {
                         return Outcome::Err(mcp_error(
                             McpErrorCode::InvalidParams,
@@ -330,7 +336,11 @@ impl ToolHandler for MutationTool {
                         ));
                     }
                 },
-                "key" => serde_json::json!({"key": target, "confirm": confirm}),
+                "key" => serde_json::json!({
+                    "client": ClientPrincipal::McpStdio.as_str(),
+                    "key": target,
+                    "confirm": confirm
+                }),
                 other => {
                     return Outcome::Err(mcp_error(
                         McpErrorCode::InvalidParams,
@@ -428,9 +438,9 @@ impl ToolHandler for UndoLastTool {
             name: "undo_last".to_string(),
             description: Some(
                 "Relaunch the before-app of the latest restorable mutation \
-                 through the per-op confirmation gate (m7e). Resolves the \
-                 daemon undo plan first; unconfirmed calls are forwarded so \
-                 the daemon logs the denial."
+                 through the per-op confirmation gate (m7e), using a token \
+                 approved for `mcp-stdio`. Resolves the daemon undo plan first; \
+                 unconfirmed calls are forwarded so the daemon logs the denial."
                     .to_string(),
             ),
             input_schema: serde_json::json!({
@@ -439,7 +449,7 @@ impl ToolHandler for UndoLastTool {
                     "host": {"type": "string", "description": "device host"},
                     "confirm": {
                         "type": "string",
-                        "description": "opaque single-use token from `zestroku approve`; when absent the daemon logs the denial"
+                        "description": "single-use token from `zestroku approve --client mcp-stdio`; when absent the daemon logs the denial"
                     }
                 },
                 "required": ["host"]
@@ -516,7 +526,10 @@ impl ToolHandler for UndoLastTool {
             };
             // Missing confirm is forwarded (not refused locally) so the
             // daemon writes the denial audit row.
-            let mut undo = serde_json::json!({"action_id": action_id});
+            let mut undo = serde_json::json!({
+                "client": ClientPrincipal::McpStdio.as_str(),
+                "action_id": action_id
+            });
             if let Some(confirm) = confirmation_token_from(&arguments) {
                 undo["confirm"] = serde_json::Value::from(confirm);
             }
@@ -1257,7 +1270,7 @@ mod tests {
         assert_eq!(rows[0].id, *action_id);
         assert_eq!(rows[0].decision, "denied");
         assert_eq!(rows[0].result, CONFIRMATION_REQUIRED);
-        assert_eq!(rows[0].client, "mcp");
+        assert_eq!(rows[0].client, "mcp-stdio");
         assert_eq!(rows[0].surface, "launch");
         assert_eq!(rows[0].intent, "launch 12");
     }
@@ -1272,8 +1285,14 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        let token =
-            zestroku_core::mutation::issue_approval(&store, &device, &command, now).unwrap();
+        let token = zestroku_core::mutation::issue_approval(
+            &store,
+            &device,
+            &command,
+            ClientPrincipal::McpStdio,
+            now,
+        )
+        .unwrap();
         let text = decide(
             &store,
             DecideInput {

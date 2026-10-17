@@ -36,7 +36,14 @@ fn tier_refusal_precedes_http_token_consumption_and_snapshot_is_audited() {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock")
             .as_secs() as i64;
-        issue_approval(&*store_guard, &device, &launch(1001), now).expect("mint launch token")
+        issue_approval(
+            &*store_guard,
+            &device,
+            &launch(1001),
+            zestroku_core::mutation::ClientPrincipal::LoopbackHttp,
+            now,
+        )
+        .expect("mint launch token")
     };
     let transport = Arc::new(ResponseTransport::new([
         response(200, "<active-app><app>Roku</app></active-app>"),
@@ -49,7 +56,11 @@ fn tier_refusal_precedes_http_token_consumption_and_snapshot_is_audited() {
     let refused = client
         .post(&path)
         .header_str("host", HOST)
-        .json(&serde_json::json!({"app_id": 1001, "confirm": &token}))
+        .json(&serde_json::json!({
+            "client": "loopback-http",
+            "app_id": 1001,
+            "confirm": &token
+        }))
         .send();
     assert_eq!(refused.status().as_u16(), 403);
     assert_eq!(error_code(&refused), "tier_refused");
@@ -85,7 +96,11 @@ fn tier_refusal_precedes_http_token_consumption_and_snapshot_is_audited() {
     let approved = client
         .post(&path)
         .header_str("host", HOST)
-        .json(&serde_json::json!({"app_id": 1001, "confirm": &token}))
+        .json(&serde_json::json!({
+            "client": "loopback-http",
+            "app_id": 1001,
+            "confirm": &token
+        }))
         .send();
     assert_eq!(approved.status().as_u16(), 200);
     let approved_json: Value = serde_json::from_str(approved.text()).expect("success JSON");
@@ -97,7 +112,11 @@ fn tier_refusal_precedes_http_token_consumption_and_snapshot_is_audited() {
     let replay = client
         .post(&path)
         .header_str("host", HOST)
-        .json(&serde_json::json!({"app_id": 1001, "confirm": &token}))
+        .json(&serde_json::json!({
+            "client": "loopback-http",
+            "app_id": 1001,
+            "confirm": &token
+        }))
         .send();
     assert_eq!(replay.status().as_u16(), 403);
     assert_eq!(error_code(&replay), "confirmation_required");
@@ -119,7 +138,7 @@ fn tier_refusal_precedes_http_token_consumption_and_snapshot_is_audited() {
     assert_eq!(actions[0].decision, "denied");
     assert_eq!(actions[0].result, zestroku_core::mutation::TIER_REFUSED);
     assert_eq!(actions[1].decision, "approved");
-    assert_eq!(actions[1].client, "http");
+    assert_eq!(actions[1].client, "loopback-http");
     assert_eq!(actions[1].surface, "launch");
     assert_eq!(
         actions[1].intent,
@@ -177,7 +196,11 @@ fn unknown_inventory_and_malformed_mutation_inputs_make_no_device_requests() {
     let invalid_key = client
         .post(&format!("/v1/devices/{HOST}:{PORT}/key"))
         .header_str("host", HOST)
-        .json(&serde_json::json!({"key": "Home/../../host", "confirm": "token"}))
+        .json(&serde_json::json!({
+            "client": "loopback-http",
+            "key": "Home/../../host",
+            "confirm": "token"
+        }))
         .send();
     assert_eq!(invalid_key.status().as_u16(), 400);
     assert_eq!(error_code(&invalid_key), "invalid_key");
@@ -224,8 +247,14 @@ fn http_approval_requires_nonblank_single_use_device_and_command_binding() {
                 "blank" => Some("  ".to_owned()),
                 "free-text" => Some("yes".to_owned()),
                 "wrong-action" => Some(
-                    issue_approval(&*store_guard, &device, &keypress_raw("Home"), now)
-                        .expect("mint wrong-action approval"),
+                    issue_approval(
+                        &*store_guard,
+                        &device,
+                        &keypress_raw("Home"),
+                        zestroku_core::mutation::ClientPrincipal::LoopbackHttp,
+                        now,
+                    )
+                    .expect("mint wrong-action approval"),
                 ),
                 "wrong-device" => Some(
                     issue_approval(
@@ -235,6 +264,7 @@ fn http_approval_requires_nonblank_single_use_device_and_command_binding() {
                             ..device.clone()
                         },
                         &launch(1001),
+                        zestroku_core::mutation::ClientPrincipal::LoopbackHttp,
                         now,
                     )
                     .expect("mint wrong-device approval"),
@@ -244,6 +274,7 @@ fn http_approval_requires_nonblank_single_use_device_and_command_binding() {
                         &*store_guard,
                         &device,
                         &launch(1001),
+                        zestroku_core::mutation::ClientPrincipal::LoopbackHttp,
                         now - APPROVAL_TTL_SECS - 1,
                     )
                     .expect("mint expired approval"),
@@ -252,8 +283,12 @@ fn http_approval_requires_nonblank_single_use_device_and_command_binding() {
             }
         };
         let body = match token.as_deref() {
-            Some(token) => serde_json::json!({"app_id": 1001, "confirm": token}),
-            None => serde_json::json!({"app_id": 1001}),
+            Some(token) => serde_json::json!({
+                "client": "loopback-http",
+                "app_id": 1001,
+                "confirm": token
+            }),
+            None => serde_json::json!({"client": "loopback-http", "app_id": 1001}),
         };
         let transport = Arc::new(ResponseTransport::new([response(
             200,
@@ -405,6 +440,7 @@ fn recorded_tier_downgrade_during_snapshot_denies_without_mutation_post() {
         &*store.lock().expect("store lock"),
         &device,
         &launch(1001),
+        zestroku_core::mutation::ClientPrincipal::LoopbackHttp,
         now,
     )
     .expect("mint launch token");
@@ -418,7 +454,11 @@ fn recorded_tier_downgrade_during_snapshot_denies_without_mutation_post() {
     let denied = client
         .post(&path)
         .header_str("host", HOST)
-        .json(&serde_json::json!({"app_id": 1001, "confirm": &token}))
+        .json(&serde_json::json!({
+            "client": "loopback-http",
+            "app_id": 1001,
+            "confirm": &token
+        }))
         .send();
     assert_eq!(denied.status().as_u16(), 403);
     assert_eq!(error_code(&denied), "tier_refused");
@@ -441,7 +481,11 @@ fn recorded_tier_downgrade_during_snapshot_denies_without_mutation_post() {
     let approved = client
         .post(&path)
         .header_str("host", HOST)
-        .json(&serde_json::json!({"app_id": 1001, "confirm": &token}))
+        .json(&serde_json::json!({
+            "client": "loopback-http",
+            "app_id": 1001,
+            "confirm": &token
+        }))
         .send();
     assert_eq!(approved.status().as_u16(), 200);
     let posts: Vec<String> = transport

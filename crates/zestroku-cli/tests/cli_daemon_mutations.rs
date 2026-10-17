@@ -41,9 +41,24 @@ fn cli_mutations_use_daemon_authority_and_completed_audit() {
     let api_port = http_free_port();
     let daemon_url = format!("http://127.0.0.1:{api_port}");
     let _daemon = start_http_daemon(&daemon_db, api_port);
-    let launch_token = mint_http_approval(&daemon_db, sim.port(), &launch(1001));
-    let raw_token = mint_http_approval(&daemon_db, sim.port(), &keypress_raw("hOmE"));
-    let key_token = mint_http_approval(&daemon_db, sim.port(), &keypress_raw("Home"));
+    let launch_token = mint_http_approval(
+        &daemon_db,
+        sim.port(),
+        &launch(1001),
+        zestroku_core::mutation::ClientPrincipal::Cli,
+    );
+    let raw_token = mint_http_approval(
+        &daemon_db,
+        sim.port(),
+        &keypress_raw("hOmE"),
+        zestroku_core::mutation::ClientPrincipal::Cli,
+    );
+    let key_token = mint_http_approval(
+        &daemon_db,
+        sim.port(),
+        &keypress_raw("Home"),
+        zestroku_core::mutation::ClientPrincipal::Cli,
+    );
 
     let launched = run_cli(
         &client_db,
@@ -119,7 +134,12 @@ fn cli_mutations_use_daemon_authority_and_completed_audit() {
         );
     }
 
-    let failed_token = mint_http_approval(&daemon_db, sim.port(), &launch(1002));
+    let failed_token = mint_http_approval(
+        &daemon_db,
+        sim.port(),
+        &launch(1002),
+        zestroku_core::mutation::ClientPrincipal::Cli,
+    );
     sim.suspend();
     let failed = run_cli(
         &client_db,
@@ -149,7 +169,7 @@ fn cli_mutations_use_daemon_authority_and_completed_audit() {
         (Some(1001), "Streaming One"),
         (Some(1001), "Streaming One"),
     ]) {
-        assert_eq!(action.client, "http");
+        assert_eq!(action.client, "cli");
         assert_eq!(action.decision, "approved");
         assert_eq!(action.result, "completed");
         assert_eq!(
@@ -290,7 +310,12 @@ fn cli_app_name_launch_preserves_requested_name_in_daemon_audit() {
     let api_port = http_free_port();
     let daemon_url = format!("http://127.0.0.1:{api_port}");
     let _daemon = start_http_daemon(&daemon_db, api_port);
-    let token = mint_http_approval(&daemon_db, sim.port(), &launch(1001));
+    let token = mint_http_approval(
+        &daemon_db,
+        sim.port(),
+        &launch(1001),
+        zestroku_core::mutation::ClientPrincipal::Cli,
+    );
     let private_name = format!("label-{token}");
     for with_confirmation in [false, true] {
         let mut args = vec!["launch", target.as_str(), "--app", private_name.as_str()];
@@ -375,7 +400,12 @@ fn cli_daemon_down_preserves_approval_for_restart() {
     let target = seed_http_device(&daemon_db, sim.port());
     let api_port = http_free_port();
     let daemon_url = format!("http://127.0.0.1:{api_port}");
-    let token = mint_http_approval(&daemon_db, sim.port(), &launch(1001));
+    let token = mint_http_approval(
+        &daemon_db,
+        sim.port(),
+        &launch(1001),
+        zestroku_core::mutation::ClientPrincipal::Cli,
+    );
     let daemon = start_http_daemon(&daemon_db, api_port);
     daemon.stop();
 
@@ -448,7 +478,7 @@ fn cli_log_reads_action_rows_without_device_requests() {
             .insert_action(&ActionRow {
                 id: 0,
                 at,
-                client: "http".into(),
+                client: "loopback-http".into(),
                 surface: surface.into(),
                 intent: format!("{surface} 127.0.0.1:{} /launch/1001", sim.port()),
                 decision: decision.into(),
@@ -472,7 +502,7 @@ fn cli_log_reads_action_rows_without_device_requests() {
     assert_eq!(actions[0]["decision"], "denied");
     assert_eq!(actions[0]["result"], "CONFIRMATION_REQUIRED");
     assert_eq!(actions[1]["surface"], "launch");
-    assert_eq!(actions[1]["client"], "http");
+    assert_eq!(actions[1]["client"], "loopback-http");
     assert_eq!(
         actions[1]["intent"],
         format!("launch 127.0.0.1:{} /launch/1001", sim.port())
@@ -486,7 +516,7 @@ fn cli_log_reads_action_rows_without_device_requests() {
     assert_eq!(human.status.code(), Some(0), "{human:?}");
     let table = String::from_utf8_lossy(&human.stdout);
     for field in [
-        "client=http",
+        "client=loopback-http",
         "surface=undo",
         "decision=denied",
         "result=\"CONFIRMATION_REQUIRED\"",
@@ -520,7 +550,12 @@ fn cli_undo_requires_confirmation_and_logs_the_restored_app() {
     let _daemon = start_http_daemon(&db, api_port);
 
     for app_id in [1001, 1002] {
-        let token = mint_http_approval(&db, sim.port(), &launch(app_id));
+        let token = mint_http_approval(
+            &db,
+            sim.port(),
+            &launch(app_id),
+            zestroku_core::mutation::ClientPrincipal::Cli,
+        );
         let output = run_cli(
             &db,
             &daemon_url,
@@ -529,7 +564,12 @@ fn cli_undo_requires_confirmation_and_logs_the_restored_app() {
         assert_eq!(output.status.code(), Some(0), "{output:?}");
     }
 
-    let undo_token = mint_http_approval(&db, sim.port(), &launch(1001));
+    let undo_token = mint_http_approval(
+        &db,
+        sim.port(),
+        &launch(1001),
+        zestroku_core::mutation::ClientPrincipal::Cli,
+    );
     let denied = run_cli(&db, &daemon_url, &["undo", &target]);
     assert_eq!(denied.status.code(), Some(4), "{denied:?}");
     assert!(
@@ -591,7 +631,7 @@ fn assert_undo_refuses_unrestorable_snapshot(before_state: impl FnOnce(&str) -> 
         .insert_action(&ActionRow {
             id: 0,
             at: 10,
-            client: "http".into(),
+            client: "loopback-http".into(),
             surface: "launch".into(),
             intent: format!("launch {target} /launch/1001"),
             decision: "approved".into(),
@@ -642,7 +682,12 @@ fn unsupported_daemon_policy_refuses_without_dispatch_or_spending_approval() {
     let api_port = http_free_port();
     let daemon_url = format!("http://127.0.0.1:{api_port}");
     let _daemon = start_http_daemon(&daemon_db, api_port);
-    let token = mint_http_approval(&daemon_db, sim.port(), &launch(1001));
+    let token = mint_http_approval(
+        &daemon_db,
+        sim.port(),
+        &launch(1001),
+        zestroku_core::mutation::ClientPrincipal::Cli,
+    );
     let policy_path = directory.path().join("policy.toml");
     std::fs::write(&policy_path, "[quiet_hours]\nenabled = true\n")
         .expect("write unsupported restriction");

@@ -127,6 +127,7 @@ fn minted_cli_token_authorizes_once_then_replay_is_denied() {
             &store,
             &device,
             &zestroku_proto::keypress_raw("Home"),
+            zestroku_core::mutation::ClientPrincipal::Cli,
             now,
         )
         .unwrap()
@@ -349,6 +350,7 @@ fn sideload_requires_confirmation_then_authenticates_and_audits_on_installer_por
                 path: "/plugin_install".into(),
                 tier: AccessTier::Permissive,
             },
+            zestroku_core::mutation::ClientPrincipal::Cli,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")

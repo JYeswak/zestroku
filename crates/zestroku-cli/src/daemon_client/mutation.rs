@@ -6,6 +6,7 @@ use zestroku_proto::Method;
 use super::http::Endpoint;
 use super::{DEFAULT_DAEMON_URL, ReadError, daemon_http_error, device_path, parse_daemon_url};
 
+use zestroku_core::mutation::ClientPrincipal;
 #[derive(Debug, Deserialize)]
 enum MutationCompletion {
     #[serde(rename = "completed")]
@@ -30,18 +31,21 @@ pub(crate) struct UndoPlan {
 
 #[derive(Serialize)]
 struct UndoRequest<'a> {
+    client: &'static str,
     action_id: i64,
     confirm: Option<&'a str>,
 }
 
 #[derive(Serialize)]
 struct KeyRequest<'a> {
+    client: &'static str,
     key: &'a str,
     confirm: Option<&'a str>,
 }
 
 #[derive(Serialize)]
 struct LaunchRequest<'a> {
+    client: &'static str,
     app_id: u32,
     confirm: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -99,7 +103,15 @@ impl MutationClient {
         key: &str,
         confirm: Option<&str>,
     ) -> Result<CompletedMutation, ReadError> {
-        self.post(target, "key", &KeyRequest { key, confirm })
+        self.post(
+            target,
+            "key",
+            &KeyRequest {
+                client: ClientPrincipal::Cli.as_str(),
+                key,
+                confirm,
+            },
+        )
     }
 
     pub(crate) fn launch(
@@ -113,6 +125,7 @@ impl MutationClient {
             target,
             "launch",
             &LaunchRequest {
+                client: ClientPrincipal::Cli.as_str(),
                 app_id,
                 confirm,
                 requested_app,
@@ -125,7 +138,15 @@ impl MutationClient {
         action_id: i64,
         confirm: Option<&str>,
     ) -> Result<CompletedMutation, ReadError> {
-        self.post(target, "undo", &UndoRequest { action_id, confirm })
+        self.post(
+            target,
+            "undo",
+            &UndoRequest {
+                client: ClientPrincipal::Cli.as_str(),
+                action_id,
+                confirm,
+            },
+        )
     }
 
     fn post(

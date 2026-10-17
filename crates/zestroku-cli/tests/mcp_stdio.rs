@@ -193,26 +193,49 @@ fn mint_mcp_approval(
             access_tier: AccessTier::Permissive,
         },
         command,
+        zestroku_core::mutation::ClientPrincipal::McpStdio,
         issued_at,
     )
     .expect("mint one-use MCP approval")
 }
 /// Mint a real CLI approval through `script` so the terminal-only CLI gate
 /// stays active in this process-level regression.
-fn mint_cli_approval(db: &Path, target: &str, key: &str, transcript: &Path) -> String {
+fn mint_cli_approval(
+    db: &Path,
+    target: &str,
+    key: &str,
+    requested_client: Option<zestroku_core::mutation::ClientPrincipal>,
+    transcript: &Path,
+) -> String {
     let binary = env!("CARGO_BIN_EXE_zestroku");
+    let effective_client =
+        requested_client.unwrap_or(zestroku_core::mutation::ClientPrincipal::Cli);
     let mut command = Command::new("script");
     #[cfg(target_os = "macos")]
-    command
-        .args(["-q", "-e"])
-        .arg(transcript)
-        .arg(binary)
-        .args(["approve", "key", target, key]);
+    {
+        command
+            .args(["-q", "-e"])
+            .arg(transcript)
+            .arg(binary)
+            .args(["approve", "key", target, key]);
+        if let Some(client) = requested_client {
+            command.args(["--client", client.as_str()]);
+        }
+    }
     #[cfg(target_os = "linux")]
-    command
-        .args(["-q", "-e", "-c"])
-        .arg(format!("{binary} approve key {target} {key}"))
-        .arg(transcript);
+    {
+        let command_line = match requested_client {
+            Some(client) => format!(
+                "{binary} approve key {target} {key} --client {}",
+                client.as_str()
+            ),
+            None => format!("{binary} approve key {target} {key}"),
+        };
+        command
+            .args(["-q", "-e", "-c"])
+            .arg(command_line)
+            .arg(transcript);
+    }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     panic!("CLI approval PTY test requires macOS or Linux `script`");
 
@@ -223,7 +246,10 @@ fn mint_cli_approval(db: &Path, target: &str, key: &str, transcript: &Path) -> S
         .stderr(Stdio::piped())
         .spawn()
         .expect("start CLI approval under PTY");
-    let phrase = format!("approve key {target} {key}\n");
+    let phrase = format!(
+        "approve key {target} {key} --client {}\n",
+        effective_client.as_str()
+    );
     child
         .stdin
         .take()
@@ -344,6 +370,7 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
         "recent_actions",
         "key",
         "launch",
+        "undo_last",
     ] {
         assert!(names.contains(&want), "missing tool {want}: {names:?}");
     }
@@ -539,13 +566,22 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
         &db,
         &target,
         "HOME",
+        None,
         &dir.path().join("wrong-case-approval.typescript"),
     );
-    let key_token = mint_cli_approval(
+    let cli_bound_key_token = mint_cli_approval(
         &db,
         &target,
         "Home",
-        &dir.path().join("home-approval.typescript"),
+        None,
+        &dir.path().join("cli-home-approval.typescript"),
+    );
+    let mcp_key_token = mint_cli_approval(
+        &db,
+        &target,
+        "Home",
+        Some(zestroku_core::mutation::ClientPrincipal::McpStdio),
+        &dir.path().join("mcp-home-approval.typescript"),
     );
 
     let daemon_port = free_port();
@@ -593,10 +629,27 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
         .collect();
     assert_eq!(posts_after_wrong_case, ["/launch/1001"]);
 
-    let keyed = session.call(
+    let wrong_client = session.call(
         5,
         "key",
-        json!({"host": target, "target": "Home", "confirm": key_token}),
+        json!({"host": target, "target": "Home", "confirm": cli_bound_key_token}),
+    );
+    assert!(
+        is_error(&wrong_client),
+        "an MCP request must not relabel a CLI-bound grant: {wrong_client}"
+    );
+    let posts_after_wrong_client: Vec<String> = sim
+        .received_requests()
+        .into_iter()
+        .filter(|(method, _)| method == "POST")
+        .map(|(_, path)| path)
+        .collect();
+    assert_eq!(posts_after_wrong_client, ["/launch/1001"]);
+
+    let keyed = session.call(
+        6,
+        "key",
+        json!({"host": target, "target": "Home", "confirm": mcp_key_token}),
     );
     assert!(!is_error(&keyed), "{keyed}");
     let keyed_outcome = result_json(&keyed);
@@ -604,7 +657,7 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
     assert_eq!(keyed_outcome["target"], target);
     assert_eq!(keyed_outcome["outcome"], "completed");
 
-    let active_after_key = session.call(6, "active_app", json!({"host": target}));
+    let active_after_key = session.call(7, "active_app", json!({"host": target}));
 
     assert_eq!(
         result_json(&active_after_key)["name"],
@@ -623,28 +676,29 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
         .expect("open shared action store")
         .list_actions()
         .expect("list shared actions");
-    assert_eq!(actions.len(), 3, "{actions:?}");
+    assert_eq!(actions.len(), 4, "{actions:?}");
     let launch_action = actions
         .iter()
         .find(|action| action.surface == "launch")
         .expect("completed launch action");
-    assert_eq!(launch_action.client, "http");
+    assert_eq!(launch_action.client, "mcp-stdio");
     assert_eq!(launch_action.decision, "approved");
     assert_eq!(launch_action.result, "completed");
     assert!(launch_action.before_state.contains("Roku"));
-    let key_denial = actions
+    let key_denials: Vec<_> = actions
         .iter()
-        .find(|action| action.surface == "key" && action.decision == "denied")
-        .expect("case-mismatched key token is denied");
-    assert_eq!(
-        key_denial.result,
-        zestroku_core::mutation::CONFIRMATION_INVALID
-    );
+        .filter(|action| action.surface == "key" && action.decision == "denied")
+        .collect();
+    assert_eq!(key_denials.len(), 2, "{actions:?}");
+    for denial in key_denials {
+        assert_eq!(denial.client, "unknown");
+        assert_eq!(denial.result, zestroku_core::mutation::CONFIRMATION_INVALID);
+    }
     let key_action = actions
         .iter()
         .find(|action| action.surface == "key" && action.decision == "approved")
         .expect("completed key action");
-    assert_eq!(key_action.client, "http");
+    assert_eq!(key_action.client, "mcp-stdio");
     assert_eq!(key_action.result, "completed");
     assert!(key_action.before_state.contains("Streaming One"));
 }
@@ -808,6 +862,87 @@ fn mcp_rejects_non_loopback_daemon_endpoint_before_startup() {
         output.stdout.is_empty(),
         "invalid endpoint must not emit an MCP handshake"
     );
+}
+
+#[test]
+fn mcp_undo_last_uses_launch_confirmation_and_records_the_restore() {
+    use zestroku_core::store::Store;
+    use zestroku_proto::launch;
+    use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
+
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let target = format!("127.0.0.1:{}", sim.port());
+    let dir = tempfile::tempdir().expect("temporary undo directory");
+    let db = dir.path().join("actions.db");
+    seed_mutation_device(&db, &target, "SIM-1234X");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs() as i64;
+    let first_token = mint_mcp_approval(&db, &target, &launch(1001), now);
+    let second_token = mint_mcp_approval(&db, &target, &launch(1002), now);
+    let undo_token = mint_mcp_approval(&db, &target, &launch(1001), now);
+
+    let daemon_port = free_port();
+    let _daemon = Daemon::start(&db, daemon_port);
+    let mut session = Session::start(&db, &format!("http://127.0.0.1:{daemon_port}"));
+    initialize_session(&mut session);
+    for (id, token, app_id) in [(2, first_token, 1001), (3, second_token, 1002)] {
+        let launch = session.call(
+            id,
+            "launch",
+            json!({"host": target, "target": app_id.to_string(), "confirm": token}),
+        );
+        assert!(!is_error(&launch), "{launch}");
+    }
+    let denied = session.call(4, "undo_last", json!({"host": target}));
+    assert!(
+        is_error(&denied),
+        "undo without confirmation must be refused: {denied}"
+    );
+    let undone = session.call(
+        5,
+        "undo_last",
+        json!({"host": target, "confirm": undo_token}),
+    );
+    assert!(!is_error(&undone), "{undone}");
+    assert_eq!(result_json(&undone)["surface"], "undo");
+    assert_eq!(result_json(&undone)["outcome"], "completed");
+    assert_eq!(sim.launch_count(), 3);
+
+    let posts: Vec<String> = sim
+        .received_requests()
+        .into_iter()
+        .filter(|(method, _)| method == "POST")
+        .map(|(_, path)| path)
+        .collect();
+    assert_eq!(posts, ["/launch/1001", "/launch/1002", "/launch/1001"]);
+    let actions = SqliteStore::open(&db)
+        .expect("open undo action store")
+        .list_actions()
+        .expect("read undo action store");
+    assert_eq!(actions[0].client, "mcp-stdio");
+    assert_eq!(actions[1].client, "mcp-stdio");
+    assert_eq!(actions[2].client, "unknown");
+    assert_eq!(actions[3].client, "mcp-stdio");
+    assert_eq!(actions[2].surface, "undo");
+    assert_eq!(actions[2].decision, "denied");
+    assert_eq!(actions[3].surface, "undo");
+    assert_eq!(actions[3].decision, "approved");
+    assert_eq!(actions[3].result, "completed");
+    assert!(actions[3].intent.contains("Streaming One"));
+    assert!(actions[3].before_state.contains("Streaming Two"));
+    let audit = session.call(6, "recent_actions", json!({}));
+    assert!(!is_error(&audit), "{audit}");
+    let audit_text = audit["result"]["content"][0]["text"]
+        .as_str()
+        .expect("action log text");
+    assert!(audit_text.contains("surface=undo"), "{audit_text}");
+    assert!(audit_text.contains("decision=denied"), "{audit_text}");
+    assert!(audit_text.contains("decision=approved"), "{audit_text}");
 }
 
 #[test]

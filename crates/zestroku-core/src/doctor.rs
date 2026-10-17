@@ -130,6 +130,7 @@ impl Store for ReadOnly<'_> {
         _token_hash: &str,
         _device_id: &str,
         _action: &str,
+        _client: &str,
         _now: i64,
     ) -> Result<bool, StoreError> {
         denied("consume_confirmation_token")
@@ -179,6 +180,12 @@ impl Store for ReadOnly<'_> {
     }
     fn peek_confirmation_token_expiry(&self, token_hash: &str) -> Result<Option<i64>, StoreError> {
         self.0.peek_confirmation_token_expiry(token_hash)
+    }
+    fn peek_confirmation_grant(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<crate::store::ConfirmationGrant>, StoreError> {
+        self.0.peek_confirmation_grant(token_hash)
     }
 }
 
@@ -938,7 +945,8 @@ mod tests {
             })
             .is_err(),
             view.try_record_policy_hit("c", "v", 1, 1, 2).is_err(),
-            view.consume_confirmation_token("h", "d", "a", 1).is_err(),
+            view.consume_confirmation_token("h", "d", "a", "c", 1)
+                .is_err(),
         ];
         assert!(denied.iter().all(|&d| d), "{denied:?}");
         // Reads still delegate.
@@ -1131,6 +1139,7 @@ mod tests {
                 token_hash: "abc".to_string(),
                 device_id: "192.0.2.10:8060".to_string(),
                 action: "key".to_string(),
+                client: Some("cli".to_string()),
                 expires_at: 1_700_000_400,
             })
             .expect("mint token");
@@ -1146,7 +1155,7 @@ mod tests {
         );
         assert!(
             store
-                .consume_confirmation_token("abc", "192.0.2.10:8060", "key", 1_700_000_100)
+                .consume_confirmation_token("abc", "192.0.2.10:8060", "key", "cli", 1_700_000_100,)
                 .expect("consume still works")
         );
     }
@@ -1184,7 +1193,7 @@ mod tests {
         rekey_aliases(old_id: &str, new_id: &str) -> Result<(), crate::store::StoreError>;
         move_device_identity(old_id: &str, new_device: &crate::store::DeviceRow, identity: &str) -> Result<(), crate::store::StoreError>;
         insert_confirmation_token(token: &crate::store::ConfirmationTokenRow) -> Result<(), crate::store::StoreError>;
-        consume_confirmation_token(token_hash: &str, device_id: &str, action: &str, now: i64) -> Result<bool, crate::store::StoreError>;
+        consume_confirmation_token(token_hash: &str, device_id: &str, action: &str, client: &str, now: i64) -> Result<bool, crate::store::StoreError>;
         upsert_access_tier(t: &crate::store::AccessTierRow) -> Result<(), crate::store::StoreError>;
         get_access_tier(device_id: &str) -> Result<Option<crate::store::AccessTierRow>, crate::store::StoreError>;
         delete_access_tier(device_id: &str) -> Result<(), crate::store::StoreError>;
@@ -1198,6 +1207,7 @@ mod tests {
         delete_diff(id: i64) -> Result<(), crate::store::StoreError>;
         try_record_policy_hit(client: &str, verb: &str, since: i64, budget: i64, now: i64) -> Result<bool, crate::store::StoreError>;
         peek_confirmation_token_expiry(token_hash: &str) -> Result<Option<i64>, crate::store::StoreError>;
+        peek_confirmation_grant(token_hash: &str) -> Result<Option<crate::store::ConfirmationGrant>, crate::store::StoreError>;
     }
 
     #[test]

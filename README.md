@@ -65,7 +65,7 @@ interactive-owner-only; it must not be exposed as a remote approval endpoint.
 | Developer sideload | Owner archive/credentials use actual installer endpoint with meaningful result verification. | Wrong approval/port, invalid archive, Digest failure and HTTP-200 error pages fail; no secret/archive leakage. |
 | Action history | Completed/denied actions expose target, principal/surface, intent, before-state and truthful result. | Approval is not completion; device/transport/audit-finalization failure cannot masquerade as fully recorded success. |
 | Undo | Fresh approved restoration of supported prior state, itself audited. | Never undo denied/pending history; missing prior app/device or unrestorable focus reported honestly. |
-| Policy/principals | Shared allowlists/rates/quiet hours checked before dispatch and approval consumption. | No surface bypass; unknown principal is not owner; denied actions dispatch zero and preserve unused approval. |
+| Policy/principals | Allowlist keys are `cli`, `mcp-stdio`, and `loopback-http`; each approval grant is bound to one key. | No surface bypass; unknown or mismatched principal is read-only; denials dispatch zero and preserve unused approval. |
 | Cache/poll/recovery | Documented warm-read latency/freshness; bounded suspend/address-change recovery and backoff. | Label stale data; no blocking executor network work or polling storms; bounded read retry only, never automatic mutation retries. |
 | Errors/machine output | Stable semantic codes, hints, suggestions and structured results across surfaces. | No silent error or generic success on partial failure; exit classes may represent multiple semantic codes. |
 
@@ -221,10 +221,21 @@ App names and versions are not stable across firmware.
 `zestroku alias ls` manage local device labels. Host arguments accept exact
 aliases, a unique `tv` or `stick` class target, or a unique device-name prefix.
 Ambiguous matches list candidates; mutations never select one implicitly.
-`zestroku approve <launch|key> <host> <target>` requires an interactive owner TTY and
+`zestroku approve <launch|key> <host> <target> [--client <cli|mcp-stdio|loopback-http>]` requires an interactive owner TTY and
 a typed action phrase. It prints a random, five-minute, single-use token bound
-to the device endpoint and command. Use `zestroku key <host> <KEY> --confirm <token>` or
-`zestroku launch <host> <app-id> --confirm <token>` to consume it.
+to the selected client, device endpoint, and command; the default client is
+`cli`. Use `--client mcp-stdio` or `--client loopback-http` for those consumers.
+Then pass the token to `zestroku key <host> <KEY> --confirm <token>` or
+`zestroku launch <host> <app-id> --confirm <token>`.
+
+Daemon mutation requests default `client` to `loopback-http`; the CLI and MCP
+adapters send their own expected labels. The daemon accepts a label only when
+it matches the client bound to the owner-issued token; unknown or mismatched
+clients cannot dispatch.
+
+If `policy.toml` has an `[allow]` table, use these exact client keys; legacy
+`http` and `mcp` names are not aliases and do not inherit permissions.
+Tokens issued before client binding remain unresolved and are refused; reissue them.
 Default CLI `key` and `launch` forward the opaque token to the daemon, which
 owns the before-state snapshot, recorded-tier/approval gate, command dispatch
 and final audit outcome. The owner `approve`
@@ -238,8 +249,8 @@ installed apps. Missing or ambiguous names never dispatch. The approval
 still binds the numeric app ID; the audit records the requested label and
 resolved ID before dispatch. The label is caller metadata, not an authority
 or a substitute for the command-bound approval.
-`zestroku approve install <host> sideload [--installer-port <port>]` defaults to port 80.
-It binds the token to that exact installer port and `POST /plugin_install`.
+`zestroku approve install <host> sideload [--installer-port <port>] [--client <cli|mcp-stdio|loopback-http>]` defaults to port 80 and `cli`.
+Only the CLI install path currently consumes this grant; it binds to the exact installer port and `POST /plugin_install`.
 `zestroku install <host> <zip> --password-stdin [--installer-port <port>] [--confirm <token>]`
 uploads the owner-provided ZIP to the Roku developer installer using Digest auth.
 The username defaults to `rokudev`; override it with `--username`. Supply the owner-set

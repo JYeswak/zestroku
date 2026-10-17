@@ -114,8 +114,14 @@ fn mint_token(db: &std::path::Path, host: &str, port: u16, path: &str, now: i64)
         path: path.into(),
         tier: AccessTier::Permissive,
     };
-    zestroku_core::mutation::issue_approval(&store, &device, &command, now)
-        .expect("mint approval token")
+    zestroku_core::mutation::issue_approval(
+        &store,
+        &device,
+        &command,
+        zestroku_core::mutation::ClientPrincipal::LoopbackHttp,
+        now,
+    )
+    .expect("mint approval token")
 }
 
 #[test]
@@ -140,7 +146,7 @@ fn http_launch_then_key_execute_once_with_audit() {
     let (status, body) = post(
         daemon_port,
         &format!("/v1/devices/{target}/launch"),
-        r#"{"app_id": 1001}"#,
+        r#"{"client":"loopback-http","app_id": 1001}"#,
     );
     assert_eq!(status, 403, "{body}");
     assert!(body.contains("confirmation_required"), "{body}");
@@ -156,6 +162,7 @@ fn http_launch_then_key_execute_once_with_audit() {
         dispatch_posts()
     );
     // Approved launch executes exactly once with a matching audit row.
+    // Omitted `client` verifies the raw HTTP default against a bound grant.
     let token = mint_token(&db, "127.0.0.1", sim.port(), "/launch/1001", now);
     let (status, body) = post(
         daemon_port,
@@ -173,7 +180,7 @@ fn http_launch_then_key_execute_once_with_audit() {
         .expect("read audit row")
         .expect("audit row exists");
     assert_eq!(row.decision, "approved", "{row:?}");
-    assert_eq!(row.client, "http", "{row:?}");
+    assert_eq!(row.client, "loopback-http", "{row:?}");
     assert!(row.intent.contains("/launch/1001"), "{row:?}");
     assert!(row.before_state.contains("tier_source="), "{row:?}");
     let posts: Vec<_> = sim
@@ -188,7 +195,7 @@ fn http_launch_then_key_execute_once_with_audit() {
     let (status, _) = post(
         daemon_port,
         &format!("/v1/devices/{target}/launch"),
-        &format!(r#"{{"app_id": 1001, "confirm": "{token}"}}"#),
+        &format!(r#"{{"client":"loopback-http","app_id": 1001, "confirm": "{token}"}}"#),
     );
     assert_eq!(status, 403);
     assert_eq!(
@@ -204,7 +211,7 @@ fn http_launch_then_key_execute_once_with_audit() {
     let (status, body) = post(
         daemon_port,
         &format!("/v1/devices/{target}/key"),
-        &format!(r#"{{"key": "Home", "confirm": "{key_token}"}}"#),
+        &format!(r#"{{"client":"loopback-http","key": "Home", "confirm": "{key_token}"}}"#),
     );
     assert_eq!(status, 200, "{body}");
     let outcome: serde_json::Value = serde_json::from_str(&body).expect("key JSON");
