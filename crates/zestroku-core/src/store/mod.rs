@@ -396,13 +396,6 @@ fn diff(r: &Row) -> Result<DiffRow, StoreError> {
     })
 }
 
-/// Id of the most recently inserted row in the single-writer connection.
-fn last_id(store: &SqliteStore, table: &str) -> Result<i64, StoreError> {
-    let rows = store.query(&format!("SELECT max(id) FROM {table}"), &[])?;
-    rows.first()
-        .map_or_else(|| Err(backend("no id row")), |r| int(r, 0))
-}
-
 impl Store for SqliteStore {
     fn schema_versions(&self) -> Result<Vec<i64>, StoreError> {
         self.query(
@@ -692,20 +685,23 @@ impl Store for SqliteStore {
     }
 
     fn insert_action(&self, a: &ActionRow) -> Result<i64, StoreError> {
-        self.exec(
-            "INSERT INTO actions (at, client, surface, intent, decision, result, before_state) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            &[
-                i(a.at),
-                s(&a.client),
-                s(&a.surface),
-                s(&a.intent),
-                s(&a.decision),
-                s(&a.result),
-                s(&a.before_state),
-            ],
-        )?;
-        last_id(self, "actions")
+        let rows = self.in_transaction(|conn| {
+            conn.query_with_params_sync(
+                "INSERT INTO actions (at, client, surface, intent, decision, result, before_state) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7) RETURNING id",
+                &[
+                    i(a.at),
+                    s(&a.client),
+                    s(&a.surface),
+                    s(&a.intent),
+                    s(&a.decision),
+                    s(&a.result),
+                    s(&a.before_state),
+                ],
+            )
+        })?;
+        rows.first()
+            .map_or_else(|| Err(backend("insert returned no id")), |row| int(row, 0))
     }
 
     fn get_action(&self, id: i64) -> Result<Option<ActionRow>, StoreError> {
@@ -796,9 +792,9 @@ impl Store for SqliteStore {
     }
 
     fn insert_diff(&self, d: &DiffRow) -> Result<i64, StoreError> {
-        self.exec(
+        let rows = self.query(
             "INSERT INTO diff_results (left_device, right_device, surface, field, left_value, \
-             right_value, ran_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+             right_value, ran_at) VALUES (?1,?2,?3,?4,?5,?6,?7) RETURNING id",
             &[
                 s(&d.left_device),
                 s(&d.right_device),
@@ -809,7 +805,8 @@ impl Store for SqliteStore {
                 i(d.ran_at),
             ],
         )?;
-        last_id(self, "diff_results")
+        rows.first()
+            .map_or_else(|| Err(backend("insert returned no id")), |row| int(row, 0))
     }
 
     fn list_diffs(&self) -> Result<Vec<DiffRow>, StoreError> {

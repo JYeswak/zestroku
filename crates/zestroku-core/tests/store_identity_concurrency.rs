@@ -152,12 +152,14 @@ fn busy_insert_retry_has_no_duplicate_action_commit() {
         before_state: "{\"app\":\"home\"}",
     };
 
+    // SQLite FAIL preserves earlier changes in the statement; the bounded
+    // retry must not leave duplicated action rows after this reported error.
     let mut control = AsyncConnection::open_sync(path.to_string_lossy().into_owned()).unwrap();
     control
         .execute_batch_sync(
             "CREATE TRIGGER fail_retry_insert AFTER INSERT ON actions \
              WHEN NEW.intent = 'launch retry fixture' \
-             BEGIN SELECT RAISE(ABORT, 'database is busy (fixture)'); END;",
+             BEGIN SELECT RAISE(FAIL, 'database is busy (fixture)'); END;",
         )
         .unwrap();
     control.close_sync().unwrap();
