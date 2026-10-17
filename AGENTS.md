@@ -23,9 +23,11 @@ every bead must carry.
 6. `#![forbid(unsafe_code)]` at every crate root. Pure core, I/O behind traits.
 7. Shared-tree: `git commit --only` your paths; Agent Mail reservations before
    shared edits; implementer ≠ verifier.
-8. Builds go through immutable-source rch with `RCH_WORKER=contabo-1 RCH_REQUIRE_REMOTE=1`;
-   use the source-selection recipe under Test discipline. No darwin workers —
-   verify with remote check/test, not local artifacts.
+8. Builds go through immutable-source rch on qualified healthy Linux workers;
+   use the source-selection recipe under Test discipline. Prospective checks
+   without explicit C1 acceptance use native unpinned worker selection
+   (AM62073/62601). Explicit C1-specific acceptance stays pinned to contabo-1.
+   No darwin workers or local compiled verification.
 
 ## Flywheel coordination contract
 
@@ -69,13 +71,16 @@ every listener. Full recipe: plan §3 in the edge-library canonical copy.
 ## Test discipline
 
 All compiled checks, tests, Clippy and artifact builds follow the recorded
-`.13` policy (comment 297, strengthened 2026-10-16 17:57): pin the saved
-source with `--base <full-sha> --clean-overlay --no-overlay`. Replace
+`.13` source policy (comment 297, strengthened 2026-10-16 17:57). For prospective
+non-C1-specific checks, leave worker selection unpinned and record the actual
+qualified Linux worker and remote result. Historical evidence and explicitly
+C1-specific acceptance are unchanged; an old C3 result is not a C1 pass. Pin
+the saved source with `--base <full-sha> --clean-overlay --no-overlay`. Replace
 `<full-sha>` with the intended commit. For a candidate, replace `--no-overlay`
 with one `--overlay-path <path>` per reserved input; include every required
 owned change, never the whole dirty checkout.
 
-`RCH_WORKER=contabo-1 RCH_REQUIRE_REMOTE=1 rch exec --base <full-sha> --clean-overlay --no-overlay -- cargo test -j 2 --locked --workspace`
+`env -u RCH_WORKER RCH_REQUIRE_REMOTE=1 rch exec --base <full-sha> --clean-overlay --no-overlay -- cargo test -j 2 --locked --workspace`
 tests all crates. The tier-gate tests (core) and fixture parser tests (proto)
 are load-bearing: they encode the Limited/Permissive finding structurally.
 
