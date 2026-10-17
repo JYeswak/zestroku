@@ -199,7 +199,18 @@ fn fake_tailscale_dir() -> tempfile::TempDir {
     let bin = dir.path().join("tailscale");
     std::fs::write(
         &bin,
-        "#!/bin/sh\nif [ \"$TAILSCALE_HANG\" = \"1\" ]; then exec /bin/sleep 10; fi\nif [ -n \"$TAILSCALE_FIXTURE\" ]; then printf '%s' \"$TAILSCALE_FIXTURE\"; fi\nexit \"$TAILSCALE_EXIT\"\n",
+        r#"#!/bin/sh
+if [ -n "$TAILSCALE_WRITER_PID" ]; then
+  /bin/sleep 10 &
+  writer=$!
+  printf '%s\n' "$writer" > "$TAILSCALE_WRITER_PID"
+  if [ "$TAILSCALE_HANG" = "1" ]; then wait "$writer"; fi
+  exit "$TAILSCALE_EXIT"
+fi
+if [ "$TAILSCALE_HANG" = "1" ]; then exec /bin/sleep 10; fi
+if [ -n "$TAILSCALE_FIXTURE" ]; then printf '%s' "$TAILSCALE_FIXTURE"; fi
+exit "$TAILSCALE_EXIT"
+"#,
     )
     .expect("write fake tailscale");
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
@@ -265,29 +276,56 @@ fn serve_tailnet_bind_refuses_unavailable_and_malformed_source() {
 
 #[test]
 fn serve_tailnet_bind_refuses_hung_source_before_store() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let db = dir.path().join("actions.db");
-    let tail = fake_tailscale_dir();
-    let started = Instant::now();
-    let output = Command::new(env!("CARGO_BIN_EXE_zestroku"))
-        .env("ZESTROKU_DB", &db)
-        .env("PATH", tail.path())
-        .env("TAILSCALE_HANG", "1")
-        .env("TAILSCALE_EXIT", "0")
-        .args(["serve", "--bind", "100.93.84.11:8070"])
-        .output()
-        .expect("run serve");
-    let elapsed = started.elapsed();
+    struct WriterCleanup<'a>(&'a std::path::Path);
+    impl Drop for WriterCleanup<'_> {
+        fn drop(&mut self) {
+            // Only the helper launched by this fixture is eligible for cleanup.
+            // Drop must also clean up when the deadline assertion panics.
+            if let Ok(text) = std::fs::read_to_string(self.0)
+                && let Ok(pid) = text.trim().parse::<u32>()
+                && pid > 1
+            {
+                let _ = Command::new("/bin/kill")
+                    .args(["-TERM", &pid.to_string()])
+                    .output();
+            }
+        }
+    }
 
-    assert!(
-        elapsed < Duration::from_secs(8),
-        "hung tailscale status exceeded its bound: {elapsed:?}"
-    );
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("tailnet bind refused"), "{stderr}");
-    assert!(stderr.contains("timed out"), "{stderr}");
-    assert!(!db.exists(), "store opened before the source timeout");
+    // Direct stall, exited source retaining stdout through a helper, and a
+    // stalled source whose helper also owns stdout must all share one deadline.
+    for (hang, inherited_writer) in [("1", false), ("0", true), ("1", true)] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("actions.db");
+        let writer_pid = dir.path().join("writer.pid");
+        let _cleanup = WriterCleanup(&writer_pid);
+        let tail = fake_tailscale_dir();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_zestroku"));
+        command
+            .env("ZESTROKU_DB", &db)
+            .env("PATH", tail.path())
+            .env("TAILSCALE_HANG", hang)
+            .env("TAILSCALE_EXIT", "0")
+            .args(["serve", "--bind", "100.93.84.11:8070"]);
+        if inherited_writer {
+            command.env("TAILSCALE_WRITER_PID", &writer_pid);
+        } else {
+            command.env_remove("TAILSCALE_WRITER_PID");
+        }
+        let started = Instant::now();
+        let output = command.output().expect("run serve");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(8),
+            "hung source ({hang}/{inherited_writer}) exceeded its bound: {elapsed:?}"
+        );
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("tailnet bind refused"), "{stderr}");
+        assert!(stderr.contains("timed out"), "{stderr}");
+        assert!(!db.exists(), "store opened before the source timeout");
+    }
 }
 
 #[test]

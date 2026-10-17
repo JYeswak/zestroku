@@ -207,8 +207,22 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let runtime = match create_reactor()
+        .map_err(|error| error.to_string())
+        .and_then(|reactor| {
+            RuntimeBuilder::current_thread()
+                .with_reactor(reactor)
+                .build()
+                .map_err(|error| error.to_string())
+        }) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("zestroku serve: could not start asupersync runtime: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     if !addr.ip().is_loopback() {
-        let owned = match zestroku_api::tailscale_self_ips() {
+        let owned = match runtime.block_on(zestroku_api::tailscale_self_ips()) {
             Ok(ips) => zestroku_api::node_owns_address(&addr.ip(), &ips),
             Err(error) => {
                 eprintln!("zestroku serve: tailnet bind refused ({error})");
@@ -237,20 +251,6 @@ pub fn run(args: &[String]) -> ExitCode {
     if !addr.ip().is_unspecified() {
         config = config.with_allowed_hosts([addr.ip().to_string()]);
     }
-    let runtime = match create_reactor()
-        .map_err(|error| error.to_string())
-        .and_then(|reactor| {
-            RuntimeBuilder::current_thread()
-                .with_reactor(reactor)
-                .build()
-                .map_err(|error| error.to_string())
-        }) {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("zestroku serve: could not start asupersync runtime: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
     let result = runtime.block_on(serve_until_shutdown(
         app, bind_addr, config, store, transport, opts,
     ));

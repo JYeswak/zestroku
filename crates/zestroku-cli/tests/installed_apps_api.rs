@@ -204,8 +204,12 @@ fn real_serve_reads_and_documents_simulator_installed_apps() {
     post_paths.sort_unstable();
     assert_eq!(
         post_paths,
-        ["/v1/devices/{host}/key", "/v1/devices/{host}/launch",],
-        "only the approved key and launch mutations are exposed"
+        [
+            "/v1/devices/{host}/key",
+            "/v1/devices/{host}/launch",
+            "/v1/devices/{host}/undo",
+        ],
+        "only approved mutation operations are exposed"
     );
     for item in paths.values() {
         assert!(item.get("put").is_none());

@@ -258,9 +258,11 @@ confirmation-gated `POST /v1/devices/{host}/key` and
 default (`127.0.0.1:8070`).
 It binds loopback or one of this node's Tailscale addresses only, and the
 Host header must match the bind address. A tailnet bind checks local
-`tailscale status --json` before opening the store or listener; a command
-that exceeds five seconds is killed and reaped, and startup is refused.
-Loopback startup does not require Tailscale.
+`tailscale status --json` on the daemon runtime before opening the store or
+listener. One five-second deadline covers both command completion and stdout
+EOF, including an inherited writer; refusal closes the pipe and kills/reaps
+the owned command without leaving a reader thread. Loopback startup does
+not require Tailscale.
 The info response includes live `access_tier` and `tv_active_channel`; the
 channel field is `null` when the optional ECP probe fails.
 The daemon prints its listening address only after binding succeeds; an
