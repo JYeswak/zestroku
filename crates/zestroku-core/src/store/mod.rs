@@ -205,6 +205,18 @@ impl SqliteStore {
             )
             .map_err(backend)?;
         let applied = self.schema_versions()?;
+        // Upgrade safety (1r4.7): an old binary must never migrate or write
+        // a database whose schema is newer than its supported catalog.
+        // Fail closed before any migration or data write.
+        let supported = migrations.iter().map(|m| m.version).max().unwrap_or(0);
+        if let Some(&max) = applied.iter().max() {
+            if max > supported {
+                return Err(backend(format!(
+                    "store schema version {max} is newer than this binary supports \
+                     ({supported}); refusing to migrate or write (open with a newer binary)"
+                )));
+            }
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
