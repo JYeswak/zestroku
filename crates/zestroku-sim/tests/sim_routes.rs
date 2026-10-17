@@ -380,3 +380,44 @@ fn suspend_refuses_new_connections_and_resume_restores_service() {
     // State and request log survive the fault.
     assert_eq!(dev.received_requests().len(), 2);
 }
+// ---- 8. latency fault ------------------------------------------------------------
+
+#[test]
+fn latency_fault_delays_but_preserves_exact_responses() {
+    let dev = sim(DeviceKind::Express, SimTier::Permissive);
+    dev.set_latency(300);
+    let start = std::time::Instant::now();
+    let r = get(&dev, "/query/device-info");
+    assert!(
+        start.elapsed() >= Duration::from_millis(250),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(r.status, 200);
+    let parsed = parse_device_info(&r.body).expect("parse delayed device-info");
+    assert_eq!(parsed.software_version, "15.2.4");
+    assert!(r.body.contains("FIXTURESERIAL"));
+    assert_eq!(
+        dev.received_requests(),
+        vec![("GET".to_string(), "/query/device-info".to_string())]
+    );
+
+    // Same transparency under Limited: the exact 403 survives the delay.
+    dev.set_tier(SimTier::Limited);
+    let start = std::time::Instant::now();
+    let r = get(&dev, "/query/apps");
+    assert!(start.elapsed() >= Duration::from_millis(250));
+    assert_eq!(r.status, 403);
+    assert_eq!(r.body, "ECP command not allowed in Limited mode.");
+    assert_eq!(parse_ecp_response(&r.ecp()).gate, EcpGate::Limited403);
+
+    // Clearing the fault restores immediate responses.
+    dev.set_latency(0);
+    let start = std::time::Instant::now();
+    assert_eq!(get(&dev, "/query/device-info").status, 200);
+    assert!(
+        start.elapsed() < Duration::from_millis(250),
+        "{:?}",
+        start.elapsed()
+    );
+}

@@ -114,6 +114,9 @@ struct DeviceState {
     focus: Focus,
     launch_count: usize,
     requests: Vec<(String, String)>,
+    /// Injected per-request latency in milliseconds (fault injection).
+    /// Awaited on the reactor-safe timer outside the state lock.
+    latency_ms: u64,
 }
 
 struct Shared {
@@ -397,6 +400,17 @@ impl Server {
                 let handler = move |request: Request| {
                     let shared = Arc::clone(&shared);
                     async move {
+                        // Snapshot the latency fault under the lock, then drop
+                        // the guard before awaiting the reactor-safe timer so
+                        // other requests keep flowing during the delay.
+                        let latency_ms = shared.lock().latency_ms;
+                        if latency_ms > 0 {
+                            asupersync::time::sleep(
+                                asupersync::time::wall_now(),
+                                Duration::from_millis(latency_ms),
+                            )
+                            .await;
+                        }
                         let mut state = shared.lock();
                         state
                             .requests
@@ -485,6 +499,7 @@ impl SimDevice {
                 malformed_apps: false,
                 launch_count: 0,
                 requests: Vec::new(),
+                latency_ms: 0,
             }),
         });
         let (server, addr) = Server::spawn(Arc::clone(&shared), "127.0.0.1:0".to_string())?;
@@ -509,6 +524,11 @@ impl SimDevice {
     /// Return malformed installed-app XML for read-path error integration tests.
     pub fn set_malformed_apps(&self, malformed: bool) {
         self.shared.lock().malformed_apps = malformed;
+    }
+    /// Fault: delay every response by the given milliseconds, awaited on
+    /// the reactor-safe timer outside the state lock. Zero disables.
+    pub fn set_latency(&self, millis: u64) {
+        self.shared.lock().latency_ms = millis;
     }
     /// Make device-info advertise neither serial nor UDN, for unknown-identity
     /// discovery and persistence tests.
