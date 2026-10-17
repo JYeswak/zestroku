@@ -3937,7 +3937,6 @@ dependencies = [
  "fastmcp-rust",
  "fastmcp-server",
  "serde_json",
- "tempfile",
  "zestroku-core",
  "zestroku-proto",
  "zestroku-types",

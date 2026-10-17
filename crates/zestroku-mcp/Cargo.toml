@@ -13,5 +13,3 @@ fastmcp = { workspace = true }
 fastmcp-server = { workspace = true }
 serde_json = { workspace = true }
 
-[dev-dependencies]
-tempfile = { workspace = true }

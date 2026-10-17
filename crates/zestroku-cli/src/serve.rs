@@ -1,8 +1,10 @@
 //! `zestroku serve [--bind <ip:port>]`
 //!
-//! The read-only HTTP API (`zestroku-api::build_app`: `/health`,
-//! `/v1/devices`, `/v1/devices/{host}/info`, `/v1/devices/{host}/active-app`)
-//! over the shared store and ECP transport, on one asupersync runtime.
+//! The HTTP API's reads (`/health`, `/v1/devices`, `info`, `active-app`,
+//! `apps`, and `state`) and per-operation-approved mutations share the store
+//! and ECP transport on one asupersync runtime. A structured per-device
+//! poller feeds the fresh state cache; the API and MCP consumers never open
+//! direct ECP connections.
 //! The listener binds loopback or one of this node's Tailscale addresses
 //! only, and validates the Host header against the bind IP.
 //! The daemon, not the agent's process tree, talks to the devices.
@@ -12,18 +14,24 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::inventory;
+use crate::store_db;
+use crate::transport::SelectedTransport;
 use asupersync::combinator::{Either, Select};
 use asupersync::net::TcpListener;
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use asupersync::signal::{SignalKind, signal};
 use fastapi::{ServerConfig, TcpServer};
-use zestroku_core::store::SqliteStore;
-use zestroku_core::tier::{classify_tier, device_id, record_probe};
-use zestroku_proto::{Transport, parse_ecp_response, query};
-
-use crate::inventory;
-use crate::store_db;
-use crate::transport::SelectedTransport;
+use zestroku_core::store::{DeviceRow, SqliteStore, Store};
+use zestroku_core::tier::{
+    ObservedTier, classify_tier, classify_tier_from_response, device_id, record_probe,
+};
+use zestroku_core::{AppsSnapshot, DeviceStateSnapshot, Inventory, MediaPlayerSnapshot};
+use zestroku_proto::{
+    Command, Transport, parse_active_app, parse_apps, parse_device_info, parse_ecp_response,
+    parse_media_player, parse_tv_active_channel, query, query_apps,
+};
+use zestroku_types::Device;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8070";
 
@@ -124,12 +132,207 @@ async fn discover_on_startup(
     Ok(())
 }
 
+fn unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or(0)
+}
+
+fn row_port(row: &DeviceRow) -> Option<u16> {
+    let (_, port) = row.id.rsplit_once(':')?;
+    port.parse::<u16>().ok().filter(|port| *port != 0)
+}
+
+async fn fetch_ecp(
+    transport: &SelectedTransport,
+    host: &str,
+    port: u16,
+    command: &Command,
+) -> std::result::Result<zestroku_proto::EcpResponse, String> {
+    transport
+        .send(host, port, command)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn poll_device_state(
+    store: &Arc<Mutex<SqliteStore>>,
+    transport: &SelectedTransport,
+    host: &str,
+    port: u16,
+    target_id: &str,
+) -> std::result::Result<DeviceStateSnapshot, String> {
+    let info_response = fetch_ecp(transport, host, port, &query("device-info")).await?;
+    if parse_ecp_response(&info_response).gate != zestroku_proto::EcpGate::Open {
+        return Err(format!(
+            "device-info returned HTTP {}",
+            info_response.status
+        ));
+    }
+    let info = parse_device_info(&info_response.body).map_err(|error| error.to_string())?;
+
+    let apps_response = fetch_ecp(transport, host, port, &query_apps()).await?;
+    let apps_gate = parse_ecp_response(&apps_response).gate;
+    let observed_tier = classify_tier_from_response(&apps_response);
+    let probe_outcome = format!("{}", apps_gate as i32);
+    store
+        .lock()
+        .map_err(|_| "inventory store lock poisoned".to_string())
+        .and_then(|store| {
+            record_probe(&*store, target_id, observed_tier, &probe_outcome)
+                .map_err(|error| error.to_string())
+        })?;
+    let apps = match apps_gate {
+        zestroku_proto::EcpGate::Open => AppsSnapshot::Available(
+            parse_apps(&apps_response.body).map_err(|error| error.to_string())?,
+        ),
+        zestroku_proto::EcpGate::Limited403 => AppsSnapshot::TierRefused,
+        zestroku_proto::EcpGate::Absent404 => AppsSnapshot::EndpointAbsent,
+        zestroku_proto::EcpGate::Unknown403 => AppsSnapshot::UnknownForbidden,
+        zestroku_proto::EcpGate::Other => {
+            return Err(format!("query/apps returned HTTP {}", apps_response.status));
+        }
+    };
+
+    let active_response = fetch_ecp(transport, host, port, &query("active-app")).await?;
+    if parse_ecp_response(&active_response).gate != zestroku_proto::EcpGate::Open {
+        return Err(format!(
+            "query/active-app returned HTTP {}",
+            active_response.status
+        ));
+    }
+    let active_app = parse_active_app(&active_response.body).map_err(|error| error.to_string())?;
+
+    let media_response = fetch_ecp(transport, host, port, &query("media-player")).await?;
+    let media_player = match parse_ecp_response(&media_response).gate {
+        zestroku_proto::EcpGate::Open => MediaPlayerSnapshot::Available(
+            parse_media_player(&media_response).map_err(|error| error.to_string())?,
+        ),
+        zestroku_proto::EcpGate::Limited403 => MediaPlayerSnapshot::TierRefused,
+        zestroku_proto::EcpGate::Absent404 => MediaPlayerSnapshot::EndpointAbsent,
+        zestroku_proto::EcpGate::Unknown403 => MediaPlayerSnapshot::UnknownForbidden,
+        zestroku_proto::EcpGate::Other => {
+            return Err(format!(
+                "query/media-player returned HTTP {}",
+                media_response.status
+            ));
+        }
+    };
+
+    let channel_response = fetch_ecp(transport, host, port, &query("tv-active-channel")).await?;
+    let tv_active_channel = parse_tv_active_channel(&channel_response).ok();
+    let device = Device {
+        host: host.to_owned(),
+        port,
+        model_name: info.model_name,
+        model_number: info.model_number,
+        software_version: info.software_version,
+        is_tv: info.is_tv,
+        access_tier: observed_tier.access_tier(),
+    };
+    Ok(DeviceStateSnapshot {
+        device,
+        observed_tier,
+        active_app,
+        apps,
+        media_player,
+        tv_active_channel,
+        observed_at: unix_seconds(),
+    })
+}
+
+async fn poll_inventory_once(
+    cx: &asupersync::Cx,
+    store: &Arc<Mutex<SqliteStore>>,
+    transport: &Arc<SelectedTransport>,
+    inventory: &Arc<Mutex<Inventory>>,
+) {
+    let rows = match store
+        .lock()
+        .map_err(|_| "inventory store lock poisoned".to_string())
+        .and_then(|store| store.list_devices().map_err(|error| error.to_string()))
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            eprintln!("zestroku serve: inventory poll could not list devices: {error}");
+            return;
+        }
+    };
+
+    for row in rows {
+        if cx.checkpoint().is_err() {
+            return;
+        }
+        let Some(port) = row_port(&row) else {
+            eprintln!("zestroku serve: invalid inventory device target");
+            continue;
+        };
+        let device_id = device_id(&row.ip, port);
+        if device_id != row.id {
+            eprintln!("zestroku serve: inventory device identity mismatch");
+            continue;
+        }
+        let now = unix_seconds();
+        let due = match inventory.lock() {
+            Ok(inventory) => inventory.poll_due(&device_id, now),
+            Err(_) => {
+                eprintln!("zestroku serve: inventory state lock poisoned");
+                return;
+            }
+        };
+        if !due {
+            continue;
+        }
+
+        match poll_device_state(store, transport, &row.ip, port, &device_id).await {
+            Ok(snapshot) => match inventory.lock() {
+                Ok(mut inventory) => inventory.record_state(snapshot),
+                Err(_) => {
+                    eprintln!("zestroku serve: inventory state lock poisoned");
+                    return;
+                }
+            },
+            Err(error) => {
+                match inventory.lock() {
+                    Ok(mut inventory) => {
+                        inventory.record_poll_failure(&device_id, unix_seconds());
+                    }
+                    Err(_) => {
+                        eprintln!("zestroku serve: inventory state lock poisoned");
+                        return;
+                    }
+                }
+                eprintln!("zestroku serve: inventory refresh failed: {error}");
+            }
+        }
+    }
+}
+
+async fn poll_inventory_forever(
+    cx: &asupersync::Cx,
+    store: Arc<Mutex<SqliteStore>>,
+    transport: Arc<SelectedTransport>,
+    inventory: Arc<Mutex<Inventory>>,
+) {
+    loop {
+        if cx.checkpoint().is_err() {
+            return;
+        }
+        poll_inventory_once(cx, &store, &transport, &inventory).await;
+        if cx.checkpoint().is_err() {
+            return;
+        }
+        asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_secs(5)).await;
+    }
+}
 async fn serve_until_shutdown(
     app: fastapi::App,
     bind_addr: String,
     config: ServerConfig,
     store: Arc<Mutex<SqliteStore>>,
     transport: Arc<SelectedTransport>,
+    inventory: Arc<Mutex<Inventory>>,
     opts: Opts,
 ) -> Result<(), String> {
     let mut sigterm = signal(SignalKind::terminate())
@@ -176,17 +379,43 @@ async fn serve_until_shutdown(
     let mut receiving_signal =
         std::pin::pin!(Select::new(sigterm_recv.as_mut(), sigint_recv.as_mut()));
 
-    let result = match Select::new(serving.as_mut(), receiving_signal.as_mut()).await {
-        Ok(Either::Left(result)) => result.map_err(|error| format!("HTTP server failed: {error}")),
-        Ok(Either::Right(Ok(_))) => {
+    let poll_and_signal = {
+        let mut polling = std::pin::pin!(poll_inventory_forever(
+            &cx,
+            Arc::clone(&store),
+            Arc::clone(&transport),
+            inventory,
+        ));
+        let mut serving_or_polling = std::pin::pin!(async {
+            match Select::new(serving.as_mut(), polling.as_mut()).await {
+                Ok(Either::Left(result)) => {
+                    result.map_err(|error| format!("HTTP server failed: {error}"))
+                }
+                Ok(Either::Right(())) => serving
+                    .as_mut()
+                    .await
+                    .map_err(|error| format!("HTTP server failed: {error}")),
+                Err(error) => Err(format!("server/poll selection failed: {error:?}")),
+            }
+        });
+        match Select::new(serving_or_polling.as_mut(), receiving_signal.as_mut()).await {
+            Ok(Either::Left(result)) => Some(result),
+            Ok(Either::Right(Ok(_))) => None,
+            Ok(Either::Right(Err(error))) => {
+                Some(Err(format!("signal selection failed: {error:?}")))
+            }
+            Err(error) => Some(Err(format!("shutdown selection failed: {error:?}"))),
+        }
+    };
+    let result = match poll_and_signal {
+        Some(result) => result,
+        None => {
             server.shutdown();
             serving
                 .as_mut()
                 .await
                 .map_err(|error| format!("HTTP server drain failed: {error}"))
         }
-        Ok(Either::Right(Err(error))) => Err(format!("signal selection failed: {error:?}")),
-        Err(error) => Err(format!("shutdown selection failed: {error:?}")),
     };
     app.run_shutdown_hooks().await;
     result
@@ -245,14 +474,19 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     };
     let transport = Arc::new(SelectedTransport);
-    let app = zestroku_api::build_app(Arc::clone(&store), Arc::clone(&transport));
+    let inventory = Arc::new(Mutex::new(Inventory::new()));
+    let app = zestroku_api::build_app_with_inventory(
+        Arc::clone(&store),
+        Arc::clone(&transport),
+        Arc::clone(&inventory),
+    );
     let bind_addr = addr.to_string();
     let mut config = ServerConfig::new(bind_addr.clone());
     if !addr.ip().is_unspecified() {
         config = config.with_allowed_hosts([addr.ip().to_string()]);
     }
     let result = runtime.block_on(serve_until_shutdown(
-        app, bind_addr, config, store, transport, opts,
+        app, bind_addr, config, store, transport, inventory, opts,
     ));
     if !runtime.shutdown_timeout(Duration::from_secs(30)) {
         eprintln!("zestroku serve: asupersync runtime did not drain within 30s");

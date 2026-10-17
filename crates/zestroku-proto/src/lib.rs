@@ -212,6 +212,15 @@ pub struct InstalledApp {
     pub subtype: Option<String>,
     pub version: Option<String>,
 }
+/// The modeled playback state in the committed simulator fixture.
+///
+/// The simulator's `<player state="..."/>` body is a FILL contract, not a
+/// claim about every Roku firmware field. Unknown XML fields are intentionally
+/// ignored until their wire semantics are sampled and added to a fixture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaPlayerState {
+    pub state: String,
+}
 
 /// Parse the installed-app XML response. The exact Limited-mode denial body
 /// is a typed tier refusal, not an empty app list.
@@ -264,6 +273,74 @@ pub fn parse_apps(xml: &str) -> Result<Vec<InstalledApp>> {
             })
         })
         .collect()
+}
+/// Parse the `query/media-player` response without treating an arbitrary 403
+/// body as the Limited-tier refusal.
+pub fn parse_media_player(response: &EcpResponse) -> Result<MediaPlayerState> {
+    match parse_ecp_response(response).gate {
+        EcpGate::Open => {}
+        EcpGate::Limited403 => {
+            return Err(Error::TierRefused {
+                cmd: "query/media-player".to_string(),
+                mode: AccessTier::Open,
+            });
+        }
+        EcpGate::Unknown403 => {
+            return Err(Error::Malformed(
+                "unrecognized HTTP 403 body for query/media-player".to_string(),
+            ));
+        }
+        EcpGate::Absent404 => {
+            return Err(Error::Malformed(
+                "query/media-player endpoint is absent".to_string(),
+            ));
+        }
+        EcpGate::Other => {
+            return Err(Error::Unreachable(format!(
+                "query/media-player returned HTTP {}",
+                response.status
+            )));
+        }
+    }
+    let document = roxmltree::Document::parse(&response.body)
+        .map_err(|error| Error::Malformed(format!("invalid query/media-player XML: {error}")))?;
+    let root = document.root_element();
+    if root.tag_name().name() != "player" {
+        return Err(Error::Malformed(
+            "expected <player> root in query/media-player".to_string(),
+        ));
+    }
+    let state = root
+        .attribute("state")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| Error::Malformed("missing player state".to_string()))?;
+    Ok(MediaPlayerState {
+        state: state.to_owned(),
+    })
+}
+
+/// Parse the `query/tv-active-channel` surface fingerprint.
+///
+/// The wire contract establishes presence by status (200/limited-403) versus
+/// absence (404); channel XML contents are not yet modeled.
+pub fn parse_tv_active_channel(response: &EcpResponse) -> Result<bool> {
+    match parse_ecp_response(response).gate {
+        EcpGate::Open => {
+            roxmltree::Document::parse(&response.body).map_err(|error| {
+                Error::Malformed(format!("invalid query/tv-active-channel XML: {error}"))
+            })?;
+            Ok(true)
+        }
+        EcpGate::Limited403 => Ok(true),
+        EcpGate::Absent404 => Ok(false),
+        EcpGate::Unknown403 => Err(Error::Malformed(
+            "unrecognized HTTP 403 body for query/tv-active-channel".to_string(),
+        )),
+        EcpGate::Other => Err(Error::Unreachable(format!(
+            "query/tv-active-channel returned HTTP {}",
+            response.status
+        ))),
+    }
 }
 
 /// The subset of `<device-info>` fields the core models.
@@ -547,5 +624,71 @@ mod apps_tests {
     #[test]
     fn parse_apps_rejects_malformed_xml() {
         assert!(matches!(parse_apps("<apps><app"), Err(Error::Malformed(_))));
+    }
+}
+#[cfg(test)]
+mod state_surface_tests {
+    use super::*;
+
+    const FIXTURE_MEDIA_PLAYER: &str = r#"<player state="close"/>"#;
+    const FIXTURE_TV_ACTIVE_CHANNEL: &str = "<tv-channel/>";
+
+    fn response(status: u16, body: &str) -> EcpResponse {
+        EcpResponse {
+            status,
+            headers: Vec::new(),
+            body: body.to_owned(),
+        }
+    }
+
+    #[test]
+    fn media_player_parser_reads_the_scrubbed_sim_state_fixture() {
+        let parsed = parse_media_player(&response(200, FIXTURE_MEDIA_PLAYER)).unwrap();
+        assert_eq!(parsed.state, "close");
+    }
+
+    #[test]
+    fn media_player_parser_distinguishes_limited_from_unknown_403() {
+        assert!(matches!(
+            parse_media_player(&response(403, LIMITED_403_BODY)),
+            Err(Error::TierRefused { cmd, mode: AccessTier::Open }) if cmd == "query/media-player"
+        ));
+        assert!(matches!(
+            parse_media_player(&response(403, "unrecognized denial")),
+            Err(Error::Malformed(_))
+        ));
+        assert!(matches!(
+            parse_media_player(&response(404, "")),
+            Err(Error::Malformed(_))
+        ));
+        assert!(matches!(
+            parse_media_player(&response(500, "")),
+            Err(Error::Unreachable(_))
+        ));
+        assert!(matches!(
+            parse_media_player(&response(200, "<player")),
+            Err(Error::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn tv_active_channel_parser_classifies_surface_and_refuses_unknown_403() {
+        assert_eq!(
+            parse_tv_active_channel(&response(200, FIXTURE_TV_ACTIVE_CHANNEL)),
+            Ok(true)
+        );
+        assert_eq!(
+            parse_tv_active_channel(&response(403, LIMITED_403_BODY)),
+            Ok(true)
+        );
+        assert_eq!(parse_tv_active_channel(&response(404, "")), Ok(false));
+        assert!(matches!(
+            parse_tv_active_channel(&response(403, "unrecognized denial")),
+            Err(Error::Malformed(_))
+        ));
+        assert!(matches!(
+            parse_tv_active_channel(&response(200, "<tv-channel")),
+            Err(Error::Malformed(_))
+        ));
     }
 }

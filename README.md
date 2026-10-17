@@ -69,6 +69,18 @@ interactive-owner-only; it must not be exposed as a remote approval endpoint.
 | Cache/poll/recovery | Documented warm-read latency/freshness; bounded suspend/address-change recovery and backoff. | Label stale data; no blocking executor network work or polling storms; bounded read retry only, never automatic mutation retries. |
 | Errors/machine output | Stable semantic codes, hints, suggestions and structured results across surfaces. | No silent error or generic success on partial failure; exit classes may represent multiple semantic codes. |
 
+The daemon's first poll begins after the listener is bound; successful
+snapshots are refreshed on a 30-second per-device interval. A snapshot is
+fresh through 60 seconds. Per-device failures retain the last snapshot and
+back off exponentially from 5 to 300 seconds.
+`get_device_state` and `roku://devices/{id}` include `fresh` and `observed_at`;
+without any snapshot they report `DEVICE_UNREACHABLE`. `info`, `active_app`,
+and `apps` serve fresh inventory data and otherwise retain their live-read
+behavior.
+The snapshot omits serial number, UDN, and MAC. MCP lists `roku://devices`
+with `resources/list` and `roku://devices/{id}` with
+`resources/templates/list`.
+
 For keys, input/deep links, icons and device-specific capabilities, record
 required, device-dependent, deferred or unsupported explicitly. Do not infer
 support from a protocol name or silently lose it between documentation and

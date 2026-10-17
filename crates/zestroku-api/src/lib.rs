@@ -4,43 +4,77 @@
 mod routes;
 
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use fastapi::core::{App, PathParams, Request, Response, ResponseBody, StatusCode};
 use fastapi::fastapi_openapi;
 use serde::Serialize;
 use zestroku_core::store::{DeviceRow, Store};
-use zestroku_core::{check_tier, discovery::ECP_DEFAULT_PORT};
+use zestroku_core::{
+    DeviceStateSnapshot, Inventory, InventoryStateView, check_tier, discovery::ECP_DEFAULT_PORT,
+};
 use zestroku_proto::{
     ActiveApp, Command, DeviceInfo, EcpGate, EcpResponse, Transport, parse_active_app,
     parse_device_info, parse_ecp_response, query,
 };
-use zestroku_types::{AccessTier, Device, Error, Result};
-
+use zestroku_types::{AccessTier, Device, Error, ErrorCode, Result};
 #[derive(Debug)]
 struct ApiState<S, T> {
     store: Arc<Mutex<S>>,
     transport: Arc<T>,
+    inventory: Arc<Mutex<Inventory>>,
 }
 
-/// Build the v1 HTTP API over a shared store and ECP transport.
-///
-/// Registers health, inventory, device-info, active-app, installed-app, and
-/// OpenAPI reads plus confirmation-gated key and launch POSTs. Mutation targets
-/// come only from the inventory path parameter and the request body cannot
-/// override host, port, tier, or client provenance. Before each mutation the
-/// API snapshots active-app state, then delegates tier-before-token
-/// authorization and durable result recording to the core mutation gate. No
-/// HTTP route mints approvals. Bodies are strict JSON objects; a present Origin
-/// must exactly match `http://<Host>` or the request is refused before parsing,
-/// token consumption, or ECP I/O. Missing Origin is allowed for non-browser
-/// clients, and the API emits no Access-Control-Allow-Origin header. Store locks
-/// are released before every transport await.
+/// Build the v1 HTTP API over a shared store and ECP transport without a
+/// background inventory poller. Fresh reads still use any state supplied by a
+/// caller through [`build_app_with_inventory`]; otherwise existing live reads
+/// remain available for embedding and API tests.
 pub fn build_app<S, T>(store: Arc<Mutex<S>>, transport: Arc<T>) -> App
 where
     S: Store + Send + 'static,
     T: Transport + 'static,
 {
-    routes::build_app(store, transport)
+    build_app_with_inventory(store, transport, Arc::new(Mutex::new(Inventory::new())))
+}
+
+/// Build the v1 HTTP API against the daemon's shared per-device inventory.
+///
+/// Registers health, inventory, device read/state, OpenAPI, and
+/// confirmation-gated mutation routes. Mutation targets come only from the
+/// inventory path parameter; request bodies cannot override host, port, tier,
+/// or client provenance. Mutations snapshot active-app state, then delegate
+/// tier-before-token authorization and durable result recording to the core
+/// gate. No route mints approvals. Bodies are strict JSON objects; a present
+/// Origin must match `http://<Host>` before parsing, token consumption, or ECP
+/// I/O. Missing Origin is allowed for non-browser clients, and no
+/// Access-Control-Allow-Origin header is emitted. Store locks are released
+/// before transport awaits. The daemon shares this inventory with its poll
+/// loop so fresh reads need no additional ECP round-trip.
+pub fn build_app_with_inventory<S, T>(
+    store: Arc<Mutex<S>>,
+    transport: Arc<T>,
+    inventory: Arc<Mutex<Inventory>>,
+) -> App
+where
+    S: Store + Send + 'static,
+    T: Transport + 'static,
+{
+    routes::build_app(store, transport, inventory)
+}
+
+pub(super) fn cached_inventory_state<S, T>(
+    state: &ApiState<S, T>,
+    device_id: &str,
+) -> std::result::Result<Option<InventoryStateView>, ()> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or(0);
+    state
+        .inventory
+        .lock()
+        .map(|inventory| inventory.state_at(device_id, now))
+        .map_err(|_| ())
 }
 
 #[derive(Debug, Serialize, fastapi::JsonSchema)]
@@ -211,7 +245,13 @@ struct ActiveAppView {
 
 #[derive(Debug, Serialize, fastapi::JsonSchema)]
 struct ErrorView {
+    /// Existing operation-specific cause; retained for current consumers.
     error: &'static str,
+    /// Canonical shared code, absent when the cause has no honest mapping.
+    code: Option<&'static str>,
+    detail: String,
+    hint: Option<&'static str>,
+    suggestions: Vec<String>,
 }
 
 fn list_devices<S: Store, T>(state: &ApiState<S, T>) -> Response {
@@ -348,6 +388,16 @@ async fn device_info<S: Store, T: Transport>(state: &ApiState<S, T>, raw_target:
         Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
     };
     let device = device_for_gate(&row, &target);
+    let cached = match cached_inventory_state(state, &target.id) {
+        Ok(cached) => cached,
+        Err(()) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
+    };
+    if let Some(cached) = cached.filter(|state| state.is_fresh) {
+        return json_response(
+            StatusCode::OK,
+            &device_info_view_from_snapshot(&cached.snapshot),
+        );
+    }
     let command = query("device-info");
     let response = match send_checked(state, &device, &command).await {
         Ok(response) if parse_ecp_response(&response).gate == EcpGate::Open => response,
@@ -409,6 +459,19 @@ async fn active_app<S: Store, T: Transport>(state: &ApiState<S, T>, raw_target: 
         Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
     };
     let device = device_for_gate(&row, &target);
+    let cached = match cached_inventory_state(state, &target.id) {
+        Ok(cached) => cached,
+        Err(()) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
+    };
+    if let Some(cached) = cached.filter(|state| state.is_fresh) {
+        return json_response(
+            StatusCode::OK,
+            &active_app_view(
+                &cached.snapshot.device.host,
+                cached.snapshot.active_app.clone(),
+            ),
+        );
+    }
     let command = query("active-app");
     let response = match send_checked(state, &device, &command).await {
         Ok(response) if parse_ecp_response(&response).gate == EcpGate::Open => response,
@@ -440,6 +503,17 @@ fn device_info_view(
         tv_active_channel,
     }
 }
+fn device_info_view_from_snapshot(snapshot: &DeviceStateSnapshot) -> DeviceInfoView {
+    DeviceInfoView {
+        host: snapshot.device.host.clone(),
+        model_name: snapshot.device.model_name.clone(),
+        model_number: snapshot.device.model_number.clone(),
+        software_version: snapshot.device.software_version.clone(),
+        is_tv: snapshot.device.is_tv,
+        access_tier: snapshot.observed_tier.as_str().to_owned(),
+        tv_active_channel: snapshot.tv_active_channel,
+    }
+}
 
 fn active_app_view(host: &str, app: ActiveApp) -> ActiveAppView {
     ActiveAppView {
@@ -458,21 +532,70 @@ fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Response {
     }
 }
 
-fn error_response(status: StatusCode, code: &'static str) -> Response {
-    json_response(status, &ErrorView { error: code })
+fn semantic_error_code(cause: &str) -> Option<ErrorCode> {
+    match cause {
+        "device_not_found" | "unknown_device" => Some(ErrorCode::UnknownDevice),
+        "ambiguous_name" => Some(ErrorCode::AmbiguousName),
+        "DEVICE_UNREACHABLE" | "transport_error" => Some(ErrorCode::DeviceUnreachable),
+        "tier_refused" => Some(ErrorCode::TierRefused),
+        "confirmation_required" => Some(ErrorCode::ConfirmationRequired),
+        "policy_denied" => Some(ErrorCode::PolicyDenied),
+        "app_not_installed" | "undo_app_not_installed" => Some(ErrorCode::AppNotInstalled),
+        "store_error" | "action_log_error" => Some(ErrorCode::StoreUnavailable),
+        "daemon_unavailable" => Some(ErrorCode::DaemonUnavailable),
+        _ => None,
+    }
+}
+
+fn error_detail(cause: &str) -> String {
+    match cause {
+        "device_not_found" => "No matching device is present in the daemon inventory.".to_owned(),
+        "undo_app_not_installed" => {
+            "The previously active app is not installed, so it cannot be restored.".to_owned()
+        }
+        "tier_refused" => {
+            "The device refused this operation under its observed Limited tier.".to_owned()
+        }
+        "DEVICE_UNREACHABLE" => {
+            "No completed device-state snapshot is available for this target.".to_owned()
+        }
+        "store_error" | "action_log_error" => {
+            "The daemon could not read or update its local store.".to_owned()
+        }
+        other => other.replace('_', " "),
+    }
+}
+
+fn error_response(status: StatusCode, cause: &'static str) -> Response {
+    let semantic = semantic_error_code(cause);
+    json_response(
+        status,
+        &ErrorView {
+            error: cause,
+            code: semantic.map(ErrorCode::as_str),
+            detail: error_detail(cause),
+            hint: semantic.map(ErrorCode::hint),
+            suggestions: Vec::new(),
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use fastapi::TestClient;
     use zestroku_core::store::{DeviceRow, SqliteStore, Store};
-    use zestroku_proto::{Command, EcpResponse, Transport, keypress};
+    use zestroku_core::tier::ObservedTier;
+    use zestroku_core::{AppsSnapshot, DeviceStateSnapshot, Inventory, MediaPlayerSnapshot};
+    use zestroku_proto::{
+        ActiveApp, Command, EcpResponse, InstalledApp, MediaPlayerState, Transport, keypress,
+    };
     use zestroku_types::{AccessTier, Device, Error, Result};
 
-    use super::{ApiState, build_app, send_checked};
+    use super::{ApiState, build_app, build_app_with_inventory, send_checked};
 
     const DEVICE_INFO_XML: &str = "<device-info><model-name>Roku Express 4K+</model-name>\
          <model-number>9999X</model-number><software-version>0.0.0</software-version>\
@@ -617,6 +740,98 @@ mod tests {
     }
 
     #[test]
+    fn fresh_inventory_serves_read_routes_without_ecp_roundtrips() {
+        let port = 18070;
+        let (_dir, store) = store_with_device_at("192.0.2.10", port);
+        let transport = Arc::new(FakeTransport::new([]));
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("wall clock")
+            .as_secs() as i64;
+        let mut inventory = Inventory::new();
+        inventory.record_state(DeviceStateSnapshot {
+            device: Device {
+                host: "192.0.2.10".into(),
+                port,
+                model_name: "Roku Express 4K+".into(),
+                model_number: "9999X".into(),
+                software_version: "15.2.4".into(),
+                is_tv: false,
+                access_tier: AccessTier::Permissive,
+            },
+            observed_tier: ObservedTier::Permissive,
+            active_app: ActiveApp {
+                app_id: Some(1001),
+                name: "Streaming One".into(),
+            },
+            apps: AppsSnapshot::Available(vec![InstalledApp {
+                id: "1001".into(),
+                name: "Streaming One".into(),
+                app_type: "appl".into(),
+                subtype: Some("svod".into()),
+                version: Some("1.0".into()),
+            }]),
+            media_player: MediaPlayerSnapshot::Available(MediaPlayerState {
+                state: "play".into(),
+            }),
+            tv_active_channel: Some(false),
+            observed_at: now,
+        });
+        let client = TestClient::new(build_app_with_inventory(
+            Arc::clone(&store),
+            Arc::clone(&transport),
+            Arc::new(Mutex::new(inventory)),
+        ));
+
+        let info = client
+            .get(&format!("/v1/devices/192.0.2.10:{port}/info"))
+            .header_str("host", "192.0.2.10")
+            .send();
+        assert_eq!(info.status().as_u16(), 200);
+        let info_json: serde_json::Value = serde_json::from_str(info.text()).expect("info JSON");
+        assert_eq!(info_json["model_number"], "9999X");
+        assert_eq!(info_json["access_tier"], "permissive");
+        assert!(info_json.get("serial_number").is_none());
+        assert!(info_json.get("udn").is_none());
+
+        let active_app = client
+            .get(&format!("/v1/devices/192.0.2.10:{port}/active-app"))
+            .header_str("host", "192.0.2.10")
+            .send();
+        assert_eq!(active_app.status().as_u16(), 200);
+        let active_json: serde_json::Value =
+            serde_json::from_str(active_app.text()).expect("active-app JSON");
+        assert_eq!(active_json["app_id"], 1001);
+
+        let apps = client
+            .get(&format!("/v1/devices/192.0.2.10:{port}/apps"))
+            .header_str("host", "192.0.2.10")
+            .send();
+        assert_eq!(apps.status().as_u16(), 200);
+        let apps_json: serde_json::Value = serde_json::from_str(apps.text()).expect("apps JSON");
+        assert_eq!(apps_json["apps"][0]["id"], "1001");
+
+        let state = client
+            .get(&format!("/v1/devices/192.0.2.10:{port}/state"))
+            .header_str("host", "192.0.2.10")
+            .send();
+        assert_eq!(state.status().as_u16(), 200);
+        let state_text = state.text().to_owned();
+        let state_json: serde_json::Value =
+            serde_json::from_str(&state_text).expect("device state JSON");
+        assert_eq!(state_json["fresh"], true);
+        assert_eq!(state_json["tv_active_channel"], false);
+        assert_eq!(state_json["apps_status"], "available");
+        assert_eq!(state_json["media_player_status"], "available");
+        assert_eq!(state_json["media_player_state"], "play");
+        assert!(!state_text.contains("SCRUBBED"));
+        assert!(
+            transport.calls().is_empty(),
+            "fresh reads must use the inventory"
+        );
+    }
+
+    #[test]
     fn info_route_reports_and_records_limited_tier_from_live_probe() {
         let port = 18061;
         let (_dir, store) = store_with_device_at("192.0.2.10", port);
@@ -691,6 +906,7 @@ mod tests {
         let state = ApiState {
             store,
             transport: Arc::clone(&transport),
+            inventory: Arc::new(Mutex::new(Inventory::new())),
         };
         let device = Device {
             host: "192.0.2.10".into(),

@@ -1,9 +1,11 @@
 //! zestroku-mcp — MCP server tools over the same core gates as the CLI.
 //!
-//! `list_devices`, `info`, `active_app`, and `apps` read through the configured
-//! daemon API using FastMCP's asynchronous request context. They never open
-//! direct ECP connections or synthesize local results when the daemon is down.
-//! `echo` is local; `recent_actions` reads the shared audit store.
+//! `list_devices`, `info`, `active_app`, `apps`, and `get_device_state` read
+//! through the configured daemon API using FastMCP's asynchronous request
+//! context. The `roku://devices` resource and per-device template use those
+//! same daemon routes. They never open direct ECP connections or synthesize
+//! local results when the daemon is down. `echo` is local; `recent_actions`
+//! reads the shared audit store.
 //!
 //! `key` and `launch` forward the opaque owner approval token to the
 //! configured loopback daemon. Grants must be minted for `mcp-stdio`; the
@@ -15,10 +17,6 @@
 //! CLI's real-process integration test exercises it through the actual daemon
 //! and loopback simulator.
 //!
-//! Unit tests exercise the extracted `decide()` local-gate seam; the live
-//! mutation path dispatches through the daemon (see `MutationTool`).
-//! FastMCP's `McpContext` has no public test constructor because
-//! `Cx::for_testing` is gated inside the dependency.
 #![forbid(unsafe_code)]
 
 use std::sync::Arc;
@@ -26,15 +24,14 @@ use std::time::Duration;
 
 use asupersync::http::Client as HttpClient;
 use asupersync::{CancelReason, Cx, Outcome};
-use fastmcp::server::{BoxFuture, ToolExecutionMode, ToolHandler};
-use fastmcp::{Content, McpContext, McpError, McpErrorCode, McpResult, Tool, ToolAnnotations};
-use zestroku_core::mutation::{
-    ClientPrincipal, MutationContext, MutationError, authorize_mutation,
+use fastmcp::server::{BoxFuture, ResourceHandler, ToolExecutionMode, ToolHandler, UriParams};
+use fastmcp::{
+    Content, McpContext, McpError, McpErrorCode, McpResult, Resource, ResourceContent,
+    ResourceTemplate, Tool, ToolAnnotations,
 };
-use zestroku_core::policy::Policy;
+use zestroku_core::mutation::ClientPrincipal;
 use zestroku_core::store::{ActionRow, SqliteStore, Store};
-use zestroku_proto::Command;
-use zestroku_types::{AccessTier, Device};
+use zestroku_types::ErrorCode;
 
 /// Refusal code must match the core gate's action-log value.
 pub const CONFIRMATION_REQUIRED: &str = "CONFIRMATION_REQUIRED";
@@ -61,95 +58,41 @@ fn mcp_error(code: McpErrorCode, message: impl Into<String>) -> McpError {
     McpError::new(code, message.into())
 }
 
-fn device_for(host: &str, tier: AccessTier) -> Device {
-    Device {
-        host: host.to_string(),
-        port: 8060,
-        model_name: String::new(),
-        model_number: String::new(),
-        software_version: String::new(),
-        is_tv: false,
-        access_tier: tier,
-    }
-}
-
-fn build_command(kind: &str, target: &str) -> Result<Command, McpError> {
-    match kind {
-        "launch" => {
-            let app_id: u32 = target.parse().map_err(|_| {
-                mcp_error(
-                    McpErrorCode::InvalidParams,
-                    format!("app id must be a number, got {target:?}"),
-                )
-            })?;
-            Ok(zestroku_proto::launch(app_id))
-        }
-        "key" => Ok(zestroku_proto::keypress_raw(target)),
-        other => Err(mcp_error(
-            McpErrorCode::InvalidParams,
-            format!("unknown mutation kind {other}"),
-        )),
-    }
-}
-
-/// The local gate seam exercised by unit tests: arg mapping plus the
-/// shared-core authorization, audited locally. The live mutation path does
-/// NOT call this: the daemon is the sole authorizer (single-use tokens
-/// cannot be consumed twice), so this seam only proves gate semantics
-/// offline. Arg-shaped failures come back as `Err(ArgError)` and are never
-/// audited.
-#[derive(Debug)]
-pub struct ArgError(pub String);
-
-/// Inputs to the local mutation gate; one struct keeps the seam under the
-/// argument-count lint as policy inputs grow.
-pub struct DecideInput<'a> {
-    pub kind: &'a str,
-    pub host: &'a str,
-    pub target: &'a str,
-    pub tier: AccessTier,
-    pub confirmation: Option<&'a str>,
-    pub before_state: &'a str,
-    pub policy: &'a Policy,
-}
-
-pub fn decide<S: Store + ?Sized>(
-    store: &S,
-    input: DecideInput<'_>,
-) -> Result<Result<String, ArgError>, MutationError> {
-    let DecideInput {
-        kind,
-        host,
-        target,
-        tier,
-        confirmation,
-        before_state,
-        policy,
-    } = input;
-    let command = build_command(kind, target).map_err(|e| ArgError(e.to_string()));
-    let command = match command {
-        Ok(command) => command,
-        Err(arg) => return Ok(Err(arg)),
+fn daemon_api_error(status: u16, value: &serde_json::Value) -> McpError {
+    let cause = value
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("daemon_http_error");
+    let code = if status == 403 && cause == "confirmation_required" {
+        McpErrorCode::Custom(-32001)
+    } else {
+        McpErrorCode::ToolExecutionError
     };
-    let context = MutationContext {
-        client: ClientPrincipal::McpStdio.as_str(),
-        surface: kind,
-        intent: &format!("{kind} {target}"),
-        before_state,
+    let data = serde_json::json!({
+        "error": cause,
+        "code": value.get("code").cloned().unwrap_or(serde_json::Value::Null),
+        "detail": value.get("detail").cloned().unwrap_or(serde_json::Value::Null),
+        "hint": value.get("hint").cloned().unwrap_or(serde_json::Value::Null),
+        "suggestions": value.get("suggestions").cloned().unwrap_or_else(|| serde_json::json!([])),
+    });
+    let message = if status == 403 && cause == "confirmation_required" {
+        format!("{CONFIRMATION_REQUIRED}: {data}")
+    } else {
+        data.to_string()
     };
-    match authorize_mutation(
-        store,
-        &device_for(host, tier),
-        &command,
-        context,
-        confirmation,
-        policy,
-    ) {
-        Ok(action_id) => Ok(Ok(format!(
-            "approved: audit id {action_id}; dispatch happens in serve (m7c)"
-        ))),
-        Err(e) => Err(e),
-    }
+    McpError::with_data(code, message, data)
+}
+
+fn daemon_unavailable_error() -> McpError {
+    let code = ErrorCode::DaemonUnavailable;
+    let data = serde_json::json!({
+        "error": "daemon_unavailable",
+        "code": code.as_str(),
+        "detail": "The configured resident daemon did not answer the request.",
+        "hint": code.hint(),
+        "suggestions": [],
+    });
+    McpError::with_data(McpErrorCode::ToolExecutionError, data.to_string(), data)
 }
 
 /// One mutating MCP tool: `kind` is "key" or "launch". Mutations dispatch
@@ -187,28 +130,9 @@ impl MutationTool {
             }
         };
         if !(200..300).contains(&response.status) {
-            let code = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("error")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned)
-                })
-                .unwrap_or_else(|| "daemon_http_error".to_string());
-            // The tool contract names confirmation failures
-            // CONFIRMATION_REQUIRED (see the tool description); the daemon's
-            // refusal is audited daemon-side, never approved here.
-            if response.status == 403 && code == "confirmation_required" {
-                return Outcome::Err(mcp_error(
-                    McpErrorCode::Custom(-32001),
-                    format!("{CONFIRMATION_REQUIRED}: daemon refused the token (HTTP 403)"),
-                ));
-            }
-            return Outcome::Err(mcp_error(
-                McpErrorCode::ToolExecutionError,
-                format!("daemon API error: {code} (HTTP {})", response.status),
-            ));
+            let value =
+                serde_json::from_str::<serde_json::Value>(&body).unwrap_or(serde_json::Value::Null);
+            return Outcome::Err(daemon_api_error(response.status, &value));
         }
         let value: serde_json::Value = match serde_json::from_str(&body) {
             Ok(value) => value,
@@ -367,12 +291,7 @@ impl ToolHandler for MutationTool {
                         CancelReason::user("daemon mutation request cancelled")
                     }));
                 }
-                Err(_) => {
-                    return Outcome::Err(mcp_error(
-                        McpErrorCode::ToolExecutionError,
-                        "daemon_unavailable",
-                    ));
-                }
+                Err(_) => return Outcome::Err(daemon_unavailable_error()),
             };
             Self::mutation_content(response)
         })
@@ -424,10 +343,7 @@ impl UndoLastTool {
                 McpErrorCode::InternalError,
                 "daemon undo-plan request cancelled",
             )),
-            Err(_) => Err(mcp_error(
-                McpErrorCode::ToolExecutionError,
-                "daemon_unavailable",
-            )),
+            Err(_) => Err(daemon_unavailable_error()),
         }
     }
 }
@@ -505,12 +421,6 @@ impl ToolHandler for UndoLastTool {
                 Ok(response) => response,
                 Err(error) => return Outcome::Err(error),
             };
-            if !(200..300).contains(&plan.status) {
-                return Outcome::Err(mcp_error(
-                    McpErrorCode::ToolExecutionError,
-                    format!("daemon undo-plan error (HTTP {})", plan.status),
-                ));
-            }
             let plan_text = match String::from_utf8(plan.body) {
                 Ok(text) => text,
                 Err(_) => {
@@ -520,6 +430,11 @@ impl ToolHandler for UndoLastTool {
                     ));
                 }
             };
+            if !(200..300).contains(&plan.status) {
+                let value = serde_json::from_str::<serde_json::Value>(&plan_text)
+                    .unwrap_or(serde_json::Value::Null);
+                return Outcome::Err(daemon_api_error(plan.status, &value));
+            }
             let action_id = match Self::parse_undo_plan(&plan_text) {
                 Ok(id) => id,
                 Err(error) => return Outcome::Err(error),
@@ -554,10 +469,7 @@ impl ToolHandler for UndoLastTool {
                         ));
                     }
                     Err(_) => {
-                        return Outcome::Err(mcp_error(
-                            McpErrorCode::ToolExecutionError,
-                            "daemon_unavailable",
-                        ));
+                        return Outcome::Err(daemon_unavailable_error());
                     }
                 };
             MutationTool::mutation_content(response)
@@ -684,6 +596,7 @@ enum ReadOperation {
     Info,
     ActiveApp,
     Apps,
+    DeviceState,
 }
 
 impl ReadOperation {
@@ -693,15 +606,25 @@ impl ReadOperation {
             Self::Info => "info",
             Self::ActiveApp => "active_app",
             Self::Apps => "apps",
+            Self::DeviceState => "get_device_state",
         }
     }
 
     fn description(self) -> &'static str {
         match self {
             Self::Devices => "Read-only device inventory from the running zestroku daemon.",
-            Self::Info => "Read device information through the daemon; host must match inventory.",
-            Self::ActiveApp => "Read the active app through the daemon; host must match inventory.",
-            Self::Apps => "Read installed apps through the daemon; host must match inventory.",
+            Self::Info => {
+                "Read device information from a fresh daemon snapshot when available; otherwise use the daemon's live read. Host must match inventory."
+            }
+            Self::ActiveApp => {
+                "Read the active app from a fresh daemon snapshot when available; otherwise use the daemon's live read. Host must match inventory."
+            }
+            Self::Apps => {
+                "Read installed apps from a fresh daemon snapshot when available; otherwise use the daemon's live read. Host must match inventory."
+            }
+            Self::DeviceState => {
+                "Read the daemon's typed device-state snapshot and its explicit freshness flag."
+            }
         }
     }
 
@@ -712,17 +635,19 @@ impl ReadOperation {
                 "properties": {},
                 "additionalProperties": false
             }),
-            Self::Info | Self::ActiveApp | Self::Apps => serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "host": {
-                        "type": "string",
-                        "description": "Inventory host or host:port."
-                    }
-                },
-                "required": ["host"],
-                "additionalProperties": false
-            }),
+            Self::Info | Self::ActiveApp | Self::Apps | Self::DeviceState => {
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "host": {
+                            "type": "string",
+                            "description": "Inventory host or host:port."
+                        }
+                    },
+                    "required": ["host"],
+                    "additionalProperties": false
+                })
+            }
         }
     }
 
@@ -743,7 +668,7 @@ impl ReadOperation {
                 }
                 Ok("/v1/devices".to_string())
             }
-            Self::Info | Self::ActiveApp | Self::Apps => {
+            Self::Info | Self::ActiveApp | Self::Apps | Self::DeviceState => {
                 let Some(object) = arguments.as_object() else {
                     return Err(mcp_error(
                         McpErrorCode::InvalidParams,
@@ -773,6 +698,7 @@ impl ReadOperation {
                     Self::Info => "info",
                     Self::ActiveApp => "active-app",
                     Self::Apps => "apps",
+                    Self::DeviceState => "state",
                     Self::Devices => unreachable!(),
                 };
                 Ok(format!("/v1/devices/{target}/{suffix}"))
@@ -797,6 +723,15 @@ impl ReadOperation {
                 value
                     .get(*field)
                     .is_some_and(|field| field.is_null() || field.is_string())
+            })
+        };
+        let is_app_array = |value: &serde_json::Value| {
+            value.as_array().is_some_and(|apps| {
+                apps.iter().all(|app| {
+                    exact_fields(app, &["id", "name", "type", "subtype", "version"])
+                        && has_string_fields(app, &["id", "name", "type"])
+                        && has_optional_string_fields(app, &["subtype", "version"])
+                })
             })
         };
 
@@ -869,21 +804,110 @@ impl ReadOperation {
             Self::Apps => {
                 exact_fields(value, &["host", "apps"])
                     && has_string_fields(value, &["host"])
+                    && value.get("apps").is_some_and(is_app_array)
+            }
+            Self::DeviceState => {
+                exact_fields(
+                    value,
+                    &[
+                        "host",
+                        "model_name",
+                        "model_number",
+                        "software_version",
+                        "is_tv",
+                        "access_tier",
+                        "tv_active_channel",
+                        "active_app_id",
+                        "active_app_name",
+                        "apps",
+                        "apps_status",
+                        "media_player_state",
+                        "media_player_status",
+                        "observed_at",
+                        "fresh",
+                    ],
+                ) && has_string_fields(
+                    value,
+                    &[
+                        "host",
+                        "model_name",
+                        "model_number",
+                        "software_version",
+                        "active_app_name",
+                        "apps_status",
+                        "media_player_status",
+                    ],
+                ) && matches!(
+                    value.get("access_tier").and_then(serde_json::Value::as_str),
+                    Some("permissive" | "limited" | "unknown")
+                ) && value
+                    .get("is_tv")
+                    .is_some_and(serde_json::Value::is_boolean)
                     && value
-                        .get("apps")
-                        .and_then(serde_json::Value::as_array)
-                        .is_some_and(|apps| {
-                            apps.iter().all(|app| {
-                                exact_fields(app, &["id", "name", "type", "subtype", "version"])
-                                    && has_string_fields(app, &["id", "name", "type"])
-                                    && has_optional_string_fields(app, &["subtype", "version"])
-                            })
-                        })
+                        .get("tv_active_channel")
+                        .is_some_and(|channel| channel.is_null() || channel.is_boolean())
+                    && value.get("active_app_id").is_some_and(|app_id| {
+                        app_id.is_null()
+                            || app_id.as_u64().is_some_and(|id| id <= u64::from(u32::MAX))
+                    })
+                    && match value.get("apps_status").and_then(serde_json::Value::as_str) {
+                        Some("available") => value.get("apps").is_some_and(is_app_array),
+                        Some("tier_refused" | "endpoint_absent" | "unknown_403") => {
+                            value.get("apps").is_some_and(serde_json::Value::is_null)
+                        }
+                        _ => false,
+                    }
+                    && match value
+                        .get("media_player_status")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        Some("available") => value
+                            .get("media_player_state")
+                            .is_some_and(serde_json::Value::is_string),
+                        Some("tier_refused" | "endpoint_absent" | "unknown_403") => value
+                            .get("media_player_state")
+                            .is_some_and(serde_json::Value::is_null),
+                        _ => false,
+                    }
+                    && value
+                        .get("observed_at")
+                        .and_then(serde_json::Value::as_i64)
+                        .is_some()
+                    && value
+                        .get("fresh")
+                        .is_some_and(serde_json::Value::is_boolean)
             }
         }
     }
 }
 
+fn daemon_read_body(
+    response: asupersync::http::h1::Response,
+    operation: ReadOperation,
+) -> Result<String, McpError> {
+    let body = String::from_utf8(response.body).map_err(|_| {
+        mcp_error(
+            McpErrorCode::ToolExecutionError,
+            "daemon_invalid_response: response is not UTF-8",
+        )
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
+        mcp_error(
+            McpErrorCode::ToolExecutionError,
+            "daemon_invalid_response: response is not JSON",
+        )
+    })?;
+    if !(200..300).contains(&response.status) {
+        return Err(daemon_api_error(response.status, &value));
+    }
+    if !operation.accepts_response(&value) {
+        return Err(mcp_error(
+            McpErrorCode::ToolExecutionError,
+            "daemon_response_schema_mismatch",
+        ));
+    }
+    Ok(body)
+}
 fn encode_path_segment(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
@@ -951,35 +975,7 @@ impl DaemonReadTool {
         &self,
         response: asupersync::http::h1::Response,
     ) -> Result<Vec<Content>, McpError> {
-        let body = String::from_utf8(response.body).map_err(|_| {
-            mcp_error(
-                McpErrorCode::ToolExecutionError,
-                "daemon_invalid_response: response is not UTF-8",
-            )
-        })?;
-        let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
-            mcp_error(
-                McpErrorCode::ToolExecutionError,
-                "daemon_invalid_response: response is not JSON",
-            )
-        })?;
-
-        if !(200..300).contains(&response.status) {
-            let code = value
-                .get("error")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("daemon_http_error");
-            return Err(mcp_error(
-                McpErrorCode::ToolExecutionError,
-                format!("daemon API error: {code} (HTTP {})", response.status),
-            ));
-        }
-        if !self.operation.accepts_response(&value) {
-            return Err(mcp_error(
-                McpErrorCode::ToolExecutionError,
-                "daemon_response_schema_mismatch",
-            ));
-        }
+        let body = daemon_read_body(response, self.operation)?;
         Ok(vec![Content::Text { text: body }])
     }
 }
@@ -1042,12 +1038,154 @@ impl ToolHandler for DaemonReadTool {
                         .cancel_reason()
                         .unwrap_or_else(|| CancelReason::user("daemon read request cancelled")),
                 ),
-                Err(_) => Outcome::Err(mcp_error(
-                    McpErrorCode::ToolExecutionError,
-                    "daemon_unavailable",
-                )),
+                Err(_) => Outcome::Err(daemon_unavailable_error()),
             }
         })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ResourceKind {
+    Devices,
+    DeviceState,
+}
+
+struct DaemonResource {
+    kind: ResourceKind,
+    client: Arc<HttpClient>,
+    base_url: Arc<str>,
+}
+
+impl DaemonResource {
+    fn new(kind: ResourceKind, client: Arc<HttpClient>, base_url: Arc<str>) -> Self {
+        Self {
+            kind,
+            client,
+            base_url,
+        }
+    }
+
+    fn uri(&self) -> &'static str {
+        match self.kind {
+            ResourceKind::Devices => "roku://devices",
+            ResourceKind::DeviceState => "roku://devices/{id}",
+        }
+    }
+
+    fn fetch<'a>(
+        &'a self,
+        cx: &'a Cx,
+        uri: &'a str,
+        path: String,
+        operation: ReadOperation,
+    ) -> BoxFuture<'a, Outcome<Vec<ResourceContent>, McpError>> {
+        Box::pin(async move {
+            let url = format!("{}{path}", self.base_url);
+            match self.client.send_get(cx, &url).await {
+                Ok(response) => match daemon_read_body(response, operation) {
+                    Ok(text) => Outcome::Ok(vec![ResourceContent {
+                        uri: uri.to_owned(),
+                        mime_type: Some("application/json".to_owned()),
+                        text: Some(text),
+                        blob: None,
+                    }]),
+                    Err(error) => Outcome::Err(error),
+                },
+                Err(asupersync::http::h1::ClientError::Cancelled) => Outcome::Cancelled(
+                    cx.cancel_reason()
+                        .unwrap_or_else(|| CancelReason::user("daemon resource read cancelled")),
+                ),
+                Err(_) => Outcome::Err(daemon_unavailable_error()),
+            }
+        })
+    }
+}
+
+impl ResourceHandler for DaemonResource {
+    fn definition(&self) -> Resource {
+        let is_inventory = matches!(self.kind, ResourceKind::Devices);
+        Resource {
+            uri: self.uri().to_owned(),
+            name: if is_inventory {
+                "zestroku device inventory".to_owned()
+            } else {
+                "zestroku device state".to_owned()
+            },
+            description: Some(if is_inventory {
+                "Current daemon inventory rows.".to_owned()
+            } else {
+                "Typed cached state for one canonical inventory id, including observed_at and freshness.".to_owned()
+            }),
+            mime_type: Some("application/json".to_owned()),
+            icon: None,
+            version: None,
+            tags: vec!["zestroku".to_owned()],
+        }
+    }
+
+    fn template(&self) -> Option<ResourceTemplate> {
+        matches!(self.kind, ResourceKind::DeviceState).then(|| ResourceTemplate {
+            uri_template: self.uri().to_owned(),
+            name: "zestroku device state".to_owned(),
+            description: Some(
+                "Typed cached state for one canonical inventory id, including observed_at and freshness."
+                    .to_owned(),
+            ),
+            mime_type: Some("application/json".to_owned()),
+            icon: None,
+            version: None,
+            tags: vec!["zestroku".to_owned()],
+        })
+    }
+
+    fn read(&self, _ctx: &McpContext) -> McpResult<Vec<ResourceContent>> {
+        Err(mcp_error(
+            McpErrorCode::InternalError,
+            "daemon resources require the asynchronous request context",
+        ))
+    }
+
+    fn read_async<'a>(
+        &'a self,
+        ctx: &'a McpContext,
+    ) -> BoxFuture<'a, Outcome<Vec<ResourceContent>, McpError>> {
+        match self.kind {
+            ResourceKind::Devices => self.fetch(
+                ctx.cx(),
+                "roku://devices",
+                "/v1/devices".to_owned(),
+                ReadOperation::Devices,
+            ),
+            ResourceKind::DeviceState => Box::pin(async {
+                Outcome::Err(mcp_error(
+                    McpErrorCode::ResourceNotFound,
+                    "device resource requires a canonical device id",
+                ))
+            }),
+        }
+    }
+
+    fn read_async_with_uri<'a>(
+        &'a self,
+        ctx: &'a McpContext,
+        uri: &'a str,
+        params: &'a UriParams,
+    ) -> BoxFuture<'a, Outcome<Vec<ResourceContent>, McpError>> {
+        match self.kind {
+            ResourceKind::Devices => self.read_async(ctx),
+            ResourceKind::DeviceState => {
+                let Some(id) = params.get("id").filter(|id| !id.is_empty()) else {
+                    return Box::pin(async {
+                        Outcome::Err(mcp_error(
+                            McpErrorCode::ResourceNotFound,
+                            "device resource requires a canonical device id",
+                        ))
+                    });
+                };
+                let path = format!("/v1/devices/{}/state", encode_path_segment(id));
+                self.fetch(ctx.cx(), uri, path, ReadOperation::DeviceState)
+            }
+        }
     }
 }
 
@@ -1083,6 +1221,21 @@ pub fn server() -> Result<fastmcp::auto::Server, String> {
             ))
             .tool(DaemonReadTool::new(
                 ReadOperation::Apps,
+                Arc::clone(&client),
+                Arc::clone(&base_url),
+            ))
+            .tool(DaemonReadTool::new(
+                ReadOperation::DeviceState,
+                Arc::clone(&client),
+                Arc::clone(&base_url),
+            ))
+            .resource(DaemonResource::new(
+                ResourceKind::Devices,
+                Arc::clone(&client),
+                Arc::clone(&base_url),
+            ))
+            .resource(DaemonResource::new(
+                ResourceKind::DeviceState,
                 Arc::clone(&client),
                 Arc::clone(&base_url),
             ))
@@ -1123,15 +1276,6 @@ pub fn run_stdio() -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    /// One exclusive temp store per test; the TempDir stays bound for the
-    /// test's scope so the DB file outlives every assertion on it.
-    fn store_in_tmp() -> (tempfile::TempDir, SqliteStore) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("actions.db");
-        let store = SqliteStore::open(&path).expect("temp store opens");
-        (dir, store)
-    }
 
     #[test]
     fn daemon_read_response_contract_rejects_schema_drift() {
@@ -1229,154 +1373,5 @@ mod tests {
                 "drift must refuse: {bad}"
             );
         }
-    }
-
-    #[test]
-    fn confirm_mapping_accepts_only_string_tokens() {
-        assert_eq!(confirmation_token_from(&json!({"confirm": true})), None);
-        assert_eq!(
-            confirmation_token_from(&json!({"confirm": "opaque"})),
-            Some("opaque")
-        );
-        assert_eq!(
-            confirmation_token_from(&json!({"confirm": "   "})),
-            Some("   ")
-        );
-        assert_eq!(confirmation_token_from(&json!({})), None);
-        assert_eq!(confirmation_token_from(&json!({"confirm": 1})), None);
-    }
-
-    #[test]
-    fn unconfirmed_launch_is_refused_and_audited_denied() {
-        let (_dir, store) = store_in_tmp();
-        let err = decide(
-            &store,
-            DecideInput {
-                kind: "launch",
-                host: "192.0.2.10",
-                target: "12",
-                tier: AccessTier::Permissive,
-                confirmation: None,
-                before_state: "{}",
-                policy: &Policy::default(),
-            },
-        )
-        .unwrap_err();
-        let MutationError::ConfirmationRequired { action_id, .. } = &err else {
-            panic!("wrong error: {err:?}");
-        };
-        let rows = store.list_actions().unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, *action_id);
-        assert_eq!(rows[0].decision, "denied");
-        assert_eq!(rows[0].result, CONFIRMATION_REQUIRED);
-        assert_eq!(rows[0].client, "mcp-stdio");
-        assert_eq!(rows[0].surface, "launch");
-        assert_eq!(rows[0].intent, "launch 12");
-    }
-
-    #[test]
-    fn minted_token_approves_exact_launch_once() {
-        let (_dir, store) = store_in_tmp();
-        let host = "192.0.2.10";
-        let device = device_for(host, AccessTier::Permissive);
-        let command = zestroku_proto::launch(12);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        let token = zestroku_core::mutation::issue_approval(
-            &store,
-            &device,
-            &command,
-            ClientPrincipal::McpStdio,
-            now,
-        )
-        .unwrap();
-        let text = decide(
-            &store,
-            DecideInput {
-                kind: "launch",
-                host,
-                target: "12",
-                tier: AccessTier::Permissive,
-                confirmation: Some(&token),
-                before_state: r#"{"app":"home"}"#,
-                policy: &Policy::default(),
-            },
-        )
-        .expect("gate error impossible here")
-        .expect("token authorizes");
-        assert!(text.contains("approved: audit id"), "{text}");
-        let err = decide(
-            &store,
-            DecideInput {
-                kind: "launch",
-                host,
-                target: "12",
-                tier: AccessTier::Permissive,
-                confirmation: Some(&token),
-                before_state: "{}",
-                policy: &Policy::default(),
-            },
-        )
-        .expect_err("replay refused");
-        assert!(matches!(err, MutationError::ConfirmationRequired { .. }));
-        let rows = store.list_actions().unwrap();
-        assert_eq!(rows[0].decision, "approved");
-        assert_eq!(rows[0].result, "pending");
-        assert_eq!(rows[0].before_state, r#"{"app":"home"}"#);
-        assert_eq!(
-            rows[1].result,
-            zestroku_core::mutation::CONFIRMATION_INVALID
-        );
-    }
-
-    #[test]
-    fn non_numeric_launch_id_is_arg_error_not_audited() {
-        let (_dir, store) = store_in_tmp();
-        let arg = decide(
-            &store,
-            DecideInput {
-                kind: "launch",
-                host: "192.0.2.10",
-                target: "netflix",
-                tier: AccessTier::Permissive,
-                confirmation: None,
-                before_state: "{}",
-                policy: &Policy::default(),
-            },
-        )
-        .expect("no gate error")
-        .expect_err("non-numeric app id refuses as arg error");
-        assert!(arg.0.contains("app id must be a number"));
-        assert!(
-            store.list_actions().unwrap().is_empty(),
-            "arg errors skip the gate"
-        );
-    }
-
-    #[test]
-    fn tier_refusal_is_audited_before_confirmation() {
-        let (_dir, store) = store_in_tmp();
-        // Open tier refuses mutations even with confirmation — the tier
-        // wall precedes the confirmation gate (load-bearing ordering).
-        let err = decide(
-            &store,
-            DecideInput {
-                kind: "key",
-                host: "192.0.2.10",
-                target: "home",
-                tier: AccessTier::Open,
-                confirmation: None,
-                before_state: "{}",
-                policy: &Policy::default(),
-            },
-        )
-        .expect_err("open tier refuses mutations");
-        assert!(matches!(err, MutationError::TierRefused(_)));
-        let rows = store.list_actions().unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].result, "TIER_REFUSED");
     }
 }

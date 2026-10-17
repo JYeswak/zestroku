@@ -17,6 +17,9 @@ use zestroku_core::mutation::{
 };
 use zestroku_core::store::{ActionRow, Store};
 use zestroku_core::tier::{before_app_identity, marked_before_app_state, recorded_tier_for};
+use zestroku_core::{
+    AppsSnapshot, DeviceStateSnapshot, Inventory, InventoryStateView, MediaPlayerSnapshot,
+};
 use zestroku_proto::{
     EcpGate, Transport, keypress_raw, launch, parse_active_app, parse_apps, parse_ecp_response,
     query, query_apps,
@@ -25,7 +28,7 @@ use zestroku_types::{AccessTier, Error};
 
 use super::{
     ActiveAppView, ApiState, DeviceInfoView, DeviceSummary, ErrorView, HealthView, active_app,
-    device_info, error_response, json_response, list_devices, path_target,
+    cached_inventory_state, device_info, error_response, json_response, list_devices, path_target,
 };
 
 const HEALTH_PATH: &str = "/health";
@@ -33,6 +36,7 @@ const DEVICES_PATH: &str = "/v1/devices";
 const INFO_PATH: &str = "/v1/devices/{host}/info";
 const ACTIVE_APP_PATH: &str = "/v1/devices/{host}/active-app";
 const APPS_PATH: &str = "/v1/devices/{host}/apps";
+const STATE_PATH: &str = "/v1/devices/{host}/state";
 const KEY_PATH: &str = "/v1/devices/{host}/key";
 const LAUNCH_PATH: &str = "/v1/devices/{host}/launch";
 const UNDO_PLAN_PATH: &str = "/v1/devices/{host}/undo-plan";
@@ -196,6 +200,25 @@ struct InstalledAppsView {
     apps: Vec<InstalledAppView>,
 }
 
+#[derive(Debug, Serialize, fastapi::JsonSchema)]
+struct DeviceStateView {
+    host: String,
+    model_name: String,
+    model_number: String,
+    software_version: String,
+    is_tv: bool,
+    access_tier: String,
+    tv_active_channel: Option<bool>,
+    active_app_id: Option<u32>,
+    active_app_name: String,
+    apps: Option<Vec<InstalledAppView>>,
+    apps_status: &'static str,
+    media_player_state: Option<String>,
+    media_player_status: &'static str,
+    observed_at: i64,
+    fresh: bool,
+}
+
 fn documented_route(
     path: &'static str,
     operation_id: &'static str,
@@ -267,17 +290,26 @@ fn browser_safety_error(req: &Request) -> Option<Response> {
     }
 }
 
-pub(super) fn build_app<S, T>(store: Arc<Mutex<S>>, transport: Arc<T>) -> App
+pub(super) fn build_app<S, T>(
+    store: Arc<Mutex<S>>,
+    transport: Arc<T>,
+    inventory: Arc<Mutex<Inventory>>,
+) -> App
 where
     S: Store + Send + 'static,
     T: Transport + 'static,
 {
-    let state = Arc::new(ApiState { store, transport });
+    let state = Arc::new(ApiState {
+        store,
+        transport,
+        inventory,
+    });
 
     let devices_state = Arc::clone(&state);
     let info_state = Arc::clone(&state);
     let active_app_state = Arc::clone(&state);
     let apps_state = Arc::clone(&state);
+    let device_state_state = Arc::clone(&state);
     let key_state = Arc::clone(&state);
     let launch_state = Arc::clone(&state);
     let undo_plan_state = Arc::clone(&state);
@@ -439,6 +471,39 @@ where
             (404, "The device or its apps query endpoint is absent."),
             (500, "The inventory store failed."),
             (502, "The device response was unavailable or malformed."),
+        ],
+    );
+    let device_state = with_error_schemas(
+        RouteEntry::from_route(
+            documented_route(
+                STATE_PATH,
+                "get_device_state",
+                "Get cached device state",
+                "Returns the typed daemon inventory snapshot and its freshness.",
+            ),
+            move |_ctx: &RequestContext, req: &mut Request| -> BoxFuture<'_, Response> {
+                let safety_error = browser_safety_error(req);
+                let target = path_target(req);
+                let state = Arc::clone(&device_state_state);
+                Box::pin(async move {
+                    if let Some(response) = safety_error {
+                        return response;
+                    }
+                    match target {
+                        Some(target) => device_state_response(&state, &target),
+                        None => error_response(StatusCode::BAD_REQUEST, "missing_host"),
+                    }
+                })
+            },
+        )
+        .path_schema::<String>(&["host"])
+        .response_schema::<DeviceStateView>(200, "The cached typed device state."),
+        &[
+            (400, "The Host header or device path parameter is invalid."),
+            (403, "The request Origin is not trusted."),
+            (404, "The device is not present in the inventory."),
+            (500, "The inventory store or state failed."),
+            (503, "A state snapshot has not yet been observed."),
         ],
     );
     let undo_plan_route = with_error_schemas(
@@ -684,6 +749,7 @@ where
         .route_entry(info)
         .route_entry(active_app_route)
         .route_entry(apps)
+        .route_entry(device_state)
         .route_entry(undo_plan_route)
         .route_entry(undo_route)
         .route_entry(key)
@@ -695,6 +761,94 @@ where
                 .description("HTTP control and read routes for the local Roku inventory."),
         )
         .build()
+}
+
+fn installed_app_views(apps: &[zestroku_proto::InstalledApp]) -> Vec<InstalledAppView> {
+    apps.iter()
+        .map(|app| InstalledAppView {
+            id: app.id.clone(),
+            name: app.name.clone(),
+            app_type: app.app_type.clone(),
+            subtype: app.subtype.clone(),
+            version: app.version.clone(),
+        })
+        .collect()
+}
+
+fn installed_apps_view(host: &str, apps: &[zestroku_proto::InstalledApp]) -> InstalledAppsView {
+    InstalledAppsView {
+        host: host.to_owned(),
+        apps: installed_app_views(apps),
+    }
+}
+
+fn cached_apps_response(host: &str, state: InventoryStateView) -> Response {
+    match &state.snapshot.apps {
+        AppsSnapshot::Available(apps) => {
+            json_response(StatusCode::OK, &installed_apps_view(host, apps))
+        }
+        AppsSnapshot::TierRefused => error_response(StatusCode::FORBIDDEN, "tier_refused"),
+        AppsSnapshot::EndpointAbsent => {
+            error_response(StatusCode::NOT_FOUND, "apps_endpoint_not_found")
+        }
+        AppsSnapshot::UnknownForbidden => error_response(StatusCode::from_u16(502), "ecp_response"),
+    }
+}
+
+fn device_state_response<S: Store, T: Transport>(
+    state: &ApiState<S, T>,
+    raw_target: &str,
+) -> Response {
+    let target = match super::parse_device_target(raw_target) {
+        Some(target) => target,
+        None => return error_response(StatusCode::BAD_REQUEST, "invalid_device_target"),
+    };
+    match super::find_device(state, &target) {
+        Ok(Some(_)) => {}
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "device_not_found"),
+        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
+    }
+    let cached = match cached_inventory_state(state, &target.id) {
+        Ok(Some(cached)) => cached,
+        Ok(None) => {
+            return error_response(StatusCode::from_u16(503), "DEVICE_UNREACHABLE");
+        }
+        Err(()) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
+    };
+    json_response(StatusCode::OK, &device_state_view(cached))
+}
+
+fn device_state_view(state: InventoryStateView) -> DeviceStateView {
+    let snapshot = &state.snapshot;
+    let (apps, apps_status) = match &snapshot.apps {
+        AppsSnapshot::Available(apps) => (Some(installed_app_views(apps)), "available"),
+        AppsSnapshot::TierRefused => (None, "tier_refused"),
+        AppsSnapshot::EndpointAbsent => (None, "endpoint_absent"),
+        AppsSnapshot::UnknownForbidden => (None, "unknown_403"),
+    };
+    let (media_player_state, media_player_status) = match &snapshot.media_player {
+        MediaPlayerSnapshot::Available(player) => (Some(player.state.clone()), "available"),
+        MediaPlayerSnapshot::TierRefused => (None, "tier_refused"),
+        MediaPlayerSnapshot::EndpointAbsent => (None, "endpoint_absent"),
+        MediaPlayerSnapshot::UnknownForbidden => (None, "unknown_403"),
+    };
+    DeviceStateView {
+        host: snapshot.device.host.clone(),
+        model_name: snapshot.device.model_name.clone(),
+        model_number: snapshot.device.model_number.clone(),
+        software_version: snapshot.device.software_version.clone(),
+        is_tv: snapshot.device.is_tv,
+        access_tier: snapshot.observed_tier.as_str().to_owned(),
+        tv_active_channel: snapshot.tv_active_channel,
+        active_app_id: snapshot.active_app.app_id,
+        active_app_name: snapshot.active_app.name.clone(),
+        apps,
+        apps_status,
+        media_player_state,
+        media_player_status,
+        observed_at: snapshot.observed_at,
+        fresh: state.is_fresh,
+    }
 }
 
 async fn installed_apps<S: Store, T: Transport>(
@@ -710,6 +864,13 @@ async fn installed_apps<S: Store, T: Transport>(
         Ok(None) => return error_response(StatusCode::NOT_FOUND, "device_not_found"),
         Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
     };
+    let cached = match cached_inventory_state(state, &target.id) {
+        Ok(cached) => cached,
+        Err(()) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error"),
+    };
+    if let Some(cached) = cached.filter(|state| state.is_fresh) {
+        return cached_apps_response(&row.ip, cached);
+    }
     let device = super::device_for_gate(&row, &target);
     let response = match super::send_checked(state, &device, &query_apps()).await {
         Ok(response) => response,
@@ -738,22 +899,7 @@ async fn installed_apps<S: Store, T: Transport>(
         Err(_) => return error_response(StatusCode::from_u16(502), "malformed_apps"),
     };
 
-    json_response(
-        StatusCode::OK,
-        &InstalledAppsView {
-            host: device.host,
-            apps: apps
-                .into_iter()
-                .map(|app| InstalledAppView {
-                    id: app.id,
-                    name: app.name,
-                    app_type: app.app_type,
-                    subtype: app.subtype,
-                    version: app.version,
-                })
-                .collect(),
-        },
-    )
+    json_response(StatusCode::OK, &installed_apps_view(&device.host, &apps))
 }
 
 async fn resolve_undo_plan<S: Store, T: Transport>(

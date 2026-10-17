@@ -331,10 +331,17 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
         tier: zestroku_sim::SimTier::Permissive,
     });
     let unreachable_target = format!("127.0.0.1:{}", unreachable_sim.port());
+    let malformed_sim = zestroku_sim::SimDevice::start(zestroku_sim::SimConfig {
+        kind: zestroku_sim::DeviceKind::Express,
+        tier: zestroku_sim::SimTier::Permissive,
+    });
+    let malformed_target = format!("127.0.0.1:{}", malformed_sim.port());
+    malformed_sim.set_malformed_apps(true);
     let dir = tempfile::tempdir().expect("tempdir");
     let db = dir.path().join("actions.db");
     seed_mutation_device(&db, &target, "SIM-1234X");
     seed_device(&db, &unreachable_target, "SIM-DEAD");
+    seed_device(&db, &malformed_target, "SIM-MALFORMED");
     unreachable_sim.suspend();
 
     let daemon_port = free_port();
@@ -367,6 +374,7 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
         "info",
         "active_app",
         "apps",
+        "get_device_state",
         "recent_actions",
         "key",
         "launch",
@@ -382,7 +390,7 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
         !devices_schema.as_object().unwrap().contains_key("required"),
         "{devices_schema}"
     );
-    for name in ["info", "active_app", "apps"] {
+    for name in ["info", "active_app", "apps", "get_device_state"] {
         let schema = &listed_tool(&list, name)["inputSchema"];
         assert_eq!(schema["type"], "object", "{name}");
         assert_eq!(
@@ -398,6 +406,29 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
         assert_eq!(schema["required"], json!(["host"]), "{name}");
         assert_eq!(schema["additionalProperties"], false, "{name}");
     }
+
+    s.send(&json!({"jsonrpc": "2.0", "id": 22, "method": "resources/list", "params": {}}));
+    let resources = s.response(22);
+    assert!(
+        resources["result"]["resources"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["uri"] == "roku://devices")),
+        "{resources}"
+    );
+    s.send(&json!({
+        "jsonrpc": "2.0", "id": 23, "method": "resources/templates/list", "params": {}
+    }));
+    let templates = s.response(23);
+    assert!(
+        templates["result"]["resourceTemplates"]
+            .as_array()
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["uriTemplate"] == "roku://devices/{id}")
+            }),
+        "{templates}"
+    );
 
     let echo = s.call(3, "echo", json!({"text": "hello \u{2014} roku"}));
     assert!(!is_error(&echo), "{echo}");
@@ -417,6 +448,29 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
         .expect("seeded simulator in daemon inventory");
     assert_eq!(listed["host"], "127.0.0.1");
     assert_eq!(listed["access_tier"], "permissive");
+
+    let mut read_id = 30_u64;
+    let deadline = Instant::now() + Duration::from_secs(15); // three 5-second poll-loop ticks
+    let initial_state = loop {
+        let state = s.call(read_id, "get_device_state", json!({"host": target}));
+        read_id += 1;
+        if !is_error(&state) {
+            let result = result_json(&state);
+            if result["fresh"] == true {
+                break result;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon poller did not produce a fresh device-state snapshot"
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(initial_state["model_number"], "SIMX1");
+    assert_eq!(initial_state["active_app_name"], "Roku");
+    assert_eq!(initial_state["apps_status"], "available");
+    assert_eq!(initial_state["media_player_status"], "available");
+    let before_cached_reads = sim.received_requests().len();
 
     let info = s.call(5, "info", json!({"host": target}));
     assert!(!is_error(&info), "{info}");
@@ -441,27 +495,80 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
             .any(|app| app["id"] == "1001" && app["name"] == "Streaming One"),
         "{apps}"
     );
+
+    let state = s.call(read_id, "get_device_state", json!({"host": target}));
+    read_id += 1;
+    assert!(!is_error(&state), "{state}");
+    assert_eq!(result_json(&state)["fresh"], true);
+
+    s.send(&json!({
+        "jsonrpc": "2.0", "id": read_id, "method": "resources/read",
+        "params": {"uri": "roku://devices"}
+    }));
+    let inventory_resource = s.response(read_id);
+    read_id += 1;
+    let inventory_text = inventory_resource["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("inventory resource JSON text");
+    let inventory_json: Value =
+        serde_json::from_str(inventory_text).expect("inventory resource JSON");
+    assert!(
+        inventory_json
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|device| device["model_number"] == "SIM-1234X"),
+        "{inventory_json}"
+    );
+
+    let state_uri = format!("roku://devices/{target}");
+    s.send(&json!({
+        "jsonrpc": "2.0", "id": read_id, "method": "resources/read",
+        "params": {"uri": state_uri}
+    }));
+    let state_resource = s.response(read_id);
+    let state_text = state_resource["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("device-state resource JSON text");
+    let state_json: Value = serde_json::from_str(state_text).expect("device-state resource JSON");
+    assert_eq!(state_json["model_number"], "SIMX1");
+    assert_eq!(state_json["fresh"], true);
+    assert_eq!(
+        sim.received_requests().len(),
+        before_cached_reads,
+        "fresh daemon-backed reads and resources must not issue ECP round trips"
+    );
+
     let read_requests = sim.received_requests();
     assert!(
         read_requests.iter().all(|(method, _)| method == "GET"),
-        "MCP read tools must not issue POST requests: {read_requests:?}"
+        "MCP reads must not issue POST requests: {read_requests:?}"
     );
-
-    for path in ["/query/device-info", "/query/active-app", "/query/apps"] {
+    for path in [
+        "/query/device-info",
+        "/query/active-app",
+        "/query/apps",
+        "/query/media-player",
+        "/query/tv-active-channel",
+    ] {
         assert!(
             read_requests
                 .iter()
                 .any(|(method, request_uri)| method == "GET" && request_uri.as_str() == path),
-            "expected daemon-routed GET {path}; observed {read_requests:?}"
+            "expected daemon poll GET {path}; observed {read_requests:?}"
         );
     }
-
     let before_unknown = sim.received_requests().len();
     let unknown = s.call(8, "info", json!({"host": "192.0.2.99:8060"}));
-    assert!(
-        tool_error_text(&unknown).contains("device_not_found"),
-        "{unknown}"
+    let unknown_error: Value =
+        serde_json::from_str(tool_error_text(&unknown)).expect("structured unknown-device JSON");
+    assert_eq!(unknown_error["error"], "device_not_found");
+    assert_eq!(unknown_error["code"], "UNKNOWN_DEVICE");
+    assert_eq!(
+        unknown_error["hint"],
+        "name a known device id, alias, or host:port (see `devices`)"
     );
+    assert!(unknown_error["suggestions"].as_array().unwrap().is_empty());
     assert_eq!(sim.received_requests().len(), before_unknown);
 
     let before_extra = sim.received_requests().len();
@@ -481,8 +588,7 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
     );
     assert_eq!(sim.received_requests().len(), before_extra);
 
-    sim.set_malformed_apps(true);
-    let malformed = s.call(10, "apps", json!({"host": target}));
+    let malformed = s.call(10, "apps", json!({"host": malformed_target}));
     assert!(
         tool_error_text(&malformed).contains("malformed_apps"),
         "{malformed}"
@@ -501,11 +607,13 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
     );
 
     // Omitting `confirm` is refused by the tool's own schema before the gate.
-    let missing = s.call(12, "key", json!({"host": "127.0.0.1", "target": "Home"}));
+    let before_missing = sim.received_requests().len();
+    let missing = s.call(12, "key", json!({"host": target, "target": "Home"}));
     assert!(
         is_error(&missing),
         "missing confirm must be refused: {missing}"
     );
+    assert_eq!(sim.received_requests().len(), before_missing);
 
     // An arbitrary token reaches the gate: refused AND audited.
     let refused = s.call(
@@ -523,9 +631,79 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
     );
 
     let audit = s.call(14, "recent_actions", json!({}));
-    let audit_text = audit["result"]["content"][0]["text"].as_str().unwrap();
+    let audit_text = audit["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert!(audit_text.contains("denied"), "{audit_text}");
-
+    assert!(audit_text.contains("client=mcp-stdio"), "{audit_text}");
+    assert!(audit_text.contains("surface=key"), "{audit_text}");
+    assert!(
+        audit_text.contains("result=\"CONFIRMATION_REQUIRED\""),
+        "{audit_text}"
+    );
+    assert!(audit_text.contains("before="), "{audit_text}");
+    let before_invalid_launch = sim.received_requests().len();
+    let invalid_launch = s.call(
+        24,
+        "launch",
+        json!({"host": target, "target": "netflix", "confirm": "unused-token"}),
+    );
+    assert!(is_error(&invalid_launch), "{invalid_launch}");
+    assert!(
+        tool_error_text(&invalid_launch).contains("app id must be a number"),
+        "{invalid_launch}"
+    );
+    let non_string_confirm = s.call(
+        25,
+        "key",
+        json!({"host": target, "target": "Home", "confirm": true}),
+    );
+    assert!(is_error(&non_string_confirm), "{non_string_confirm}");
+    let after_invalid_arguments = s.call(26, "recent_actions", json!({}));
+    let after_invalid_text = after_invalid_arguments["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert_eq!(after_invalid_text, audit_text);
+    assert_eq!(sim.received_requests().len(), before_invalid_launch);
+    let before_whitespace = sim.received_requests();
+    let whitespace_token = s.call(
+        27,
+        "key",
+        json!({"host": target, "target": "Home", "confirm": "   "}),
+    );
+    assert!(is_error(&whitespace_token), "{whitespace_token}");
+    assert!(
+        tool_error_text(&whitespace_token).contains("CONFIRMATION_REQUIRED"),
+        "{whitespace_token}"
+    );
+    let whitespace_audit = s.call(28, "recent_actions", json!({}));
+    let whitespace_audit_text = whitespace_audit["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        whitespace_audit_text.matches("decision=denied").count(),
+        audit_text.matches("decision=denied").count() + 1,
+        "{whitespace_audit_text}"
+    );
+    let after_whitespace = sim.received_requests();
+    assert!(
+        after_whitespace.len() >= before_whitespace.len(),
+        "the before-state read must remain observable: {after_whitespace:?}"
+    );
+    let new_requests = &after_whitespace[before_whitespace.len()..];
+    assert!(
+        new_requests
+            .iter()
+            .all(|(method, _)| method == "GET"),
+        "a refused whitespace token must not dispatch an ECP mutation: {new_requests:?}"
+    );
+    assert!(
+        new_requests
+            .iter()
+            .any(|(method, path)| method == "GET" && path == "/query/active-app"),
+        "mutation audit must retain the before-state read: {new_requests:?}"
+    );
     let before_shutdown = sim.received_requests().len();
     daemon.stop();
     for (id, name, arguments) in [
@@ -533,11 +711,34 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
         (16, "info", json!({"host": target})),
         (17, "active_app", json!({"host": target})),
         (18, "apps", json!({"host": target})),
+        (19, "get_device_state", json!({"host": target})),
     ] {
         let unavailable = s.call(id, name, arguments);
-        assert!(
-            tool_error_text(&unavailable).contains("daemon_unavailable"),
+        let error: Value = serde_json::from_str(tool_error_text(&unavailable))
+            .expect("daemon-unavailable semantic error JSON");
+        assert_eq!(
+            error["error"], "daemon_unavailable",
             "{name}: {unavailable}"
+        );
+        assert_eq!(error["code"], "DAEMON_UNAVAILABLE", "{name}: {unavailable}");
+        assert_eq!(
+            error["hint"], "start the daemon or pass --direct for diagnosis",
+            "{name}: {unavailable}"
+        );
+    }
+    for (id, uri) in [
+        (20, "roku://devices".to_owned()),
+        (21, format!("roku://devices/{target}")),
+    ] {
+        s.send(&json!({
+            "jsonrpc": "2.0", "id": id, "method": "resources/read",
+            "params": {"uri": uri}
+        }));
+        let unavailable = s.response(id);
+        assert!(is_error(&unavailable), "{unavailable}");
+        assert!(
+            unavailable.to_string().contains("DAEMON_UNAVAILABLE"),
+            "{unavailable}"
         );
     }
     assert_eq!(sim.received_requests().len(), before_shutdown);
@@ -943,6 +1144,139 @@ fn mcp_undo_last_uses_launch_confirmation_and_records_the_restore() {
     assert!(audit_text.contains("surface=undo"), "{audit_text}");
     assert!(audit_text.contains("decision=denied"), "{audit_text}");
     assert!(audit_text.contains("decision=approved"), "{audit_text}");
+}
+
+#[test]
+fn mcp_preserves_missing_app_undo_plan_error_without_post() {
+    use zestroku_core::store::ActionRow;
+    use zestroku_core::store::Store;
+    use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
+
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let target = format!("127.0.0.1:{}", sim.port());
+    let dir = tempfile::tempdir().expect("temporary missing-app directory");
+    let db = dir.path().join("actions.db");
+    seed_mutation_device(&db, &target, "SIM-1234X");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs() as i64;
+    let before_state =
+        zestroku_core::tier::marked_before_app_state("fixture", &target, Some(9999), "Removed App");
+    SqliteStore::open(&db)
+        .expect("open missing-app action store")
+        .insert_action(&ActionRow {
+            id: 0,
+            at: now,
+            client: "mcp-stdio".to_owned(),
+            surface: "launch".to_owned(),
+            intent: format!("launch {target}"),
+            decision: "approved".to_owned(),
+            result: "completed".to_owned(),
+            before_state,
+        })
+        .expect("seed completed action for an absent prior app");
+
+    let daemon_port = free_port();
+    let _daemon = Daemon::start(&db, daemon_port);
+    let mut session = Session::start(&db, &format!("http://127.0.0.1:{daemon_port}"));
+    initialize_session(&mut session);
+
+    let missing_app = session.call(2, "undo_last", json!({"host": target}));
+    assert!(is_error(&missing_app), "{missing_app}");
+    let error: Value =
+        serde_json::from_str(tool_error_text(&missing_app)).expect("structured tool error JSON");
+    assert_eq!(error["error"], "undo_app_not_installed");
+    assert_eq!(error["code"], "APP_NOT_INSTALLED");
+    assert_eq!(error["hint"], "use an installed app id from `apps`");
+    assert!(error["suggestions"].as_array().unwrap().is_empty());
+    assert_eq!(sim.launch_count(), 0);
+    assert!(
+        sim.received_requests()
+            .iter()
+            .all(|(method, _)| method == "GET"),
+        "a missing-app undo plan must not issue a mutation: {:?}",
+        sim.received_requests()
+    );
+}
+
+#[test]
+fn mcp_limited_tier_refusal_is_audited_without_device_post() {
+    use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
+
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Limited,
+    });
+    let target = format!("127.0.0.1:{}", sim.port());
+    let dir = tempfile::tempdir().expect("temporary limited-tier directory");
+    let db = dir.path().join("actions.db");
+    seed_device(&db, &target, "SIM-LIMITED");
+
+    let daemon_port = free_port();
+    let _daemon = Daemon::start(&db, daemon_port);
+    let mut session = Session::start(&db, &format!("http://127.0.0.1:{daemon_port}"));
+    initialize_session(&mut session);
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut id = 2_u64;
+    loop {
+        let state = session.call(id, "get_device_state", json!({"host": target}));
+        id += 1;
+        if !is_error(&state) {
+            let state = result_json(&state);
+            if state["fresh"] == true && state["access_tier"] == "limited" {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not publish the Limited-tier poll snapshot"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let requests_before = sim.received_requests();
+    let refused = session.call(
+        id,
+        "key",
+        json!({"host": target, "target": "Home", "confirm": "not-a-token"}),
+    );
+    assert!(is_error(&refused), "{refused}");
+    let error: Value =
+        serde_json::from_str(tool_error_text(&refused)).expect("structured tier error JSON");
+    assert_eq!(error["error"], "tier_refused");
+    assert_eq!(error["code"], "TIER_REFUSED");
+    assert_eq!(error["hint"], "this operation needs a Permissive device");
+    let requests_after = sim.received_requests();
+    assert!(requests_after.len() >= requests_before.len());
+    let new_requests = &requests_after[requests_before.len()..];
+    assert!(
+        new_requests
+            .iter()
+            .all(|(method, _)| method == "GET"),
+        "Limited-tier refusal must not dispatch a device mutation: {new_requests:?}"
+    );
+    assert!(
+        new_requests
+            .iter()
+            .any(|(method, path)| method == "GET" && path == "/query/active-app"),
+        "the daemon must keep the audited before-state snapshot: {new_requests:?}"
+    );
+    assert_eq!(sim.launch_count(), 0);
+
+    let rows = SqliteStore::open(&db)
+        .expect("open limited-tier action store")
+        .list_actions()
+        .expect("read limited-tier action store");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].client, "mcp-stdio");
+    assert_eq!(rows[0].surface, "key");
+    assert_eq!(rows[0].decision, "denied");
+    assert_eq!(rows[0].result, "TIER_REFUSED");
 }
 
 #[test]

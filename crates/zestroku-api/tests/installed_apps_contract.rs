@@ -11,7 +11,7 @@ use fastapi::{OpenApi, TestClient, core::Method as HttpMethod};
 use serde_json::Value;
 use zestroku_api::build_app;
 use zestroku_proto::Method as EcpMethod;
-use zestroku_types::AccessTier;
+use zestroku_types::{AccessTier, ErrorCode};
 
 const LIMITED_BODY: &str = "ECP command not allowed in Limited mode.";
 
@@ -47,6 +47,7 @@ fn openapi_matches_registered_read_routes_and_apps_response_schema() {
         (HttpMethod::Get, "/v1/devices/{host}/active-app"),
         (HttpMethod::Get, "/v1/devices/{host}/apps"),
         (HttpMethod::Get, "/v1/devices/{host}/info"),
+        (HttpMethod::Get, "/v1/devices/{host}/state"),
         (HttpMethod::Post, "/v1/devices/{host}/key"),
         (HttpMethod::Post, "/v1/devices/{host}/launch"),
     ];
@@ -100,6 +101,30 @@ fn openapi_matches_registered_read_routes_and_apps_response_schema() {
             "{field}"
         );
     }
+    let state_operation = &spec["paths"]["/v1/devices/{host}/state"]["get"];
+    let state_schema = resolve_schema(
+        &spec,
+        &state_operation["responses"]["200"]["content"]["application/json"]["schema"],
+    );
+    assert_eq!(state_schema["properties"]["host"]["type"], "string");
+    assert_eq!(
+        state_schema["properties"]["active_app_name"]["type"],
+        "string"
+    );
+    assert_eq!(state_schema["properties"]["is_tv"]["type"], "boolean");
+    assert_eq!(state_schema["properties"]["fresh"]["type"], "boolean");
+    assert_eq!(state_schema["properties"]["observed_at"]["type"], "integer");
+
+    let state_error_schema = resolve_schema(
+        &spec,
+        &state_operation["responses"]["503"]["content"]["application/json"]["schema"],
+    );
+    for field in ["error", "code", "detail", "hint", "suggestions"] {
+        assert!(
+            state_error_schema["properties"].get(field).is_some(),
+            "state error schema is missing {field}"
+        );
+    }
     for status in ["400", "403", "404", "500", "502"] {
         let error_schema = resolve_schema(
             &spec,
@@ -132,7 +157,14 @@ fn malformed_apps_xml_and_unknown_targets_have_distinct_errors() {
         .send();
     assert_eq!(unknown.status().as_u16(), 404);
     assert_eq!(error_code(&unknown), "device_not_found");
-
+    let body: Value = serde_json::from_str(unknown.text()).expect("semantic error JSON");
+    assert_eq!(body["code"], ErrorCode::UnknownDevice.as_str());
+    assert_eq!(body["hint"], ErrorCode::UnknownDevice.hint());
+    assert_eq!(
+        body["detail"],
+        "No matching device is present in the daemon inventory."
+    );
+    assert!(body["suggestions"].as_array().unwrap().is_empty());
     let calls = transport.calls();
     assert_eq!(calls.len(), 1, "unknown targets must not reach ECP");
     assert_eq!(calls[0].0, HOST);
