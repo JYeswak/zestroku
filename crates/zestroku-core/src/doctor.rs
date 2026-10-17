@@ -202,7 +202,8 @@ pub struct Ctx<'a, T: Transport> {
 }
 
 /// Extra checks run after the built-ins (test seam for the read-only gate).
-pub type ExtraCheck<T> = fn(&Ctx<T>) -> Finding;
+/// Higher-ranked: any borrowing lifetime unifies at the call site.
+pub type ExtraCheck<T> = for<'x> fn(&'x Ctx<'x, T>) -> Finding;
 
 fn finding(
     id: &'static str,
