@@ -219,6 +219,47 @@ impl SqliteStore {
     pub fn close(mut self) -> Result<(), StoreError> {
         self.conn.close_sync().map_err(backend)
     }
+    /// Write a consistent snapshot of the live database to `dest`.
+    ///
+    /// Uses `VACUUM INTO`: driver-supported, runs on the live connection,
+    /// and produces a de-fragmented consistent copy (no stock copy client,
+    /// no WAL fragments). `dest` is overwritten when present; its parent
+    /// directory must exist.
+    pub fn backup_to(&self, dest: &Path) -> Result<(), StoreError> {
+        let escaped = dest.to_string_lossy().replace('\'', "''");
+        self.conn
+            .execute_sync(&format!("VACUUM INTO '{escaped}'"))
+            .map_err(backend)
+    }
+
+    /// Atomically replace the live database at `live` with the backup at
+    /// `backup`, for upgrade rollback and recovery (1r4.9).
+    ///
+    /// The caller must have closed every handle on `live` (back up first,
+    /// stop the daemon through the resident route). Validation first: the
+    /// backup must carry a schema ledger whose max version this binary
+    /// supports — a newer-schema backup is refused, never migrated in
+    /// place and never silently discarded (1r4.7 refusal, extended to
+    /// restore). Promotion is copy-to-temp plus rename, so an interrupted
+    /// restore leaves `live` untouched: recover by retrying the restore or
+    /// keeping the pre-upgrade backup.
+    pub fn restore_from(backup: &Path, live: &Path) -> Result<(), StoreError> {
+        let max = applied_schema_max(backup)?;
+        let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
+        if max > supported {
+            return Err(backend(format!(
+                "backup schema version {max} is newer than this binary supports \
+                 ({supported}); refusing restore (restore with a newer binary)"
+            )));
+        }
+        let parent = live
+            .parent()
+            .ok_or_else(|| backend("live path has no parent"))?;
+        let tmp = parent.join(".restore.tmp");
+        std::fs::copy(backup, &tmp).map_err(|e| backend(format!("copy backup to staging: {e}")))?;
+        std::fs::rename(&tmp, live).map_err(|e| backend(format!("promote staged restore: {e}")))?;
+        Ok(())
+    }
 
     fn migrate(&self, migrations: &[Migration]) -> Result<(), StoreError> {
         self.conn
@@ -340,6 +381,22 @@ fn int(row: &Row, i: usize) -> Result<i64, StoreError> {
     row.get(i)
         .and_then(SqliteValue::as_integer)
         .ok_or_else(|| backend(format!("column {i} is not INTEGER")))
+}
+/// Max applied schema version in the database at `path`, read without
+/// migrating (restore validation must never mutate the backup). A missing
+/// ledger means the file is not a zestroku store: refuse, do not assume.
+fn applied_schema_max(path: &Path) -> Result<i64, StoreError> {
+    let conn = AsyncConnection::open_sync(path.to_string_lossy().into_owned()).map_err(backend)?;
+    let rows = conn
+        .query_with_params_sync("SELECT version FROM schema_migrations", &[])
+        .map_err(|e| backend(format!("backup has no schema ledger: {e}")))?;
+    rows.iter()
+        .map(|r| {
+            r.get(0)
+                .and_then(SqliteValue::as_integer)
+                .ok_or_else(|| backend("schema ledger version is not INTEGER"))
+        })
+        .try_fold(0i64, |max, v| v.map(|v| max.max(v)))
 }
 
 fn s(v: &str) -> SqliteValue {
