@@ -25,9 +25,19 @@ impl Drop for Daemon {
 }
 
 fn start(db: &std::path::Path, port: u16) -> Daemon {
+    let targets = db.with_extension("targets.toml");
+    std::fs::write(&targets, "target = []\n").expect("write isolated empty startup targets");
     let child = Command::new(env!("CARGO_BIN_EXE_zestroku"))
         .env("ZESTROKU_DB", db)
-        .args(["serve", "--bind", &format!("127.0.0.1:{port}")])
+        .env_remove("ZESTROKU_TARGETS")
+        .args([
+            "serve",
+            "--bind",
+            &format!("127.0.0.1:{port}"),
+            "--no-ssdp",
+            "--targets",
+        ])
+        .arg(&targets)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
@@ -538,7 +548,17 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
     seed_sim_device(&db, &target);
 
     let port = free_port();
-    let mut daemon = start(&db, port);
+    let targets = write_targets(dir.path(), sim.port());
+    let mut daemon = start_with_targets(&db, port, &targets);
+    let startup_requests = sim.received_requests();
+    let startup_device_info_reads = startup_requests
+        .iter()
+        .filter(|(method, path)| method == "GET" && path == "/query/device-info")
+        .count();
+    assert!(
+        startup_device_info_reads > 0,
+        "startup discovery probes missing: {startup_requests:?}"
+    );
     let host = format!("127.0.0.1:{port}");
     let stream = TcpStream::connect(("127.0.0.1", port)).expect("connect daemon");
     stream
@@ -568,9 +588,10 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
     )
     .expect("send partial info request");
 
-    assert!(
-        sim.received_requests().is_empty(),
-        "the incomplete HTTP request must not dispatch to the simulator"
+    assert_eq!(
+        sim.received_requests(),
+        startup_requests,
+        "the incomplete HTTP request must not dispatch beyond startup discovery"
     );
 
     let pid = daemon.0.id().to_string();
@@ -661,12 +682,14 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
     assert_eq!(status, 200, "{response_text}");
     assert!(body.contains("SIMX1"), "{body}");
 
-    assert!(
-        simulator_requests
-            .iter()
-            .any(|(method, path)| method == "GET" && path == "/query/device-info"),
-        "the admitted info read must reach the loopback simulator: {:?}",
-        simulator_requests
+    let completed_info_reads = simulator_requests
+        .iter()
+        .filter(|(method, path)| method == "GET" && path == "/query/device-info")
+        .count();
+    assert_eq!(
+        completed_info_reads,
+        startup_device_info_reads + 1,
+        "the admitted info read must add one real simulator request beyond startup probes: {simulator_requests:?}"
     );
 
     let exit_deadline = Instant::now() + Duration::from_secs(10);
