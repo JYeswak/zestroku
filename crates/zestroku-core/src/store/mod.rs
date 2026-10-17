@@ -445,7 +445,9 @@ fn checkpoint_live(live: &Path) -> Result<(), StoreError> {
     }
     let conn = AsyncConnection::open_sync(live.to_string_lossy().into_owned())
         .map_err(|e| backend(format!("cannot open live database for checkpoint: {e}")))?;
-    let _ = conn.execute_sync("PRAGMA wal_checkpoint(TRUNCATE)");
+    // PRAGMA returns a result row, so it must go through the query path;
+    // execute_sync does not run it (observed: sidecars survive).
+    let _ = conn.query_with_params_sync("PRAGMA wal_checkpoint(TRUNCATE)", &[]);
     Ok(())
 }
 
