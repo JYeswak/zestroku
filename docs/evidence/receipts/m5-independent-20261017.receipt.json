@@ -1,0 +1,18 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_2b14c1026b6d3e9ff86f92a1c9e0d191b0b07a51a41f8d4459b9f2379497fe96",
+ "limitations": [
+  "Independent actual target1/workspace225/strictClippy/fullfmt remote0 on frozen5c. Current-tip CI, physical devices and full parent drain acceptance are separate. TQ already closed08y; no duplicate credit."
+ ],
+ "operation": "m5-independent-original-acceptance",
+ "parameters": {
+  "base": "5c3738d5f33dbaa05cf8f561af6ff95c0a72618b",
+  "result_path": "docs/evidence/m5-independent-20261017.json"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 60586,
+  "sha256": "72da2968e9513444598c09308f6e14024ed215e8913fa30cda6a2b10f5938e9f"
+ }
+}
