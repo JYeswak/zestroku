@@ -1,0 +1,17 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_3ea91d3f25baff22dcc05fac8c83143b42e5471fb3280d1e35da420d411047dc",
+ "limitations": [
+  "Projection of actual decisive output, not raw fullstream. This GREEN is an actual new admitted repeat; the prior unqualified GREEN stays unqualified. Old RED is independently reported original1080 evidence, not newly executed here. No wholeworkspace/currentHEAD/live/device/release proof; source7ea only. Requires original nonauthor finalgrade, author does not close."
+ ],
+ "operation": "zestroku-owner-local-usability-1r4.6",
+ "parameters": {
+  "observed_projection": "{\"source\":\"7ea5643567a7c4e9f667303e9a7d29a3d5441e3f\",\"command\":\"RCH_WORKER=contabo-1 RCH_REQUIRE_REMOTE=1 nice -n 10 rch exec --base 7ea5643567a7c4e9f667303e9a7d29a3d5441e3f --clean-overlay --no-overlay -- cargo test -j 2 --locked -p zestroku-cli --test cli_usability --test info_tier\",\"admission\":{\"exit\":0,\"free_pct\":15.711988028869259,\"free_bytes\":156281266176},\"worker\":\"contabo-1\",\"remote_exit\":0,\"remote_ms\":6949,\"cli_usability\":\"16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\",\"info_tier\":\"6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\",\"privacy_case\":\"ambiguous_mutation_audit_never_persists_the_confirmation_secret ... ok\",\"tree\":\"5dc7a8eeb029e3984887ec11b80c3773f74329af\",\"overlay_fingerprint\":\"fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195\",\"observed_at\":\"2026-10-17T13:49:16.220341Z\",\"prior_negative\":\"Independent TurquoiseMaple nativecomment1080 on SAME7ea source with only main.rs oldargs.join overlay: expectedpersistedintent-secretassertionRED101 afterSBH0. Preserved, not rerun to confirm.\"}"
+ },
+ "producer": "rch/privacy-admitted-green",
+ "result_ref": {
+  "bytes": 1051,
+  "sha256": "798639e1615c8739f4454a16a53202a6e9042d2db0f85bf183d21f95f03fad98"
+ }
+}
