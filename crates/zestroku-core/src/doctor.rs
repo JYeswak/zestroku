@@ -637,7 +637,7 @@ pub fn check_lan_policy(
 /// check can mutate, so concurrent daemon activity is never misattributed
 /// to doctor. When the store itself is unreadable, the root finding carries
 /// the failure and store-dependent checks Skip (prerequisites skip, not fail).
-pub async fn run_checked<T: Transport>(ctx: &Ctx<T>, extra: &[ExtraCheck<T>]) -> Vec<Finding> {
+pub async fn run_checked<T: Transport>(ctx: &Ctx<'_, T>, extra: &[ExtraCheck<T>]) -> Vec<Finding> {
     let view = ReadOnly(ctx.store);
     let store = &view as &dyn Store;
     let inner = Ctx {
