@@ -1,0 +1,23 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_7b4bb2643417095907a14a86e6330e176c00635a102eb05cf639cdea3209bd56",
+ "limitations": [
+  "Admitted warm j1 SIGTERM1/workspace225/strictClippy all0. Pool growth76073KiB; no cold paired comparison/performance win. C4 disk-warning and memory100 retained; no fleet recovery, cleanup or own bead close."
+ ],
+ "operation": "rch-original-j1-proof-batch-growth",
+ "parameters": {
+  "base": "5c3738d5f33dbaa05cf8f561af6ff95c0a72618b",
+  "bead": "zestroku-zestroku-doctrine-a0h.13",
+  "mode": "clean-overlay-no-overlay",
+  "policy_comment": "297",
+  "policy_strengthened": "2026-10-16T17:57",
+  "result_path": "docs/evidence/rch-j1-batch-20261017.json",
+  "worker": "contabo-1"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 130511,
+  "sha256": "97ffeeacf98b3e89fddb07dade6b3358196747f809bed6323800e74f8a7fe7c7"
+ }
+}
