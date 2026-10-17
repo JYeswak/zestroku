@@ -127,6 +127,9 @@ pub fn authorize_mutation_at<S: Store + ?Sized>(
     policy: &Policy,
     now: i64,
 ) -> Result<i64, MutationError> {
+    if !is_mutation(command) {
+        return Err(MutationError::NotMutation);
+    }
     let token = token.filter(|candidate| !candidate.trim().is_empty());
     let expected_client = ClientPrincipal::parse(context.client);
     let (token_hash, grant) = match (expected_client, token) {
@@ -160,6 +163,10 @@ pub fn authorize_mutation_at<S: Store + ?Sized>(
         let action_id = insert_action(store, &audit_context, "denied", POLICY_DENIED)?;
         return Err(MutationError::PolicyDenied { action_id });
     }
+    let Some(verb) = Policy::verb_of(&command.path) else {
+        let action_id = insert_action(store, &audit_context, "denied", POLICY_DENIED)?;
+        return Err(MutationError::PolicyDenied { action_id });
+    };
     if token.is_none() {
         let action_id = insert_action(store, &audit_context, "denied", CONFIRMATION_REQUIRED)?;
         return Err(MutationError::ConfirmationRequired { action_id });
@@ -176,7 +183,6 @@ pub fn authorize_mutation_at<S: Store + ?Sized>(
     // Shared owner-policy choke (o0r): allowlist, then rate budget, both
     // before any token is consumed. The client key comes from the matching
     // stored grant, not from the frontend label alone.
-    let verb = Policy::verb_of(&command.path).unwrap_or("");
     if !policy.allows(client.as_str(), verb) {
         let action_id = insert_action(store, &audit_context, "denied", POLICY_DENIED)?;
         return Err(MutationError::PolicyDenied { action_id });
