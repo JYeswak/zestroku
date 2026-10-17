@@ -1,0 +1,19 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_e61d85bb6c4715e84422e9b77137ed8fd6a79dcdeae712c625213071f7715819",
+ "limitations": [
+  "Full core suite has a current policy_hits failure; review is REWORK, not acceptance"
+ ],
+ "operation": "store-schema-independent-review",
+ "parameters": {
+  "base": "64bfa6c8457e7706097335ec6f8d984339ffda77",
+  "bead": "zestroku-owner-local-usability-1r4.7",
+  "result_path": "docs/evidence/store-schema-independent-review-20261017.json"
+ },
+ "producer": "BeigeLeopard",
+ "result_ref": {
+  "bytes": 3056,
+  "sha256": "67f3c2874d633325d918c467c2786c246bafcd64caa9f4f1a31723e677b92067"
+ }
+}

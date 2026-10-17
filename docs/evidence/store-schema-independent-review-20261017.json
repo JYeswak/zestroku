@@ -1,0 +1,64 @@
+{
+  "bead": "zestroku-owner-local-usability-1r4.7",
+  "reviewer": "BeigeLeopard",
+  "source": {
+    "base": "64bfa6c8457e7706097335ec6f8d984339ffda77",
+    "mode": "RCH --clean-overlay --no-overlay",
+    "worker": "contabo-1"
+  },
+  "positive_checks": [
+    {
+      "command": "cargo test -j 2 --locked -p zestroku-core --test store_roundtrip older_binary_refuses_newer_schema_without_changing_data",
+      "remote_exit": 0,
+      "result": "1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out",
+      "elapsed_ms": 11820
+    },
+    {
+      "command": "cargo test -j 2 --locked -p zestroku-core --test store_roundtrip",
+      "remote_exit": 0,
+      "result": "10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+      "elapsed_ms": 10743,
+      "covered": [
+        "older_binary_refuses_newer_schema_without_changing_data",
+        "migrations_are_append_only_and_upgrade_in_place",
+        "gapped_or_reordered_migration_list_is_rejected",
+        "identity_move_rolls_back_when_target_upsert_aborts",
+        "every_table_insert_query_update_delete_and_survives_reopen"
+      ]
+    },
+    {
+      "command": "cargo clippy -j 2 --locked -p zestroku-core --all-targets -- -D warnings",
+      "remote_exit": 0,
+      "result": "Finished dev profile; no warnings or errors",
+      "elapsed_ms": 314908
+    }
+  ],
+  "causal_negative": {
+    "producer": "JadeDuck",
+    "source_base": "5c3738d5f33dbaa05cf8f561af6ff95c0a72618b",
+    "test_overlay_fingerprint": "833b0aac31a3216e7a9af8f29e20d05f9308ccd2afc6a795764353bcb5918474",
+    "command": "cargo test -j 2 --locked -p zestroku-core --test store_roundtrip older_binary_refuses_newer_schema_without_changing_data -- --exact --nocapture",
+    "remote_exit": 101,
+    "result": "0 passed; 1 failed; test observed older-catalog open_with returning Ok(SqliteStore)",
+    "source_record": "docs/evidence/newer-schema-guard-20261017.json"
+  },
+  "review": {
+    "verdict": "REWORK",
+    "scope": "Independent schema refusal/round-trip and core Clippy verification; full core-suite acceptance remains incomplete",
+    "blocker": {
+      "source_base": "8fb71052fc869f80120e71f538ee25f1f95cdb46",
+      "command": "cargo test -j 2 --locked -p zestroku-core",
+      "remote_exit": 101,
+      "failing_test": "doctor::tests::policy_hit_gate_is_atomic_and_peek_preserves_token",
+      "error": "doctor.rs:1099:18: Backend(\"no such table: policy_hits\")",
+      "reported_at": "2026-10-17T05:07Z",
+      "source_record": "br comment by CapacityOriginalGrade on zestroku-owner-local-usability-1r4.7"
+    },
+    "limitations": [
+      "The exact-base store_roundtrip suite and strict core Clippy passed, but the full core suite has an actual unrelated policy_hits failure; this bead is not accepted.",
+      "No claim of a complete deployment rollback or resident-binary qualification.",
+      "No live Roku mutation or installation was performed.",
+      "The current whole-workspace M8 API/core authorization ABI mismatch is outside this store bead and remains a separate source blocker."
+    ]
+  }
+}
