@@ -1,0 +1,24 @@
+{
+ "authority": "live",
+ "confidence": "observed",
+ "evidence_id": "ev_cf6deef04753df81859414c193b706ce8e8c00037612ef72e7dc997b89ee38a4",
+ "limitations": [
+  "Author-run observation, not independent original-bead closure.",
+  "Historical source8e61, not current shared main or pending39056090531/Bae candidate.",
+  "Completed original workflow failed in its MCP test; no whole-workspace/release/C1 PASS.",
+  "Direct diagnostic reads only; no installed/resident/HTTP/MCP surface parity or TV/control/upgrade/recovery claim.",
+  "No mutation/approve/install commands issued; no wire-level ECP side-effect counter measured.",
+  "Raw device captures, unique device identifiers, target address and personal app list are not committed; this is a decisive factual projection, not an archived capture or self-contained live replay pack."
+ ],
+ "operation": "historical-mac-owner-readonly-smoke",
+ "parameters": {
+  "artifact_sha256": "1c46927b96f7e82f6f095ceab98dbb9ad44fd3c0b306cd71014d65ef044b704c",
+  "decisive_output": "{\"scope\":\"Actual explicitly historical Mac development executable and owner-device read-only smoke; not current-source qualification\",\"source\":{\"commit\":\"8e61e5dc9d5775420bb5acb7e0488635ad9fb4d1\",\"workflow_run\":39048480775,\"workflow_conclusion\":\"failure\",\"reported_version\":\"zestroku 0.1.0 8e61e5d\",\"binary_format\":\"Mach-O 64-bit executable arm64\",\"binary_sha256\":\"1c46927b96f7e82f6f095ceab98dbb9ad44fd3c0b306cd71014d65ef044b704c\"},\"executions\":[{\"argv_redacted\":[\"zestroku\",\"devices\",\"--mx\",\"1\",\"--json\"],\"explicit_environment_mode\":\"ZESTROKU_DIRECT=1, own scratch DB, ZESTROKU_TARGETS unset\",\"exit\":0,\"owner_express_observed\":true,\"owner_tv_observed\":false},{\"argv_redacted\":[\"zestroku\",\"info\",\"OWNER_EXPRESS\",\"--json\",\"--direct\"],\"target_withheld_for_privacy\":true,\"exit\":0,\"model\":\"Roku Express 4K+\",\"model_number\":\"3941X2\",\"software_version\":\"15.2.4\",\"access_tier\":\"permissive\",\"is_tv\":false},{\"argv_redacted\":[\"zestroku\",\"active-app\",\"OWNER_EXPRESS\",\"--json\",\"--direct\"],\"target_withheld_for_privacy\":true,\"exit\":0,\"active_app_has_id_and_name\":true},{\"argv_redacted\":[\"zestroku\",\"apps\",\"OWNER_EXPRESS\",\"--json\",\"--direct\"],\"target_withheld_for_privacy\":true,\"exit\":0,\"installed_apps_parsed\":37,\"observed_active_app_matches_installed_id_and_name\":true},{\"argv_redacted\":[\"zestroku\",\"info\",\"OWNER_EXPRESS\",\"--json\",\"--daemon\",\"http://127.0.0.1:1\"],\"exit\":1,\"stdout\":\"\",\"stderr\":\"zestroku: [DAEMON_UNAVAILABLE] daemon unavailable: Connection refused (os error 61)\\n\"},{\"argv_redacted\":[\"zestroku\",\"info\",\"OWNER_EXPRESS\",\"--json\",\"--direct\",\"--daemon\",\"http://127.0.0.1:1\"],\"exit\":2,\"stdout\":\"\",\"stderr\":\"zestroku: read: --direct conflicts with --daemon\\n\"}],\"limitations\":[\"Author-run observation, not independent original-bead closure.\",\"Historical source8e61, not current shared main or pending39056090531/Bae candidate.\",\"Completed original workflow failed in its MCP test; no whole-workspace/release/C1 PASS.\",\"Direct diagnostic reads only; no installed/resident/HTTP/MCP surface parity or TV/control/upgrade/recovery claim.\",\"No mutation/approve/install commands issued; no wire-level ECP side-effect counter measured.\",\"Raw device captures, unique device identifiers, target address and personal app list are not committed; this is a decisive factual projection, not an archived capture or self-contained live replay pack.\"]}",
+  "source_commit": "8e61e5dc9d5775420bb5acb7e0488635ad9fb4d1"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 2334,
+  "sha256": "62e8d134b465b75fff6b1b6c8e81549389063267eab4eaac2195693505d6c84f"
+ }
+}
