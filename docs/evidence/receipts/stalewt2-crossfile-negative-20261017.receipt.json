@@ -1,0 +1,20 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_c025ae028bb04270111c512af80041bf7a2900bf5ee34f70f99328bccf336066",
+ "limitations": [
+  "Direct invocation of exact installed guard against real staged Git indexes; not a real candidate commit callback. Attempted custom fixture-hook symlink was DCG-denied; no override or production hook/config/source mutation.",
+  "FAIL witness, not controller qualification or cl4 delivery. Isolated native git fixtures only; no copied project source or new published operating protocol. Baselines have pending labels and synthetic historical dates."
+ ],
+ "operation": "installed-stalewt2-global-multiplicity-counterexample",
+ "parameters": {
+  "decisive_output": "Control: one foreign removal/no readd -> exit1 naming landing b434e68f058668f7d891e1ea4f73e03586f9d9e1. Counterexample: same text removed from f.txt and g.txt, readded once h.txt, undeclared foreign bead -> actualexit0 expected1. Exact installed digest matches before/after and published source blob. Fresh mtimes, past fixture committer date disable rule(a) confound.",
+  "source_commit": "2c37ee3204",
+  "subject_sha256": "be13b7724a41961e0279ad40b86bbd97ee63e59ff9c1e2ca6010858cd3564d1e"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 833,
+  "sha256": "726dba6e6e0aab80fdc55eba3b064bf23cf285c02ab5fa0def5ac65bf6b52dbd"
+ }
+}
