@@ -143,7 +143,7 @@ pub fn authorize_mutation_at<S: Store + ?Sized>(
     };
     let stored_client = grant.as_ref().and_then(|grant| grant.client.as_deref());
     let grant_expiry = grant.as_ref().map(|grant| grant.expires_at);
-    let trusted_client = match (expected_client, stored_client.as_deref(), grant_expiry) {
+    let trusted_client = match (expected_client, stored_client, grant_expiry) {
         (Some(expected), Some(stored), Some(_)) if stored == expected.as_str() => Some(expected),
         _ => None,
     };

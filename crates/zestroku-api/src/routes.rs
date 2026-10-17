@@ -519,13 +519,15 @@ where
                     }
                     execute_mutation(
                         &state,
-                        &target,
-                        "undo",
-                        launch(plan.app_id),
-                        ClientPrincipal::parse(&body.client),
-                        body.confirm.as_deref(),
-                        Some((&plan.app_name, plan.app_id)),
-                        Some(plan.action_id),
+                        MutationInvocation {
+                            raw_target: &target,
+                            surface: "undo",
+                            command: launch(plan.app_id),
+                            expected_client: ClientPrincipal::parse(&body.client),
+                            confirmation: body.confirm.as_deref(),
+                            requested_app: Some((&plan.app_name, plan.app_id)),
+                            source_action_id: Some(plan.action_id),
+                        },
                     )
                     .await
                 })
@@ -580,13 +582,15 @@ where
                     };
                     execute_mutation(
                         &state,
-                        &target,
-                        "key",
-                        command,
-                        ClientPrincipal::parse(&body.client),
-                        body.confirm.as_deref(),
-                        None,
-                        None,
+                        MutationInvocation {
+                            raw_target: &target,
+                            surface: "key",
+                            command,
+                            expected_client: ClientPrincipal::parse(&body.client),
+                            confirmation: body.confirm.as_deref(),
+                            requested_app: None,
+                            source_action_id: None,
+                        },
                     )
                     .await
                 })
@@ -637,15 +641,18 @@ where
                     };
                     execute_mutation(
                         &state,
-                        &target,
-                        "launch",
-                        launch(body.app_id),
-                        ClientPrincipal::parse(&body.client),
-                        body.confirm.as_deref(),
-                        body.requested_app
-                            .as_deref()
-                            .map(|name| (name, body.app_id)),
-                        None,
+                        MutationInvocation {
+                            raw_target: &target,
+                            surface: "launch",
+                            command: launch(body.app_id),
+                            expected_client: ClientPrincipal::parse(&body.client),
+                            confirmation: body.confirm.as_deref(),
+                            requested_app: body
+                                .requested_app
+                                .as_deref()
+                                .map(|name| (name, body.app_id)),
+                            source_action_id: None,
+                        },
                     )
                     .await
                 })
@@ -902,16 +909,32 @@ fn json_extract_error(error: JsonExtractError) -> Response {
     }
 }
 
-async fn execute_mutation<S: Store, T: Transport>(
-    state: &ApiState<S, T>,
-    raw_target: &str,
+/// Bundled per-request mutation inputs: keeps the handler arity within the
+/// Clippy limit with no behavior change. All fields are plain caller data;
+/// the trusted principal still derives inside from the stored grant.
+struct MutationInvocation<'a> {
+    raw_target: &'a str,
     surface: &'static str,
     command: zestroku_proto::Command,
     expected_client: Option<ClientPrincipal>,
-    confirmation: Option<&str>,
-    requested_app: Option<(&str, u32)>,
+    confirmation: Option<&'a str>,
+    requested_app: Option<(&'a str, u32)>,
     source_action_id: Option<i64>,
+}
+
+async fn execute_mutation<S: Store, T: Transport>(
+    state: &ApiState<S, T>,
+    call: MutationInvocation<'_>,
 ) -> Response {
+    let MutationInvocation {
+        raw_target,
+        surface,
+        command,
+        expected_client,
+        confirmation,
+        requested_app,
+        source_action_id,
+    } = call;
     // This is the caller's requested label, not an authorization identity.
     // Never persist an approval token supplied again through that label.
     if requested_app.is_some_and(|(name, _)| {
