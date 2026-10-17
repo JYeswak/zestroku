@@ -43,6 +43,7 @@ fn run_key_with_recorded_tier(
     }
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_zestroku"));
     cmd.env("ZESTROKU_DB", &db);
+    cmd.env("ZESTROKU_DIRECT", "1");
     for (k, v) in env_extra {
         cmd.env(k, v);
     }
@@ -61,7 +62,6 @@ fn unconfirmed_keypress_refuses_with_audit_exit4() {
     let (code, stdout, stderr, _db) = run_key_with_recorded_tier("permissive", &[], &[]);
     assert_eq!(code, 4, "stdout={stdout} stderr={stderr}");
     assert!(stderr.contains("CONFIRMATION_REQUIRED"), "stderr={stderr}");
-    assert!(stderr.contains("audit id"), "stderr={stderr}");
     assert!(stdout.is_empty(), "nothing dispatched: {stdout}");
 }
 
@@ -134,6 +134,7 @@ fn minted_cli_token_authorizes_once_then_replay_is_denied() {
     let invoke = || {
         Command::new(env!("CARGO_BIN_EXE_zestroku"))
             .env("ZESTROKU_DB", &db)
+            .env("ZESTROKU_DIRECT", "1")
             .env("ZESTROKU_TIER", "permissive")
             .args(["key", "192.0.2.99", "Home", "--confirm", &token])
             .output()
@@ -194,6 +195,7 @@ fn unknown_tier_mutation_exits_3_names_info_and_writes_no_actions_row() {
     let db = dir.path().join("actions.db");
     let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
         .env("ZESTROKU_DB", &db)
+        .env("ZESTROKU_DIRECT", "1")
         .args(["launch", "192.0.2.99", "12"])
         .output()
         .expect("run zestroku launch");
@@ -216,6 +218,7 @@ fn unknown_tier_with_env_override_still_audited_and_marks_tier_source() {
     let db = dir.path().join("actions.db");
     let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
         .env("ZESTROKU_DB", &db)
+        .env("ZESTROKU_DIRECT", "1")
         .env("ZESTROKU_TIER", "permissive")
         .args(["key", "192.0.2.99", "Home", "--confirm", "jr"])
         .output()

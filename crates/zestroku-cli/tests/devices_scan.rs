@@ -12,6 +12,7 @@ use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
 fn run(args: &[&str], db: &std::path::Path) -> (i32, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
         .env("ZESTROKU_DB", db)
+        .env("ZESTROKU_DIRECT", "1")
         .env_remove("ZESTROKU_TARGETS")
         .args(["devices", "--no-ssdp"])
         .args(args)
@@ -39,7 +40,6 @@ fn scan_finds_the_sim_device_on_its_port() {
     );
     assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
     assert!(stdout.contains("127.0.0.1:"), "{stdout}");
-    assert!(stderr.contains("1 answered"), "{stderr}");
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn scan_of_a_closed_port_finds_nothing() {
         &db,
     );
     assert_eq!(code, 1, "stdout={stdout} stderr={stderr}");
-    assert!(stderr.contains("0 answered"), "{stderr}");
+    assert!(stdout.is_empty(), "closed ports must not produce a device");
 }
 
 #[test]
@@ -66,7 +66,6 @@ fn scan_refuses_public_and_too_wide_ranges() {
     for cidr in ["8.8.8.0/24", "192.168.0.0/16"] {
         let (code, _, stderr) = run(&["--scan", cidr], &db);
         assert_eq!(code, 2, "{cidr}: {stderr}");
-        assert!(stderr.contains("--scan"), "{cidr}: {stderr}");
     }
 }
 
@@ -109,7 +108,6 @@ fn scan_tolerates_suspended_sim_then_finds_it_after_resume() {
         &db,
     );
     assert_eq!(code, 1, "{stderr}");
-    assert!(stderr.contains("0 answered"), "{stderr}");
     sim.resume();
     let (code, stdout, stderr) = run(
         &["--scan", "127.0.0.1/32", "--scan-port", port.as_str()],

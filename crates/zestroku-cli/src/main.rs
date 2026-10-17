@@ -1,8 +1,8 @@
 //! zestroku-cli — the `zestroku` binary: CLI and on-demand daemon.
 //!
 //! Subcommands mirror the ECP surface. The core tier gate prevents
-//! Permissive-tier commands from reaching a Limited-mode device; `info` and
-//! `active-app` use the daemon by default.
+//! Permissive-tier commands from reaching a Limited-mode device.
+//! `devices`, ECP reads and key/launch use the daemon by default.
 #![forbid(unsafe_code)]
 
 use std::{io::IsTerminal, process::ExitCode};
@@ -29,7 +29,7 @@ fn usage() -> &'static str {
     r#"zestroku — owner-interop control for Roku devices
 
 USAGE:
-    zestroku devices [--json]            list discovered devices
+    zestroku devices [--json]            list cached daemon inventory
     zestroku alias <set|rm|ls> ...       manage local device names
     zestroku apps <host> [--json] [--daemon <url>] [--direct]
         list installed apps (Permissive)
@@ -44,18 +44,23 @@ USAGE:
     zestroku key <host> <KEY> [--confirm <token>]   keypress (Permissive)
     zestroku approve <verb> <host> <target> [--installer-port <port>]   owner TTY approval
     zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)
+    zestroku launch <host> --app <name> [--confirm <token>]  resolve an installed app
     zestroku install <host> <zip> --password-stdin [--installer-port <port>] [--confirm <token>]
     zestroku mcp                         MCP server on stdio (agent tools)
-    zestroku serve [--bind <ip:port>]    read-only HTTP API daemon (loopback default)
+    zestroku serve [--bind <ip:port>]    HTTP API daemon (loopback default)
 
 Install uses http://<host>:80/plugin_install by default; credentials are supplied through stdin, never arguments or the action log.
-Read mode precedence: --direct, then --daemon <url>, then ZESTROKU_DIRECT=1 /
-ZESTROKU_DAEMON_URL, then the loopback default (http://127.0.0.1:8070).
---direct and --daemon together are refused; flags always win over the
-environment. A down daemon returns DAEMON_UNAVAILABLE; it never falls back
-to LAN. Machine output (--json) goes to stdout only; diagnostics stay stderr.
+Info/active-app/apps mode precedence: --direct, then --daemon <url>, then
+ZESTROKU_DIRECT=1 / ZESTROKU_DAEMON_URL, then http://127.0.0.1:8070.
+--direct and --daemon together are refused; flags win over the environment.
+Devices lists cached metadata; discovery flags require ZESTROKU_DIRECT=1.
+Default key/launch forward the opaque token to a loopback daemon, which owns
+the recorded-tier/approval gate and operation audit. Owner approve must use
+the daemon's ZESTROKU_DB. ZESTROKU_DIRECT=1 selects local diagnostic execution.
+A down daemon returns DAEMON_UNAVAILABLE, never a direct ECP fallback.
+Machine output (--json) goes to stdout only; diagnostics stay stderr.
 Mutations require a single-use token minted by approve in an interactive owner terminal.
-Tier behavior: Permissive-tier commands are refused locally (exit 3) when the device's observed tier is Limited — no round-trip, no 403."#
+The recorded Limited tier refuses Permissive operations (exit 3)."#
 }
 
 pub(crate) fn split_host_port(target: &str) -> (String, u16) {

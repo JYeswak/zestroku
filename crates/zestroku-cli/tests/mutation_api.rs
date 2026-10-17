@@ -2,50 +2,10 @@
 
 // HTTP mutation behavior using the real serve process and loopback simulator.
 
-struct HttpApiDaemon(Option<std::process::Child>);
+#[path = "common/mutation_daemon.rs"]
+mod mutation_daemon;
 
-impl Drop for HttpApiDaemon {
-    fn drop(&mut self) {
-        if let Some(child) = self.0.as_mut() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
-impl HttpApiDaemon {
-    fn stop(mut self) -> std::process::Output {
-        let mut child = self.0.take().expect("daemon child");
-        let _ = child.kill();
-        child.wait_with_output().expect("collect daemon output")
-    }
-}
-
-fn http_free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("reserve HTTP port")
-        .local_addr()
-        .expect("HTTP port address")
-        .port()
-}
-
-fn wait_for_http_daemon(port: u16) {
-    use std::net::TcpStream;
-    use std::thread;
-    use std::time::{Duration, Instant};
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "serve did not bind 127.0.0.1:{port}"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-}
+use mutation_daemon::{http_free_port, mint_http_approval, seed_http_device, start_http_daemon};
 
 fn post_json_to_daemon(
     port: u16,
@@ -129,41 +89,9 @@ fn assert_no_cors_header(headers: &str) {
     );
 }
 
-fn mint_http_approval(
-    db: &std::path::Path,
-    port: u16,
-    command: &zestroku_proto::Command,
-) -> String {
-    use zestroku_core::mutation::issue_approval;
-    use zestroku_core::store::SqliteStore;
-    use zestroku_types::{AccessTier, Device};
-
-    let store = SqliteStore::open(db).expect("open store to mint HTTP approval");
-    issue_approval(
-        &store,
-        &Device {
-            host: "127.0.0.1".into(),
-            port,
-            model_name: "Sim Express".into(),
-            model_number: "SIMX1".into(),
-            software_version: "15.2.4".into(),
-            is_tv: false,
-            access_tier: AccessTier::Permissive,
-        },
-        command,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock")
-            .as_secs() as i64,
-    )
-    .expect("mint one-use HTTP approval")
-}
-
 #[test]
 fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
-    use std::process::{Command as ProcessCommand, Stdio};
-
-    use zestroku_core::store::{AccessTierRow, DeviceRow, SqliteStore, Store};
+    use zestroku_core::store::{SqliteStore, Store};
     use zestroku_proto::{keypress_raw, launch};
     use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
 
@@ -173,45 +101,13 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
     });
     let directory = tempfile::tempdir().expect("temporary mutation database");
     let db = directory.path().join("actions.db");
-    let device_id = zestroku_core::tier::device_id("127.0.0.1", sim.port());
-    {
-        let store = SqliteStore::open(&db).expect("open seed store");
-        store
-            .upsert_device(&DeviceRow {
-                id: device_id.clone(),
-                name: "Sim Express".into(),
-                ip: "127.0.0.1".into(),
-                model: "Sim Express".into(),
-                model_num: "SIMX1".into(),
-                firmware: "15.2.4".into(),
-                wifi_driver: "loopback".into(),
-                access_tier: "permissive".into(),
-                last_seen: 1,
-            })
-            .expect("seed inventory device");
-        store
-            .upsert_access_tier(&AccessTierRow {
-                device_id: device_id.clone(),
-                tier: "permissive".into(),
-                probe_at: 1,
-                probe_map: r#"{"query/apps":"open"}"#.into(),
-            })
-            .expect("seed recorded tier");
-    }
+    let device_id = seed_http_device(&db, sim.port());
 
     let launch_token = mint_http_approval(&db, sim.port(), &launch(1001));
     let key_token = mint_http_approval(&db, sim.port(), &keypress_raw("Home"));
     let failure_token = mint_http_approval(&db, sim.port(), &launch(1002));
     let api_port = http_free_port();
-    let child = ProcessCommand::new(env!("CARGO_BIN_EXE_zestroku"))
-        .env("ZESTROKU_DB", &db)
-        .args(["serve", "--bind", &format!("127.0.0.1:{api_port}")])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start real daemon");
-    let daemon = HttpApiDaemon(Some(child));
-    wait_for_http_daemon(api_port);
+    let daemon = start_http_daemon(&db, api_port);
     let target = format!("127.0.0.1:{}", sim.port());
     let api_host = format!("127.0.0.1:{api_port}");
     let launch_path = format!("/v1/devices/{target}/launch");
@@ -267,6 +163,27 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
     assert!(!host_body.contains(&launch_token));
     assert_no_cors_header(&host_headers);
     assert_no_http_mutation_side_effects(&db, &sim);
+
+    for requested_app in [" ".to_owned(), format!("label:{launch_token}")] {
+        let (status, headers, body) = post_json_to_daemon(
+            api_port,
+            &launch_path,
+            &api_host,
+            &serde_json::json!({
+                "app_id": 1001,
+                "confirm": &launch_token,
+                "requested_app": requested_app,
+            }),
+        );
+        assert_eq!(status, 400);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["error"],
+            "invalid_requested_app"
+        );
+        assert!(!headers.contains(&launch_token));
+        assert!(!body.contains(&launch_token));
+        assert_no_http_mutation_side_effects(&db, &sim);
+    }
 
     let same_origin = format!("http://{api_host}");
     let (launch_status, launch_headers, launch_body) = post_http_request_to_daemon(
@@ -385,6 +302,23 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
     assert_eq!(actions[2].before_state, "tier_source=recorded; unreachable");
     assert!(!failure_body.contains(&failure_token));
     for secret in [&launch_token, &key_token, &failure_token] {
+        for response in [
+            &origin_headers,
+            &origin_body,
+            &media_headers,
+            &media_body,
+            &host_headers,
+            &host_body,
+            &launch_headers,
+            &key_headers,
+            &failure_headers,
+            &failure_body,
+        ] {
+            assert!(
+                !response.contains(secret),
+                "approval tokens must not enter any HTTP response header or body"
+            );
+        }
         assert!(!launch_body.contains(secret));
         assert!(!key_body.contains(secret));
         assert!(!stdout.contains(secret));

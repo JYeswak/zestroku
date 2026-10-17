@@ -1,12 +1,12 @@
 //! `zestroku devices [--no-ssdp] [--targets <file>] [--mx <secs>] [--json]`
 //!
-//! SSDP sweep ∪ targets.toml seeds, each endpoint probed for `device-info`.
-//! `--no-ssdp` is the seeds-only run (flaky or black-holed multicast).
-//! `--scan <cidr>` adds hosts that answer on the ECP port (private ranges
-//! only, at most a /22): discovery that needs no multicast grant.
+//! Default: list cached daemon inventory without probing the LAN. Set
+//! `ZESTROKU_DIRECT=1` for explicit discovery: SSDP ∪ targets.toml seeds,
+//! `--no-ssdp` for seeds only, or `--scan <cidr>` for a bounded private scan.
 //! `--json` emits a machine-checkable object instead of the tab-separated
-//! lines (schema in `tests/devices_json.rs` / docs/LIVE-VERIFY.md).
+//! lines (discovery contract exercised in `tests/devices_store.rs`).
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -70,7 +70,65 @@ fn parse_opts(args: &[String]) -> std::result::Result<Opts, String> {
     Ok(o)
 }
 
+fn cached_inventory(json: bool) -> ExitCode {
+    let devices = match crate::daemon_client::inventory::devices() {
+        Ok(devices) => devices,
+        Err(error) => return crate::report_read_error(error),
+    };
+    const NOTE: &str = "Cached daemon inventory, not a discovery sweep. Port and TV classification are not provided by this view; explicit ZESTROKU_DIRECT=1 discovery provides them.";
+    eprintln!("zestroku devices: {NOTE}");
+    if json {
+        #[derive(serde::Serialize)]
+        struct View<'a> {
+            source: &'static str,
+            devices: &'a [crate::daemon_client::inventory::InventoryDevice],
+            notes: [&'static str; 0],
+        }
+        let mut output = std::io::stdout().lock();
+        let result = serde_json::to_writer(
+            &mut output,
+            &View {
+                source: "daemon",
+                devices: &devices,
+                notes: [],
+            },
+        )
+        .map_err(std::io::Error::other)
+        .and_then(|()| output.write_all(b"\n"));
+        if let Err(error) = result {
+            eprintln!("zestroku devices: could not write JSON: {error}");
+            return ExitCode::FAILURE;
+        }
+    } else {
+        for device in devices {
+            println!(
+                "{}\t{}\t{}\t{}\t{}",
+                device.host,
+                device.name,
+                device.model_number,
+                device.software_version,
+                device.access_tier,
+            );
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 pub fn run(args: &[String]) -> ExitCode {
+    if std::env::var("ZESTROKU_DIRECT").as_deref() != Ok("1") {
+        let mut json = false;
+        for argument in args {
+            if argument == "--json" {
+                json = true;
+            } else {
+                eprintln!(
+                    "zestroku devices: discovery option {argument} requires ZESTROKU_DIRECT=1"
+                );
+                return ExitCode::from(2);
+            }
+        }
+        return cached_inventory(json);
+    }
     let opts = match parse_opts(args) {
         Ok(o) => o,
         Err(e) => {

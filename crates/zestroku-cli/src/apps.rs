@@ -115,6 +115,12 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     };
     let (host, port) = crate::split_host_port(&opts.host);
+    let direct_env = std::env::var("ZESTROKU_DIRECT").as_deref() == Ok("1");
+    let direct = opts.mode == crate::ReadMode::Direct
+        || (opts.mode == crate::ReadMode::Default && direct_env);
+    if !direct {
+        return execute_daemon(&host, port, opts.json, &opts.mode);
+    }
     let access_tier = match access_tier_for(&host, port) {
         Ok(access_tier) => access_tier,
         Err(TierLookupError::Store(error)) => {
@@ -129,16 +135,35 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(3);
         }
     };
-    execute(&host, port, access_tier, opts.json, &opts.mode)
+    execute_direct(&host, port, access_tier, opts.json)
 }
 
-fn execute(
-    host: &str,
-    port: u16,
-    access_tier: AccessTier,
-    json: bool,
-    mode: &crate::ReadMode,
-) -> ExitCode {
+fn execute_daemon(host: &str, port: u16, json: bool, mode: &crate::ReadMode) -> ExitCode {
+    let target = zestroku_core::tier::device_id(host, port);
+    let fetched = match mode {
+        crate::ReadMode::Daemon(url) => crate::daemon_client::apps_via(&target, url),
+        _ => crate::daemon_client::apps(&target),
+    };
+    match fetched {
+        Ok(apps) => {
+            refresh_app_cache(host, port, &apps);
+            print_apps(apps, json)
+        }
+        Err(error) => {
+            eprintln!("zestroku: [{}] {error}", error.code());
+            if matches!(
+                error,
+                crate::daemon_client::ReadError::DaemonRequestFailed { status: 403, .. }
+            ) {
+                ExitCode::from(3)
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+    }
+}
+
+fn execute_direct(host: &str, port: u16, access_tier: AccessTier, json: bool) -> ExitCode {
     let device = Device {
         host: host.to_string(),
         port,
@@ -152,34 +177,6 @@ fn execute(
     if let Err(error) = check_tier(&command, &device) {
         eprintln!("zestroku: {error}");
         return ExitCode::from(3);
-    }
-
-    let direct_env = std::env::var("ZESTROKU_DIRECT").as_deref() == Ok("1");
-    let direct =
-        *mode == crate::ReadMode::Direct || (*mode == crate::ReadMode::Default && direct_env);
-    if !direct {
-        let target = zestroku_core::tier::device_id(host, port);
-        let fetched = match mode {
-            crate::ReadMode::Daemon(url) => crate::daemon_client::apps_via(&target, url),
-            _ => crate::daemon_client::apps(&target),
-        };
-        return match fetched {
-            Ok(apps) => {
-                refresh_app_cache(host, port, &apps);
-                print_apps(apps, json)
-            }
-            Err(error) => {
-                eprintln!("zestroku: [{}] {error}", error.code());
-                if matches!(
-                    error,
-                    crate::daemon_client::ReadError::DaemonRequestFailed { status: 403, .. }
-                ) {
-                    ExitCode::from(3)
-                } else {
-                    ExitCode::FAILURE
-                }
-            }
-        };
     }
 
     let runtime = match create_reactor()
@@ -367,13 +364,7 @@ mod tests {
     #[test]
     fn limited_tier_refuses_before_any_loopback_request() {
         let server = LoopbackEcp::start();
-        let code = execute(
-            "127.0.0.1",
-            server.port,
-            AccessTier::Open,
-            true,
-            &crate::ReadMode::Default,
-        );
+        let code = execute_direct("127.0.0.1", server.port, AccessTier::Open, true);
         assert_eq!(code, ExitCode::from(3));
         assert!(
             server

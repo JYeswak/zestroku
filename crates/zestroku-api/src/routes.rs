@@ -48,6 +48,7 @@ struct KeyMutationRequest {
 struct LaunchMutationRequest {
     app_id: u32,
     confirm: Option<String>,
+    requested_app: Option<String>,
 }
 fn closed_request_schema(
     title: &str,
@@ -96,6 +97,10 @@ impl fastapi_openapi::JsonSchema for LaunchMutationRequest {
                 ),
                 (
                     "confirm".to_owned(),
+                    <Option<String> as fastapi_openapi::JsonSchema>::schema(),
+                ),
+                (
+                    "requested_app".to_owned(),
                     <Option<String> as fastapi_openapi::JsonSchema>::schema(),
                 ),
             ]),
@@ -401,7 +406,15 @@ where
                     let Some(command) = keypress_command(&body.key) else {
                         return error_response(StatusCode::BAD_REQUEST, "invalid_key");
                     };
-                    execute_mutation(&state, &target, "key", command, body.confirm.as_deref()).await
+                    execute_mutation(
+                        &state,
+                        &target,
+                        "key",
+                        command,
+                        body.confirm.as_deref(),
+                        None,
+                    )
+                    .await
                 })
             },
         )
@@ -454,6 +467,9 @@ where
                         "launch",
                         launch(body.app_id),
                         body.confirm.as_deref(),
+                        body.requested_app
+                            .as_deref()
+                            .map(|name| (name, body.app_id)),
                     )
                     .await
                 })
@@ -603,7 +619,18 @@ async fn execute_mutation<S: Store, T: Transport>(
     surface: &'static str,
     command: zestroku_proto::Command,
     confirmation: Option<&str>,
+    requested_app: Option<(&str, u32)>,
 ) -> Response {
+    // This is the caller's requested label, not an authorization identity.
+    // Never persist an approval token supplied again through that label.
+    if requested_app.is_some_and(|(name, _)| {
+        name.trim().is_empty()
+            || confirmation
+                .filter(|token| !token.is_empty())
+                .is_some_and(|token| name.contains(token))
+    }) {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_requested_app");
+    }
     let target = match super::parse_device_target(raw_target) {
         Some(target) => target,
         None => return error_response(StatusCode::BAD_REQUEST, "invalid_device_target"),
@@ -639,7 +666,13 @@ async fn execute_mutation<S: Store, T: Transport>(
         };
         device.access_tier = recorded_tier;
         let before_state = marked_before_state(tier_source, &before);
-        let intent = format!("{surface} {} {}", target.id, command.path);
+        let intent = match requested_app {
+            Some((name, app_id)) => format!(
+                "{surface} {} {}; requested_app={name:?}; resolved_app_id={app_id}",
+                target.id, command.path,
+            ),
+            None => format!("{surface} {} {}", target.id, command.path),
+        };
         match authorize_mutation(
             &*store,
             &device,

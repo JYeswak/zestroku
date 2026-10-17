@@ -1,18 +1,15 @@
-//! Mutation subcommands (`launch`, `key`) — the m7e per-op confirmation
-//! gate at the CLI boundary.
+//! Owner-approved CLI mutations use the resident daemon by default.
 //!
-//! Flow per bead zestroku-m7e-mutation-gate-svq, owner rules binding:
-//! 1. Capture the active-app snapshot BEFORE anything else (before_state).
-//! 2. `authorize_mutation` (zestroku-core): POST-only door → tier gate →
-//!    confirmation. Every refusal writes an actions row; the CLI prints
-//!    the audit id and exits 4 (5 = tier-refused, same audit).
-//! 3. On approval: dispatch over the asupersync transport, then
-//!    `finish_mutation` records the wire outcome. A blank/absent
-//!    `--confirm` never dispatches.
+//! The client forwards the opaque token; the daemon owns the snapshot,
+//! authorization, dispatch, and completed audit result. `ZESTROKU_DIRECT=1`
+//! explicitly selects the original diagnostic path with the same core gates.
+//! Owner approval issuance still requires an interactive terminal.
 //!
-//! Offline proofs live in tests/mutation_cli.rs; the live launch leg is
-//! Josh-gated per the dispatch queue.
+//! Loopback proofs live in tests/cli_daemon_mutations.rs and
+//! tests/mutation_cli.rs; no simulator result claims a live-device mutation.
 #![forbid(unsafe_code)]
+
+mod daemon;
 
 use std::{
     io::{self, IsTerminal, Write},
@@ -87,14 +84,15 @@ fn parse_opts(kind: &str, args: &[String]) -> std::result::Result<MutationOpts, 
     })
 }
 
+fn parse_app_id(target: &str) -> std::result::Result<u32, String> {
+    target
+        .parse()
+        .map_err(|_| format!("app id must be a number, got {target:?}"))
+}
+
 fn build_command(kind: &str, target: &str) -> std::result::Result<Command, String> {
     match kind {
-        "launch" => {
-            let app_id: u32 = target
-                .parse()
-                .map_err(|_| format!("app id must be a number, got {target:?}"))?;
-            Ok(zestroku_proto::launch(app_id))
-        }
+        "launch" => parse_app_id(target).map(zestroku_proto::launch),
         "key" => Ok(zestroku_proto::keypress_raw(target)),
         "install" if target == "sideload" => Ok(Command {
             method: zestroku_proto::Method::Post,
@@ -109,13 +107,13 @@ fn build_command(kind: &str, target: &str) -> std::result::Result<Command, Strin
 /// case-insensitive exact match wins, else a unique case-insensitive prefix.
 /// Zero matches yield APP_NOT_INSTALLED; several yield AMBIGUOUS_APP with the
 /// candidate names. Matching touches display strings only, never ids.
-fn resolve_app_id(
-    apps: &[zestroku_proto::InstalledApp],
+fn resolve_app_id<'a>(
+    apps: &'a [zestroku_proto::InstalledApp],
     name: &str,
-) -> std::result::Result<String, String> {
+) -> std::result::Result<&'a str, String> {
     let want = name.to_lowercase();
     if let Some(app) = apps.iter().find(|app| app.name.to_lowercase() == want) {
-        return Ok(app.id.clone());
+        return Ok(app.id.as_str());
     }
     let candidates: Vec<&str> = apps
         .iter()
@@ -123,17 +121,15 @@ fn resolve_app_id(
         .map(|app| app.name.as_str())
         .collect();
     match candidates.as_slice() {
-        [] => Err(format!(
-            "APP_NOT_INSTALLED: no installed app matches {name:?}"
-        )),
+        [] => Err("APP_NOT_INSTALLED: no installed app matches the requested name".to_owned()),
         [only] => Ok(apps
             .iter()
             .find(|app| app.name == *only)
             .expect("prefix candidate comes from the installed list")
             .id
-            .clone()),
+            .as_str()),
         many => Err(format!(
-            "AMBIGUOUS_APP: {name:?} matches {} installed apps: {}",
+            "AMBIGUOUS_APP: requested name matches {} installed apps: {}",
             many.len(),
             many.join(", ")
         )),
@@ -159,6 +155,9 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if std::env::var("ZESTROKU_DIRECT").as_deref() != Ok("1") {
+        return daemon::run(kind, &opts);
+    }
     let (host, port) = crate::split_host_port(&opts.host);
     // Tier resolution (zestroku-tier-discovery-jt8 [c]): recorded tier from
     // the store, refreshed by `zestroku info`; ZESTROKU_TIER is only an
@@ -262,7 +261,7 @@ pub fn run(kind: &str, args: &[String]) -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            (id.clone(), format!("{kind} {id} (app \"{name}\")"))
+            (id.to_owned(), format!("{kind} {id} (app \"{name}\")"))
         }
     };
     let command = match build_command(kind, &target) {

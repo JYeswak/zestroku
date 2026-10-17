@@ -1,6 +1,6 @@
 //! Tier-gate regression core (m7e extension + zestroku-tier-discovery-jt8):
-//! POST verbs are refused locally before dispatch, and the refusal is
-//! audited. Since tier-discovery, the CLI trusts the RECORDED tier: an
+//! In explicit direct diagnostic mode, POST verbs are refused locally before
+//! dispatch and the refusal is audited. The CLI trusts the RECORDED tier: an
 //! unprobed host refuses with "no recorded tier" (exit 3, zero dispatches),
 //! and a recorded-Limited host refuses at the tier wall (also exit 3,
 //! TIER_REFUSED audit row). Encodes the wire-doc finding: the gate is a
@@ -12,6 +12,7 @@ use zestroku_core::store::{AccessTierRow, DeviceRow, SqliteStore, Store};
 fn run(args: &[&str], db: &std::path::Path) -> (i32, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
         .env("ZESTROKU_DB", db)
+        .env("ZESTROKU_DIRECT", "1")
         .args(args)
         .output()
         .expect("run zestroku command");

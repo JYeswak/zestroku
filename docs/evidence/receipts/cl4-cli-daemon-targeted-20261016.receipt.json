@@ -1,0 +1,28 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_93c429130a051b9cf5cfd39728181daca1afd6d0f0f57b4eb237ed60575e4cf6",
+ "limitations": [
+  "Exact f7 base plus 16 owned overlay paths and seven named targets only; not full workspace/current HEAD, new help/docs, installed Mac, physical Roku, tailnet, independent review or full cl4 close. No causal performance or permanent capacity-repair claim."
+ ],
+ "operation": "zestroku.cl4.cli-daemon-targeted",
+ "parameters": {
+  "command": "cargo test -j 1 --locked -p zestroku-cli --test mutation_api --test cli_daemon_mutations --test mutation_cli --test tier_gate --test devices_store --test devices_scan --test apps_cli -- --nocapture",
+  "failed": "0",
+  "ignored": "0",
+  "overlay_fingerprint": "abd10c8ceef20ebc0e0f1408fe44938c0ad1fc04a2a7875f8eb6cf6547be2468",
+  "passed": "32",
+  "real_binary_cases": "daemon inventory/no discovery; numeric/name launch; raw-key casing; valid/invalid/replay; failure audit; down/restart approval preservation; HTTP header/body token privacy; direct diagnostic regressions",
+  "remote_exit": "0",
+  "remote_ms": "952714",
+  "source_base": "f7faba370a3a17a80a681c42fe658d4802954154",
+  "source_tree": "e0ca83b7bae24ae38a81f25e695e9a85cf1584d4",
+  "targets": "7",
+  "worker": "contabo-4"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 16211,
+  "sha256": "8f519a0823287ea53d3002c3f5f6ece4170273fe5815aa48b19c825f152c162f"
+ }
+}

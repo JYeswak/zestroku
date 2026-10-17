@@ -1,12 +1,17 @@
-//! Bounded HTTP/1.1 client for daemon-backed reads and explicit direct reads.
+//! Bounded daemon HTTP requests and explicit diagnostic ECP reads.
 #![forbid(unsafe_code)]
 
 use std::fmt;
-use std::io::{self, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
-use std::time::{Duration, Instant};
+use std::io;
+use std::time::Duration;
 
 use zestroku_proto::{Command, EcpResponse, Method};
+
+mod http;
+pub(crate) mod inventory;
+pub(crate) mod mutation;
+
+use self::http::{Endpoint, HttpFailure, HttpResponse};
 
 const DEFAULT_DAEMON_URL: &str = "http://127.0.0.1:8070";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -86,28 +91,6 @@ struct InstalledAppResponse {
     version: Option<String>,
 }
 
-#[derive(Debug)]
-struct Endpoint {
-    host: String,
-    port: u16,
-    authority: String,
-}
-
-#[derive(Debug)]
-struct HttpResponse {
-    status: u16,
-    headers: Vec<(String, String)>,
-    body: String,
-}
-
-#[derive(Debug)]
-enum HttpFailure {
-    Connect(io::Error),
-    Io(io::Error),
-    TimedOut,
-    Invalid(String),
-}
-
 /// Explicit-URL variants for the CLI `--daemon <url>` flag. They behave
 /// exactly like [`info`], [`active_app`] and [`apps`] but use the given
 /// daemon URL instead of `ZESTROKU_DAEMON_URL`/the default.
@@ -133,19 +116,7 @@ pub fn apps_via(
 ) -> Result<Vec<zestroku_proto::InstalledApp>, ReadError> {
     let path = device_path(target, "apps")?;
     let response = daemon_get_via(daemon_url, &path)?;
-    let response: InstalledAppsResponse = serde_json::from_str(&response.body)
-        .map_err(|error| ReadError::InvalidResponse(format!("daemon JSON: {error}")))?;
-    Ok(response
-        .apps
-        .into_iter()
-        .map(|app| zestroku_proto::InstalledApp {
-            id: app.id,
-            name: app.name,
-            app_type: app.app_type,
-            subtype: app.subtype,
-            version: app.version,
-        })
-        .collect())
+    decode_installed_apps(&response.body)
 }
 
 pub fn info(target: &str) -> Result<DeviceInfo, ReadError> {
@@ -165,7 +136,11 @@ pub fn active_app(target: &str) -> Result<ActiveApp, ReadError> {
 pub fn apps(target: &str) -> Result<Vec<zestroku_proto::InstalledApp>, ReadError> {
     let path = device_path(target, "apps")?;
     let response = daemon_get(&path)?;
-    let response: InstalledAppsResponse = serde_json::from_str(&response.body)
+    decode_installed_apps(&response.body)
+}
+
+fn decode_installed_apps(body: &str) -> Result<Vec<zestroku_proto::InstalledApp>, ReadError> {
+    let response: InstalledAppsResponse = serde_json::from_str(body)
         .map_err(|error| ReadError::InvalidResponse(format!("daemon JSON: {error}")))?;
     Ok(response
         .apps
@@ -193,7 +168,8 @@ pub fn direct_ecp_get(host: &str, port: u16, command: &Command) -> Result<EcpRes
         host,
         port,
     };
-    let response = http_get(&endpoint, &command.path, "*/*").map_err(map_direct_failure)?;
+    let response = http::request(&endpoint, Method::Get, &command.path, "*/*", None)
+        .map_err(map_direct_failure)?;
     Ok(EcpResponse {
         status: response.status,
         headers: response.headers,
@@ -227,23 +203,31 @@ fn daemon_get(path: &str) -> Result<HttpResponse, ReadError> {
 
 fn daemon_get_via(raw_url: &str, path: &str) -> Result<HttpResponse, ReadError> {
     let endpoint = parse_daemon_url(raw_url)?;
-    let response = http_get(&endpoint, path, "application/json").map_err(map_daemon_failure)?;
+    daemon_get_at_endpoint(&endpoint, path)
+}
+
+fn daemon_get_at_endpoint(endpoint: &Endpoint, path: &str) -> Result<HttpResponse, ReadError> {
+    let response = http::request(endpoint, Method::Get, path, "application/json", None)
+        .map_err(map_daemon_failure)?;
     if response.status != 200 {
-        let error = serde_json::from_str::<serde_json::Value>(&response.body)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("error")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-            })
-            .unwrap_or_else(|| "unrecognized error response".to_owned());
-        return Err(ReadError::DaemonRequestFailed {
-            status: response.status,
-            error,
-        });
+        return Err(daemon_http_error(response));
     }
     Ok(response)
+}
+
+fn daemon_http_error(response: HttpResponse) -> ReadError {
+    #[derive(serde::Deserialize)]
+    struct ErrorBody {
+        error: String,
+    }
+
+    let error = serde_json::from_str::<ErrorBody>(&response.body)
+        .map(|body| body.error)
+        .unwrap_or_else(|_| "unrecognized error response".to_owned());
+    ReadError::DaemonRequestFailed {
+        status: response.status,
+        error,
+    }
 }
 
 fn device_path(target: &str, verb: &str) -> Result<String, ReadError> {
@@ -333,87 +317,6 @@ fn authority(host: &str, port: u16) -> String {
     } else {
         format!("{host}:{port}")
     }
-}
-
-fn http_get(endpoint: &Endpoint, path: &str, accept: &str) -> Result<HttpResponse, HttpFailure> {
-    let deadline = Instant::now() + REQUEST_TIMEOUT;
-    let mut stream = connect(endpoint, deadline)?;
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept: {accept}\r\n\r\n",
-        endpoint.authority
-    );
-    set_write_timeout(&stream, deadline)?;
-    stream
-        .write_all(request.as_bytes())
-        .map_err(HttpFailure::Io)?;
-
-    let mut raw = Vec::with_capacity(4096);
-    let mut buffer = [0_u8; 4096];
-    loop {
-        set_read_timeout(&stream, deadline)?;
-        match stream.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(count) => {
-                if raw.len().saturating_add(count) > MAX_RESPONSE_BYTES {
-                    return Err(HttpFailure::Invalid("response exceeded 1 MiB".into()));
-                }
-                raw.extend_from_slice(&buffer[..count]);
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-                ) =>
-            {
-                return Err(HttpFailure::TimedOut);
-            }
-            Err(error) => return Err(HttpFailure::Io(error)),
-        }
-    }
-    parse_http_response(&raw)
-}
-
-fn connect(endpoint: &Endpoint, deadline: Instant) -> Result<TcpStream, HttpFailure> {
-    let addresses = (endpoint.host.as_str(), endpoint.port)
-        .to_socket_addrs()
-        .map_err(HttpFailure::Connect)?;
-    let mut last_error = None;
-    for address in addresses {
-        let timeout = deadline.saturating_duration_since(Instant::now());
-        if timeout.is_zero() {
-            return Err(HttpFailure::TimedOut);
-        }
-        match TcpStream::connect_timeout(&address, timeout) {
-            Ok(stream) => return Ok(stream),
-            Err(error) => last_error = Some(error),
-        }
-    }
-    Err(HttpFailure::Connect(last_error.unwrap_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::AddrNotAvailable,
-            "host resolved to no addresses",
-        )
-    })))
-}
-
-fn set_write_timeout(stream: &TcpStream, deadline: Instant) -> Result<(), HttpFailure> {
-    let timeout = deadline.saturating_duration_since(Instant::now());
-    if timeout.is_zero() {
-        return Err(HttpFailure::TimedOut);
-    }
-    stream
-        .set_write_timeout(Some(timeout))
-        .map_err(HttpFailure::Io)
-}
-
-fn set_read_timeout(stream: &TcpStream, deadline: Instant) -> Result<(), HttpFailure> {
-    let timeout = deadline.saturating_duration_since(Instant::now());
-    if timeout.is_zero() {
-        return Err(HttpFailure::TimedOut);
-    }
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(HttpFailure::Io)
 }
 
 fn parse_http_response(raw: &[u8]) -> Result<HttpResponse, HttpFailure> {
