@@ -23,9 +23,7 @@ use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use asupersync::signal::{SignalKind, signal};
 use fastapi::{ServerConfig, TcpServer};
 use zestroku_core::store::{DeviceRow, SqliteStore, Store};
-use zestroku_core::tier::{
-    ObservedTier, classify_tier, classify_tier_from_response, device_id, record_probe,
-};
+use zestroku_core::tier::{classify_tier, classify_tier_from_response, device_id, record_probe};
 use zestroku_core::{AppsSnapshot, DeviceStateSnapshot, Inventory, MediaPlayerSnapshot};
 use zestroku_proto::{
     Command, Transport, parse_active_app, parse_apps, parse_device_info, parse_ecp_response,

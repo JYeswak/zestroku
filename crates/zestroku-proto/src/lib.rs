@@ -673,15 +673,18 @@ mod state_surface_tests {
 
     #[test]
     fn tv_active_channel_parser_classifies_surface_and_refuses_unknown_403() {
-        assert_eq!(
+        assert!(matches!(
             parse_tv_active_channel(&response(200, FIXTURE_TV_ACTIVE_CHANNEL)),
             Ok(true)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             parse_tv_active_channel(&response(403, LIMITED_403_BODY)),
             Ok(true)
-        );
-        assert_eq!(parse_tv_active_channel(&response(404, "")), Ok(false));
+        ));
+        assert!(matches!(
+            parse_tv_active_channel(&response(404, "")),
+            Ok(false)
+        ));
         assert!(matches!(
             parse_tv_active_channel(&response(403, "unrecognized denial")),
             Err(Error::Malformed(_))
