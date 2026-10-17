@@ -6,11 +6,10 @@
 //! injected function. [`run_checked`] snapshots the store before and after
 //! and refuses to return findings when any check mutated it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use zestroku_proto::{self, Transport};
-use zestroku_types::Result;
 
 use crate::discovery;
 use crate::store::Store;
@@ -45,11 +44,14 @@ pub enum ConnectOutcome {
     Timeout,
 }
 
-/// Refusal of [`run_checked`] when a check mutated the store.
+/// Refusal of [`run_checked`] when a check mutated the store: byte lengths
+/// of the store file and its WAL sidecar before and after the run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadOnlyViolation {
-    pub before: String,
-    pub after: String,
+    pub before_main: u64,
+    pub before_wal: Option<u64>,
+    pub after_main: u64,
+    pub after_wal: Option<u64>,
 }
 
 /// Everything a doctor run may read. Function pointers (never closures)
@@ -461,67 +463,81 @@ pub fn check_lan_policy(
     }
 }
 
-/// Debug rendering of every read the checks may observe.
-pub fn store_fingerprint(store: &dyn Store) -> Result<String> {
-    let mut parts = vec![format!("versions={:?}", store.schema_versions())];
-    let mut devices = store.list_devices()?;
-    devices.sort_by(|a, b| a.id.cmp(&b.id));
-    for device in &devices {
-        parts.push(format!("device={device:?}"));
-        let mut apps = store.list_apps(&device.id)?;
-        apps.sort_by(|a, b| a.app_id.cmp(&b.app_id));
-        parts.push(format!("apps={apps:?}"));
-    }
-    let mut aliases = store.list_aliases()?;
-    aliases.sort_by(|a, b| a.alias.cmp(&b.alias));
-    parts.push(format!("aliases={aliases:?}"));
-    parts.push(format!("actions={:?}", store.list_actions()?));
-    parts.push(format!("diffs={:?}", store.list_diffs()?));
-    Ok(parts.join("\n"))
+/// Byte snapshot of the store file plus its WAL sidecar, if present. Any
+/// write — to any table, including ones without a list method — changes
+/// these bytes, so the read-only gate needs no per-table sampling.
+fn store_bytes(path: &Path) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
+    let main = std::fs::read(path).ok()?;
+    let wal_path = PathBuf::from(format!("{}-wal", path.display()));
+    Some((main, std::fs::read(wal_path).ok()))
 }
 
-/// Run every built-in check plus extras, refusing to return when the store moved.
+/// Run every built-in check plus extras, refusing to return when the store
+/// moved. When the store itself is unreadable, the root finding carries the
+/// failure and store-dependent checks Skip (prerequisites skip, not fail);
+/// only an established byte baseline that later differs is a violation.
 pub async fn run_checked<T: Transport>(
     ctx: &Ctx<T>,
     extra: &[ExtraCheck<T>],
 ) -> std::result::Result<Vec<Finding>, ReadOnlyViolation> {
-    let before = store_fingerprint(ctx.store).map_err(|error| ReadOnlyViolation {
-        before: format!("unreadable: {error}"),
-        after: String::new(),
-    })?;
+    let before = store_bytes(ctx.store_path);
+    let store_finding = check_store(ctx.store, ctx.store_path);
+    let store_ok = store_finding.verdict != Verdict::Fail;
     let mut findings = vec![
-        check_store(ctx.store, ctx.store_path),
-        check_migrations(ctx.store),
+        store_finding,
         check_targets(ctx.targets_toml),
-        check_tier_posture(ctx.store),
-        check_device_info(ctx.store, ctx.transport).await,
         check_ssdp_reply(ctx.ssdp_reply),
-        check_suspend(ctx.store, ctx.discovered_ids),
         check_policy_file(ctx.store_path),
     ];
-    for device in ctx
-        .store
-        .list_devices()
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|row| split_host_port(&row.id))
-    {
-        findings.push(check_lan_policy(
-            device.0,
-            device.1,
-            ctx.connect,
-            ctx.platform_ok,
-        ));
+    if store_ok {
+        findings.push(check_migrations(ctx.store));
+        findings.push(check_tier_posture(ctx.store));
+        findings.push(check_device_info(ctx.store, ctx.transport).await);
+        findings.push(check_suspend(ctx.store, ctx.discovered_ids));
+        for device in ctx
+            .store
+            .list_devices()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|row| split_host_port(&row.id))
+        {
+            findings.push(check_lan_policy(
+                device.0,
+                device.1,
+                ctx.connect,
+                ctx.platform_ok,
+            ));
+        }
+    } else {
+        for id in [
+            "migrations-current",
+            "tier-posture",
+            "device-info",
+            "suspend-vs-absent",
+            "lan-policy",
+        ] {
+            findings.push(finding(
+                id,
+                Verdict::Skip,
+                "prerequisite store-readable failed".to_string(),
+                String::new(),
+                "see store-readable",
+            ));
+        }
     }
     for check in extra {
         findings.push(check(ctx));
     }
-    let after = store_fingerprint(ctx.store).map_err(|error| ReadOnlyViolation {
-        before: before.clone(),
-        after: format!("unreadable: {error}"),
-    })?;
-    if before != after {
-        return Err(ReadOnlyViolation { before, after });
+    if let Some((before_main, before_wal)) = before {
+        let after = store_bytes(ctx.store_path).unwrap_or_default();
+        if after.0 != before_main || after.1 != before_wal {
+            return Err(ReadOnlyViolation {
+                before_main: before_main.len() as u64,
+                before_wal: before_wal.map(|bytes| bytes.len() as u64),
+                after_main: after.0.len() as u64,
+                after_wal: after.1.map(|bytes| bytes.len() as u64),
+            });
+        }
     }
     Ok(findings)
 }
@@ -532,6 +548,7 @@ mod tests {
     use crate::discovery::ECP_DEFAULT_PORT;
     use crate::store::{AccessTierRow, AppRow, DeviceRow, SqliteStore};
     use zestroku_proto::{Command, EcpResponse};
+    use zestroku_types::Result;
 
     struct FixtureTransport {
         bodies: std::collections::BTreeMap<(String, u16), (u16, String)>,
@@ -700,7 +717,43 @@ mod tests {
         let err = runtime()
             .block_on(run_checked(&ctx, &[writer]))
             .expect_err("mutating check must be refused");
-        assert!(err.after.contains("doctor-probe"), "{err:?}");
+        assert!(
+            err.after_main != err.before_main || err.after_wal != err.before_wal,
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn tier_write_is_refused_by_the_read_only_gate() {
+        // The concrete write class the old per-table sampling missed:
+        // mutating recorded authorization posture must trip the gate.
+        fn tier_writer(ctx: &Ctx<FixtureTransport>) -> Finding {
+            ctx.store
+                .upsert_access_tier(&crate::store::AccessTierRow {
+                    device_id: "192.0.2.10:8060".to_string(),
+                    tier: "limited".to_string(),
+                    probe_at: 1_700_000_200,
+                    probe_map: "{}".to_string(),
+                })
+                .expect("write succeeds; the gate must catch it");
+            finding(
+                "tier-probe",
+                Verdict::Pass,
+                String::new(),
+                String::new(),
+                "",
+            )
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("doctor.db");
+        let store = seeded(&db);
+        let transport = FixtureTransport {
+            bodies: std::collections::BTreeMap::new(),
+        };
+        let ctx = ctx_for(&store, &db, &transport);
+        runtime()
+            .block_on(run_checked(&ctx, &[tier_writer]))
+            .expect_err("tier write must be refused");
     }
 
     #[test]
@@ -850,5 +903,93 @@ mod tests {
                 .consume_confirmation_token("abc", "192.0.2.10:8060", "key", 1_700_000_100)
                 .expect("consume still works")
         );
+    }
+    struct BrokenStore;
+
+    macro_rules! broken_method {
+        ($($name:ident($($arg:ident : $ty:ty),*) -> $ret:ty;)*) => {
+            impl crate::store::Store for BrokenStore {
+                $(fn $name(&self, $($arg: $ty),*) -> $ret {
+                    Err(crate::store::StoreError::Backend("broken fixture".into()))
+                })*
+            }
+        };
+    }
+
+    broken_method! {
+        schema_versions() -> Result<Vec<i64>, crate::store::StoreError>;
+        upsert_device(d: &crate::store::DeviceRow) -> Result<(), crate::store::StoreError>;
+        get_device(id: &str) -> Result<Option<crate::store::DeviceRow>, crate::store::StoreError>;
+        list_devices() -> Result<Vec<crate::store::DeviceRow>, crate::store::StoreError>;
+        delete_device(id: &str) -> Result<(), crate::store::StoreError>;
+        upsert_app(a: &crate::store::AppRow) -> Result<(), crate::store::StoreError>;
+        list_apps(device_id: &str) -> Result<Vec<crate::store::AppRow>, crate::store::StoreError>;
+        delete_app(device_id: &str, app_id: &str) -> Result<(), crate::store::StoreError>;
+        add_capability(device_id: &str, cap: &str) -> Result<(), crate::store::StoreError>;
+        list_capabilities(device_id: &str) -> Result<Vec<String>, crate::store::StoreError>;
+        remove_capability(device_id: &str, cap: &str) -> Result<(), crate::store::StoreError>;
+        set_alias(alias: &crate::store::AliasRow) -> Result<(), crate::store::StoreError>;
+        list_aliases() -> Result<Vec<crate::store::AliasRow>, crate::store::StoreError>;
+        delete_alias(alias: &str) -> Result<(), crate::store::StoreError>;
+        record_device_identity(device_id: &str, identity: &str) -> Result<(), crate::store::StoreError>;
+        find_device_id_by_identity(identity: &str) -> Result<Option<String>, crate::store::StoreError>;
+        delete_device_identity(device_id: &str) -> Result<(), crate::store::StoreError>;
+        rekey_aliases(old_id: &str, new_id: &str) -> Result<(), crate::store::StoreError>;
+        move_device_identity(old_id: &str, new_device: &crate::store::DeviceRow, identity: &str) -> Result<(), crate::store::StoreError>;
+        insert_confirmation_token(token: &crate::store::ConfirmationTokenRow) -> Result<(), crate::store::StoreError>;
+        consume_confirmation_token(token_hash: &str, device_id: &str, action: &str, now: i64) -> Result<bool, crate::store::StoreError>;
+        upsert_access_tier(t: &crate::store::AccessTierRow) -> Result<(), crate::store::StoreError>;
+        get_access_tier(device_id: &str) -> Result<Option<crate::store::AccessTierRow>, crate::store::StoreError>;
+        delete_access_tier(device_id: &str) -> Result<(), crate::store::StoreError>;
+        insert_action(a: &crate::store::ActionRow) -> Result<i64, crate::store::StoreError>;
+        get_action(id: i64) -> Result<Option<crate::store::ActionRow>, crate::store::StoreError>;
+        list_actions() -> Result<Vec<crate::store::ActionRow>, crate::store::StoreError>;
+        update_action_result(id: i64, result: &str) -> Result<(), crate::store::StoreError>;
+        delete_action(id: i64) -> Result<(), crate::store::StoreError>;
+        insert_diff(d: &crate::store::DiffRow) -> Result<i64, crate::store::StoreError>;
+        list_diffs() -> Result<Vec<crate::store::DiffRow>, crate::store::StoreError>;
+        delete_diff(id: i64) -> Result<(), crate::store::StoreError>;
+        try_record_policy_hit(client: &str, verb: &str, since: i64, budget: i64, now: i64) -> Result<bool, crate::store::StoreError>;
+        peek_confirmation_token_expiry(token_hash: &str) -> Result<Option<i64>, crate::store::StoreError>;
+    }
+
+    #[test]
+    fn broken_store_yields_root_fail_and_skipped_dependents() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("missing.db");
+        let store = BrokenStore;
+        let transport = FixtureTransport {
+            bodies: std::collections::BTreeMap::new(),
+        };
+        let ctx = Ctx {
+            store: &store,
+            store_path: &db,
+            targets_toml: None,
+            transport: &transport,
+            ssdp_reply: None,
+            discovered_ids: &[],
+            connect: refuse_connect,
+            platform_ok: platform_down,
+        };
+        let findings = runtime()
+            .block_on(run_checked(&ctx, &[]))
+            .expect("broken store still reports findings");
+        let verdict_of = |id: &str| {
+            findings
+                .iter()
+                .find(|finding| finding.id == id)
+                .unwrap_or_else(|| panic!("missing finding {id}"))
+                .verdict
+        };
+        assert_eq!(verdict_of("store-readable"), Verdict::Fail);
+        for id in [
+            "migrations-current",
+            "tier-posture",
+            "device-info",
+            "suspend-vs-absent",
+            "lan-policy",
+        ] {
+            assert_eq!(verdict_of(id), Verdict::Skip, "{id}");
+        }
     }
 }
