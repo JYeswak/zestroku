@@ -1,0 +1,21 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_ca4812d947ada3b9089f9104021629985de6dd345680b9ff6c155fc47ab7e9b5",
+ "limitations": [
+  "Actual normal-j2 immutable baseline and restored 1pass; first-match mutant fails exit-code assertion. Original positive233/migration evidence remains separate; no physical or whole-current-tip proof."
+ ],
+ "operation": "aliases-original-first-match-causal-control",
+ "parameters": {
+  "base": "f2886cbb93cdfbf73289c0d1c93bca70094c5554",
+  "baseline_exit": "0",
+  "mutant_exit": "101",
+  "restored_exit": "0",
+  "result_path": "docs/evidence/aliases-causal-grg-20261017.json"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 31859,
+  "sha256": "eece855e177aae64480e9f6602c8049a22c83559d5311a90ac9c432d9c9ec77b"
+ }
+}

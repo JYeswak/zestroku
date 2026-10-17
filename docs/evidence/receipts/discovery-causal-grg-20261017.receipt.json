@@ -1,0 +1,21 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_8ee08f0d628a214b6c226cdc96745605176984c3a6f8861b2cf437814c1bcc8c",
+ "limitations": [
+  "Actual normal-j2 immutable baseline and restored 1pass; removed filter mutant fails transport assertion. Injected transport only, no harmful destination traffic. Broader positive233 discovery regressions separately evidenced."
+ ],
+ "operation": "discovery-original-validator-removal-causal-control",
+ "parameters": {
+  "base": "f2886cbb93cdfbf73289c0d1c93bca70094c5554",
+  "baseline_exit": "0",
+  "mutant_exit": "101",
+  "restored_exit": "0",
+  "result_path": "docs/evidence/discovery-causal-grg-20261017.json"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 30572,
+  "sha256": "21984b06b428ff40970d55de7cd5e90f951ada9c0230382c2768a1787ff79f14"
+ }
+}
