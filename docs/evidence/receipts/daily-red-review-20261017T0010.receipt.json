@@ -1,0 +1,20 @@
+{
+ "authority": "live",
+ "confidence": "observed",
+ "evidence_id": "ev_8dc8dccbd90f93766b0f5d55e2c6fd05a18ea01db78133c383096dd0314d323b",
+ "limitations": [
+  "LIVE is readonly failing process-report collection, not product/CI/Roku/performance success. 24h and12h cohorts are incomparable as rates or intervention effects.",
+  "Frozen no-fix/publication/mining findings are retained with later scoped corrections, not regenerated green. Review/reopen events remain UNKNOWN; no qualified tenfold lever or learned-skill promotion."
+ ],
+ "operation": "daily-red-review-readonly-producers",
+ "parameters": {
+  "decisive_output": "fleet exit0; conformance exit0; MUST score0.421 notconformant; frozen24h6closes/4workers/24h=0.0625; B7nofix2 subsequently answered/reopened to0; P15 missingrow subsequently materialized as completed bounded observations/zero promotions; nativepublication13commits subsequently reachedb5d2bc9; actual .123 ownerFrostyOrchid notRusticPine; levernone",
+  "subject_sha256": "e7a6dce938003e5eabcf3d6e8b686ea3486f4fbd0099d39d497dbd1bcbe052f1",
+  "window": "2026-10-16T00:10:11Z/2026-10-17T00:10:11Z"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 2930,
+  "sha256": "d9537e183fd88ee10a569e575ef40964c9135245fa1b4055e1327fc9dfa2d3d7"
+ }
+}
