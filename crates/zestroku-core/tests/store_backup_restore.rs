@@ -184,16 +184,37 @@ fn restore_refuses_an_active_writer_even_with_zero_wal_frames() {
     let backup = dir.path().join("actions.backup.db");
     store.backup_to(&backup).unwrap(); // backup: one device
     store.upsert_device(&device("dev-2")).unwrap(); // live marker two
-    store.close().unwrap(); // joined and checkpointed: no WAL frames
+    store.close().unwrap(); // joined; checkpointed frames may still sit in the WAL
     let backup_before = std::fs::read(&backup).unwrap();
+
+    // Reset the WAL to its bare header with a complete truncating checkpoint
+    // (observed: a plain close keeps checkpointed frames in the file), so the
+    // writer below is invisible to any byte count.
+    let mut resetter = AsyncConnection::open_sync(path_of(&live)).unwrap();
+    let status = resetter
+        .query_with_params_sync("PRAGMA wal_checkpoint(TRUNCATE)", &[])
+        .unwrap();
+    resetter.close_without_checkpoint_sync().unwrap();
+    assert_eq!(
+        status[0].get(0).and_then(SqliteValue::as_integer),
+        Some(0),
+        "fixture checkpoint must complete"
+    );
+    let reset_len = wal_len(&live);
+    assert!(
+        reset_len <= WAL_HEADER_BYTES,
+        "fixture: WAL reset to its header, got {reset_len} bytes"
+    );
 
     // Active writer: holds the write lock but has written nothing yet.
     let mut writer = AsyncConnection::open_sync(path_of(&live)).unwrap();
     enter_wal_mode(&writer);
     writer.execute_sync("BEGIN IMMEDIATE").unwrap();
+    let held_len = wal_len(&live);
     assert!(
-        wal_len(&live) <= WAL_HEADER_BYTES,
-        "zero-frame precondition: the byte count alone cannot see this writer"
+        held_len <= WAL_HEADER_BYTES,
+        "zero-frame precondition: the byte count alone cannot see this \
+         writer (reset={reset_len} held={held_len} bytes)"
     );
 
     let err = SqliteStore::restore_from(&backup, &live).unwrap_err();
