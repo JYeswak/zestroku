@@ -29,6 +29,7 @@ use asupersync::{CancelReason, Cx, Outcome};
 use fastmcp::server::{BoxFuture, ToolExecutionMode, ToolHandler};
 use fastmcp::{Content, McpContext, McpError, McpErrorCode, McpResult, Tool, ToolAnnotations};
 use zestroku_core::mutation::{MutationContext, MutationError, authorize_mutation};
+use zestroku_core::policy::Policy;
 use zestroku_core::store::{ActionRow, SqliteStore, Store};
 use zestroku_proto::Command;
 use zestroku_types::{AccessTier, Device};
@@ -106,6 +107,7 @@ pub fn decide<S: Store + ?Sized>(
     tier: AccessTier,
     confirmation: Option<&str>,
     before_state: &str,
+    policy: &Policy,
 ) -> Result<Result<String, ArgError>, MutationError> {
     let command = build_command(kind, target).map_err(|e| ArgError(e.to_string()));
     let command = match command {
@@ -124,6 +126,7 @@ pub fn decide<S: Store + ?Sized>(
         &command,
         context,
         confirmation,
+        policy,
     ) {
         Ok(action_id) => Ok(Ok(format!(
             "approved: audit id {action_id}; dispatch happens in serve (m7c)"
@@ -347,6 +350,189 @@ impl ToolHandler for MutationTool {
                 }
             };
             Self::mutation_content(response)
+        })
+    }
+}
+
+/// Undo the latest restorable mutation: resolves the daemon's undo plan,
+/// then relaunches the before-app through the ordinary confirmation gate.
+/// The daemon is the sole authorizer; this tool forwards (never mints).
+pub struct UndoLastTool {
+    client: Arc<HttpClient>,
+    base_url: Arc<str>,
+}
+
+impl UndoLastTool {
+    fn new(client: Arc<HttpClient>, base_url: Arc<str>) -> Self {
+        Self { client, base_url }
+    }
+
+    /// Validate an undo-plan body: integer action id plus app id/name.
+    fn parse_undo_plan(body: &str) -> Result<i64, McpError> {
+        let value: serde_json::Value = serde_json::from_str(body).map_err(|_| {
+            mcp_error(
+                McpErrorCode::ToolExecutionError,
+                "daemon_invalid_response: undo plan is not JSON",
+            )
+        })?;
+        value
+            .get("action_id")
+            .and_then(serde_json::Value::as_i64)
+            .filter(|_| value.get("app_id").is_some() && value.get("app_name").is_some())
+            .ok_or_else(|| {
+                mcp_error(
+                    McpErrorCode::ToolExecutionError,
+                    "daemon_response_schema_mismatch",
+                )
+            })
+    }
+
+    async fn daemon_get(
+        &self,
+        request_cx: &Cx,
+        path: &str,
+    ) -> Result<asupersync::http::h1::Response, McpError> {
+        let url = format!("{}{path}", self.base_url);
+        match self.client.send_get(request_cx, &url).await {
+            Ok(response) => Ok(response),
+            Err(asupersync::http::h1::ClientError::Cancelled) => Err(mcp_error(
+                McpErrorCode::InternalError,
+                "daemon undo-plan request cancelled",
+            )),
+            Err(_) => Err(mcp_error(
+                McpErrorCode::ToolExecutionError,
+                "daemon_unavailable",
+            )),
+        }
+    }
+}
+
+impl ToolHandler for UndoLastTool {
+    fn definition(&self) -> Tool {
+        Tool {
+            name: "undo_last".to_string(),
+            description: Some(
+                "Relaunch the before-app of the latest restorable mutation \
+                 through the per-op confirmation gate (m7e). Resolves the \
+                 daemon undo plan first; unconfirmed calls are forwarded so \
+                 the daemon logs the denial."
+                    .to_string(),
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "host": {"type": "string", "description": "device host"},
+                    "confirm": {
+                        "type": "string",
+                        "description": "opaque single-use token from `zestroku approve`; when absent the daemon logs the denial"
+                    }
+                },
+                "required": ["host"]
+            }),
+            output_schema: None,
+            icon: None,
+            version: None,
+            tags: vec!["zestroku".to_string()],
+            annotations: Some(ToolAnnotations {
+                destructive: Some(true),
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn execution_mode(&self) -> ToolExecutionMode {
+        ToolExecutionMode::Async
+    }
+
+    fn call(&self, _ctx: &McpContext, _arguments: serde_json::Value) -> McpResult<Vec<Content>> {
+        Err(mcp_error(
+            McpErrorCode::InternalError,
+            "undo requires the asynchronous request context",
+        ))
+    }
+
+    fn call_async<'a>(
+        &'a self,
+        ctx: &'a McpContext,
+        arguments: serde_json::Value,
+    ) -> BoxFuture<'a, Outcome<Vec<Content>, McpError>> {
+        self.call_async_in_request(ctx, ctx.cx(), arguments)
+    }
+
+    fn call_async_in_request<'a>(
+        &'a self,
+        _ctx: &'a McpContext,
+        request_cx: &'a Cx,
+        arguments: serde_json::Value,
+    ) -> BoxFuture<'a, Outcome<Vec<Content>, McpError>> {
+        Box::pin(async move {
+            let Some(host) = arguments.get("host").and_then(|v| v.as_str()) else {
+                return Outcome::Err(mcp_error(McpErrorCode::InvalidParams, "missing `host`"));
+            };
+            if host.is_empty() {
+                return Outcome::Err(mcp_error(
+                    McpErrorCode::InvalidParams,
+                    "host must not be empty",
+                ));
+            }
+            let plan_path = format!("/v1/devices/{}/undo-plan", encode_path_segment(host));
+            let plan = match self.daemon_get(request_cx, &plan_path).await {
+                Ok(response) => response,
+                Err(error) => return Outcome::Err(error),
+            };
+            if !(200..300).contains(&plan.status) {
+                return Outcome::Err(mcp_error(
+                    McpErrorCode::ToolExecutionError,
+                    format!("daemon undo-plan error (HTTP {})", plan.status),
+                ));
+            }
+            let plan_text = match String::from_utf8(plan.body) {
+                Ok(text) => text,
+                Err(_) => {
+                    return Outcome::Err(mcp_error(
+                        McpErrorCode::ToolExecutionError,
+                        "daemon_invalid_response: undo plan is not UTF-8",
+                    ));
+                }
+            };
+            let action_id = match Self::parse_undo_plan(&plan_text) {
+                Ok(id) => id,
+                Err(error) => return Outcome::Err(error),
+            };
+            // Missing confirm is forwarded (not refused locally) so the
+            // daemon writes the denial audit row.
+            let mut undo = serde_json::json!({"action_id": action_id});
+            if let Some(confirm) = confirmation_token_from(&arguments) {
+                undo["confirm"] = serde_json::Value::from(confirm);
+            }
+            let path = format!("/v1/devices/{}/undo", encode_path_segment(host));
+            let url = format!("{}{path}", self.base_url);
+            let response =
+                match self
+                    .client
+                    .request(
+                        request_cx,
+                        asupersync::http::h1::types::Method::Post,
+                        &url,
+                        vec![("content-type".to_string(), "application/json".to_string())],
+                        undo.to_string().into_bytes(),
+                    )
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(asupersync::http::h1::ClientError::Cancelled) => {
+                        return Outcome::Cancelled(request_cx.cancel_reason().unwrap_or_else(
+                            || CancelReason::user("daemon undo request cancelled"),
+                        ));
+                    }
+                    Err(_) => {
+                        return Outcome::Err(mcp_error(
+                            McpErrorCode::ToolExecutionError,
+                            "daemon_unavailable",
+                        ));
+                    }
+                };
+            MutationTool::mutation_content(response)
         })
     }
 }
@@ -878,7 +1064,12 @@ pub fn server() -> Result<fastmcp::auto::Server, String> {
                 Arc::clone(&client),
                 Arc::clone(&base_url),
             ))
-            .tool(MutationTool::new("launch", client, base_url))
+            .tool(MutationTool::new(
+                "launch",
+                Arc::clone(&client),
+                Arc::clone(&base_url),
+            ))
+            .tool(UndoLastTool::new(client, base_url))
             .build(),
     )
 }
@@ -990,6 +1181,29 @@ mod tests {
     }
 
     #[test]
+    fn undo_plan_shape_accepts_typed_plan_and_rejects_drift() {
+        assert_eq!(
+            UndoLastTool::parse_undo_plan(
+                r#"{"action_id": 41, "app_id": 12, "app_name": "Netflix"}"#
+            )
+            .expect("typed plan parses"),
+            41
+        );
+        for bad in [
+            "not json",
+            r#"{"action_id": "41", "app_id": 12, "app_name": "Netflix"}"#,
+            r#"{"app_id": 12, "app_name": "Netflix"}"#,
+            r#"{"action_id": 41, "app_name": "Netflix"}"#,
+            r#"{"action_id": 41, "app_id": 12}"#,
+        ] {
+            assert!(
+                UndoLastTool::parse_undo_plan(bad).is_err(),
+                "drift must refuse: {bad}"
+            );
+        }
+    }
+
+    #[test]
     fn confirm_mapping_accepts_only_string_tokens() {
         assert_eq!(confirmation_token_from(&json!({"confirm": true})), None);
         assert_eq!(
@@ -1015,6 +1229,7 @@ mod tests {
             AccessTier::Permissive,
             None,
             "{}",
+            &Policy::default(),
         )
         .unwrap_err();
         let MutationError::ConfirmationRequired { action_id, .. } = &err else {
@@ -1050,6 +1265,7 @@ mod tests {
             AccessTier::Permissive,
             Some(&token),
             r#"{"app":"home"}"#,
+            &Policy::default(),
         )
         .expect("gate error impossible here")
         .expect("token authorizes");
@@ -1062,6 +1278,7 @@ mod tests {
             AccessTier::Permissive,
             Some(&token),
             "{}",
+            &Policy::default(),
         )
         .expect_err("replay refused");
         assert!(matches!(err, MutationError::ConfirmationRequired { .. }));
@@ -1086,6 +1303,7 @@ mod tests {
             AccessTier::Permissive,
             None,
             "{}",
+            &Policy::default(),
         )
         .expect("no gate error")
         .expect_err("non-numeric app id refuses as arg error");
@@ -1109,6 +1327,7 @@ mod tests {
             AccessTier::Open,
             None,
             "{}",
+            &Policy::default(),
         )
         .expect_err("open tier refuses mutations");
         assert!(matches!(err, MutationError::TierRefused(_)));

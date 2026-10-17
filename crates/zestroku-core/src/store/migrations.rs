@@ -61,6 +61,14 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: "CREATE TABLE device_identity (device_id TEXT PRIMARY KEY, identity TEXT NOT NULL); \
               CREATE INDEX idx_device_identity_identity ON device_identity (identity)",
     },
+    Migration {
+        version: 7,
+        name: "policy_hits",
+        sql: "CREATE TABLE policy_hits (\
+              client TEXT NOT NULL, verb TEXT NOT NULL, at INTEGER NOT NULL); \
+              CREATE INDEX idx_policy_hits_client_verb_at \
+              ON policy_hits (client, verb, at)",
+    },
 ];
 
 /// A migration list is valid when versions are 1..=N with no gaps or repeats.

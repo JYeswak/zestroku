@@ -7,6 +7,7 @@ use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use zestroku_core::mutation::{
     MutationContext, MutationError, authorize_mutation, finish_mutation,
 };
+use zestroku_core::policy::Policy;
 use zestroku_proto::{Command, Method, parse_active_app, query};
 use zestroku_types::{AccessTier, Device};
 
@@ -191,18 +192,37 @@ pub fn run(args: &[String]) -> ExitCode {
     };
     let before = runtime.block_on(async {
         match send_selected(AsupersyncTransport, &dial_host, 8060, &query("active-app")).await {
-            Ok(response) => parse_active_app(&response.body)
-                .map(|app| app.name)
-                .unwrap_or_else(|_| "unparseable".to_string()),
-            Err(_) => "unreachable".to_string(),
+            Ok(response) => Some(
+                parse_active_app(&response.body)
+                    .map(|app| (app.app_id, app.name))
+                    .unwrap_or((None, "unparseable".to_string())),
+            ),
+            Err(_) => None,
         }
     });
-    let marked_before = zestroku_core::tier::marked_before_state(tier_source, &before);
+    let marked_before = match &before {
+        Some((app_id, name)) => zestroku_core::tier::marked_before_app_state(
+            tier_source,
+            &format!("{dial_host}:8060"),
+            *app_id,
+            name,
+        ),
+        // Unreachable probe: name-only legacy shape that the undo selector
+        // intentionally refuses (no restore identity).
+        None => zestroku_core::tier::marked_before_state(tier_source, "unreachable"),
+    };
     let context = MutationContext {
         client: "cli",
         surface: "install",
         intent: "install developer sideload ZIP",
         before_state: &marked_before,
+    };
+    let policy = match Policy::load_default() {
+        Ok(policy) => policy,
+        Err(error) => {
+            eprintln!("zestroku: policy.toml invalid, refusing to run: {error}");
+            return ExitCode::FAILURE;
+        }
     };
     let action_id = match authorize_mutation(
         &store,
@@ -210,6 +230,7 @@ pub fn run(args: &[String]) -> ExitCode {
         &command,
         context,
         options.confirm.as_deref(),
+        &policy,
     ) {
         Ok(action_id) => action_id,
         Err(MutationError::ConfirmationRequired { action_id, .. }) => {
@@ -218,6 +239,10 @@ pub fn run(args: &[String]) -> ExitCode {
                 dial_host, options.port
             );
             return ExitCode::from(4);
+        }
+        Err(MutationError::PolicyDenied { action_id }) => {
+            eprintln!("zestroku: POLICY_DENIED (denial audited, id {action_id})");
+            return ExitCode::from(5);
         }
         Err(MutationError::TierRefused(error)) => {
             eprintln!("zestroku: {error} (denial audited)");

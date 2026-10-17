@@ -9,11 +9,13 @@ use sha2::{Digest, Sha256};
 use zestroku_proto::{Command, Method};
 use zestroku_types::{Device, Error};
 
+use crate::policy::Policy;
 use crate::store::{ActionRow, ConfirmationTokenRow, Store, StoreError};
 
 pub const CONFIRMATION_REQUIRED: &str = "CONFIRMATION_REQUIRED";
 pub const CONFIRMATION_INVALID: &str = "CONFIRMATION_INVALID";
 pub const TIER_REFUSED: &str = "TIER_REFUSED";
+pub const POLICY_DENIED: &str = "POLICY_DENIED";
 pub const RESULT_PENDING: &str = "pending";
 pub const APPROVAL_TTL_SECS: i64 = 300;
 
@@ -23,6 +25,8 @@ pub enum MutationError {
     TierRefused(#[from] Error),
     #[error("CONFIRMATION_REQUIRED (action {action_id})")]
     ConfirmationRequired { action_id: i64 },
+    #[error("POLICY_DENIED (action {action_id})")]
+    PolicyDenied { action_id: i64 },
     #[error("mutation gate only accepts POST commands")]
     NotMutation,
     #[error("could not generate approval token: {0}")]
@@ -76,9 +80,10 @@ pub fn authorize_mutation<S: Store + ?Sized>(
     command: &Command,
     context: MutationContext<'_>,
     token: Option<&str>,
+    policy: &Policy,
 ) -> Result<i64, MutationError> {
     let now = epoch_seconds();
-    authorize_mutation_at(store, device, command, context, token, now)
+    authorize_mutation_at(store, device, command, context, token, policy, now)
 }
 
 /// Deterministic-time variant used by expiry and single-use tests.
@@ -88,6 +93,7 @@ pub fn authorize_mutation_at<S: Store + ?Sized>(
     command: &Command,
     context: MutationContext<'_>,
     token: Option<&str>,
+    policy: &Policy,
     now: i64,
 ) -> Result<i64, MutationError> {
     if !is_mutation(command) {
@@ -98,6 +104,41 @@ pub fn authorize_mutation_at<S: Store + ?Sized>(
         return Err(MutationError::TierRefused(error));
     }
 
+    // Shared owner-policy choke (o0r): allowlist, then rate budget, both
+    // before any token is consumed. Denials are audited POLICY_DENIED. The
+    // rate check-and-record is one store transaction: separate CLI processes
+    // must not both observe remaining budget (TOCTOU).
+    let verb = Policy::verb_of(&command.path).unwrap_or("");
+    if !policy.allows(context.client, verb) {
+        let action_id = insert_action(store, &context, "denied", POLICY_DENIED)?;
+        return Err(MutationError::PolicyDenied { action_id });
+    }
+    if let Some((budget, window)) = policy.budget(verb) {
+        let since = now.saturating_sub(window);
+        if !store.try_record_policy_hit(context.client, verb, since, budget as i64, now)? {
+            let action_id = insert_action(store, &context, "denied", POLICY_DENIED)?;
+            return Err(MutationError::PolicyDenied { action_id });
+        }
+    }
+
+    // Quiet hours gate BEFORE any token is consumed: the presented token
+    // must have been minted inside an active window (fresh explicit
+    // confirmation, UTC hours). A quiet-denied attempt preserves the
+    // single-use approval for later use.
+    if let Some(token) = token.filter(|t| !t.trim().is_empty()) {
+        if let Some(quiet) = &policy.quiet {
+            let digest = Sha256::digest(token.as_bytes());
+            if let Some(expires_at) = store.peek_confirmation_token_expiry(&hex(&digest))? {
+                let minted_at = expires_at.saturating_sub(APPROVAL_TTL_SECS);
+                if quiet.active_at(hour_of_day_utc(now))
+                    && !quiet.active_at(hour_of_day_utc(minted_at))
+                {
+                    let action_id = insert_action(store, &context, "denied", POLICY_DENIED)?;
+                    return Err(MutationError::PolicyDenied { action_id });
+                }
+            }
+        }
+    }
     let accepted = token
         .filter(|t| !t.trim().is_empty())
         .map(|t| {
@@ -116,6 +157,11 @@ pub fn authorize_mutation_at<S: Store + ?Sized>(
         return Err(MutationError::ConfirmationRequired { action_id });
     }
     insert_action(store, &context, "approved", RESULT_PENDING)
+}
+
+/// UTC hour of day for an epoch timestamp.
+fn hour_of_day_utc(now: i64) -> u8 {
+    (now.rem_euclid(86_400) / 3_600) as u8
 }
 
 pub fn finish_mutation<S: Store + ?Sized>(
