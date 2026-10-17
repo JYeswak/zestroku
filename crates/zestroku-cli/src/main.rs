@@ -210,8 +210,8 @@ fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
         .map_err(|error| (ExitCode::FAILURE, format!("cannot list aliases: {error}")))?;
     let smart_class = args[target_index].eq_ignore_ascii_case("tv")
         || args[target_index].eq_ignore_ascii_case("stick");
-    match zestroku_core::targets::resolve_target(&args[target_index], &devices, &aliases) {
-        Ok(device) => args[target_index] = device.id,
+    match &zestroku_core::targets::resolve_target(&args[target_index], &devices, &aliases) {
+        Ok(device) => args[target_index] = device.id.clone(),
         Err(zestroku_core::targets::TargetResolutionError::NotFound { .. })
             if !strict && !smart_class => {}
         Err(
