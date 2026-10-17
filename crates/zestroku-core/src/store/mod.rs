@@ -143,6 +143,21 @@ pub trait Store {
     /// Returns the assigned id.
     fn insert_action(&self, a: &ActionRow) -> Result<i64, StoreError>;
     fn get_action(&self, id: i64) -> Result<Option<ActionRow>, StoreError>;
+    /// Atomic rate-limit gate: prune hits older than an hour, count
+    /// in-window hits, insert on budget and return true; return false
+    /// without inserting when exhausted. One transaction: safe across
+    /// separate CLI processes and connections (no TOCTOU).
+    fn try_record_policy_hit(
+        &self,
+        client: &str,
+        verb: &str,
+        since: i64,
+        budget: i64,
+        now: i64,
+    ) -> Result<bool, StoreError>;
+    /// Non-consuming lookup of a token's expiry (quiet-hours freshness peek
+    /// preserves the unused single-use approval).
+    fn peek_confirmation_token_expiry(&self, token_hash: &str) -> Result<Option<i64>, StoreError>;
     fn list_actions(&self) -> Result<Vec<ActionRow>, StoreError>;
     fn update_action_result(&self, id: i64, result: &str) -> Result<(), StoreError>;
     fn delete_action(&self, id: i64) -> Result<(), StoreError>;
@@ -663,6 +678,46 @@ impl Store for SqliteStore {
         .collect()
     }
 
+    fn try_record_policy_hit(
+        &self,
+        client: &str,
+        verb: &str,
+        since: i64,
+        budget: i64,
+        now: i64,
+    ) -> Result<bool, StoreError> {
+        self.in_transaction(|conn| {
+            conn.execute_with_params_sync(
+                "DELETE FROM policy_hits WHERE at < ?1",
+                &[i(now - 3600)],
+            )
+            .map(drop)?;
+            let rows = conn.query_with_params_sync(
+                "SELECT at FROM policy_hits WHERE client = ?1 AND verb = ?2 AND at >= ?3",
+                &[s(client), s(verb), i(since)],
+            )?;
+            if rows.len() as i64 >= budget {
+                return Ok(false);
+            }
+            conn.execute_with_params_sync(
+                "INSERT INTO policy_hits (client, verb, at) VALUES (?1, ?2, ?3)",
+                &[s(client), s(verb), i(now)],
+            )
+            .map(drop)?;
+            Ok(true)
+        })
+    }
+
+    fn peek_confirmation_token_expiry(&self, token_hash: &str) -> Result<Option<i64>, StoreError> {
+        Ok(self
+            .query(
+                "SELECT expires_at FROM confirmation_tokens WHERE token_hash = ?1",
+                &[s(token_hash)],
+            )?
+            .first()
+            .map(|row| int(row, 0))
+            .transpose()?)
+    }
     fn update_action_result(&self, id: i64, result: &str) -> Result<(), StoreError> {
         self.exec(
             "UPDATE actions SET result = ?1 WHERE id = ?2",

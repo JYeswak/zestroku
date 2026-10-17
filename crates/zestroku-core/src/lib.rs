@@ -5,6 +5,7 @@
 pub mod discovery;
 pub mod doctor;
 pub mod mutation;
+pub mod policy;
 pub mod ssdp_io;
 pub mod store;
 pub mod targets;

@@ -337,6 +337,61 @@ pub fn check_ssdp_reply(datagram: Option<&[u8]>) -> Finding {
     }
 }
 
+/// `policy-file`: the sibling `policy.toml` of the store parses when present.
+/// Missing means documented defaults (Pass); unparsable is Fail. Read-only:
+/// the file is read, never written.
+pub fn check_policy_file(store_path: &Path) -> Finding {
+    let path = match store_path.parent() {
+        Some(dir) => dir.join("policy.toml"),
+        None => {
+            return finding(
+                "policy-file",
+                Verdict::Skip,
+                "store path has no parent directory".to_string(),
+                String::new(),
+                "",
+            );
+        }
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return finding(
+                "policy-file",
+                Verdict::Pass,
+                "no policy.toml: documented defaults apply".to_string(),
+                format!("path={}", path.display()),
+                "",
+            );
+        }
+        Err(error) => {
+            return finding(
+                "policy-file",
+                Verdict::Fail,
+                format!("policy.toml unreadable: {error}"),
+                format!("path={}", path.display()),
+                "make policy.toml readable or remove it to use defaults",
+            );
+        }
+    };
+    match text.parse::<toml::Table>() {
+        Ok(_) => finding(
+            "policy-file",
+            Verdict::Pass,
+            "policy.toml parses".to_string(),
+            format!("path={}", path.display()),
+            "",
+        ),
+        Err(error) => finding(
+            "policy-file",
+            Verdict::Fail,
+            format!("policy.toml unparsable: {error}"),
+            format!("path={}", path.display()),
+            "fix policy.toml tables and keys",
+        ),
+    }
+}
+
 /// `suspend-vs-absent`: inventoried devices missing from the last sweep warn.
 pub fn check_suspend(store: &dyn Store, discovered: &[&str]) -> Finding {
     if discovered.is_empty() {
@@ -465,6 +520,7 @@ pub async fn run_checked<T: Transport>(
         check_device_info(ctx.store, ctx.transport).await,
         check_ssdp_reply(ctx.ssdp_reply),
         check_suspend(ctx.store, ctx.discovered_ids),
+        check_policy_file(ctx.store_path),
     ];
     for device in ctx
         .store
@@ -743,6 +799,78 @@ mod tests {
         assert_eq!(
             check_lan_policy("192.0.2.10", 8060, refused, platform_up).verdict,
             Verdict::Skip
+        );
+    }
+    #[test]
+    fn policy_file_missing_means_defaults_invalid_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("doctor.db");
+        let missing = check_policy_file(&db);
+        assert_eq!(missing.verdict, Verdict::Pass);
+        assert!(missing.detail.contains("defaults"), "{missing:?}");
+        std::fs::write(dir.path().join("policy.toml"), "[[[broken\n")
+            .expect("write invalid policy");
+        let invalid = check_policy_file(&db);
+        assert_eq!(invalid.verdict, Verdict::Fail);
+        std::fs::write(
+            dir.path().join("policy.toml"),
+            "[quiet_hours]\nenabled = true\n",
+        )
+        .expect("write valid policy");
+        assert_eq!(check_policy_file(&db).verdict, Verdict::Pass);
+    }
+
+    #[test]
+    fn policy_hit_gate_is_atomic_and_peek_preserves_token() {
+        use crate::store::ConfirmationTokenRow;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("doctor.db");
+        let store = SqliteStore::open(&db).expect("open store");
+        // Budget of 2: first two record, third refuses without inserting.
+        assert!(
+            store
+                .try_record_policy_hit("cli", "key", 1_700_000_000, 2, 1_700_000_100)
+                .expect("record 1")
+        );
+        assert!(
+            store
+                .try_record_policy_hit("cli", "key", 1_700_000_000, 2, 1_700_000_101)
+                .expect("record 2")
+        );
+        assert!(
+            !store
+                .try_record_policy_hit("cli", "key", 1_700_000_000, 2, 1_700_000_102)
+                .expect("record 3 refuses")
+        );
+        // Other verbs/clients keep their own budget.
+        assert!(
+            store
+                .try_record_policy_hit("cli", "launch", 1_700_000_000, 2, 1_700_000_102)
+                .expect("other verb")
+        );
+        // Peek observes expiry without consuming.
+        store
+            .insert_confirmation_token(&ConfirmationTokenRow {
+                token_hash: "abc".to_string(),
+                device_id: "192.0.2.10:8060".to_string(),
+                action: "key".to_string(),
+                expires_at: 1_700_000_400,
+            })
+            .expect("mint token");
+        assert_eq!(
+            store.peek_confirmation_token_expiry("abc").expect("peek"),
+            Some(1_700_000_400)
+        );
+        assert_eq!(
+            store
+                .peek_confirmation_token_expiry("missing")
+                .expect("peek missing"),
+            None
+        );
+        assert!(
+            store
+                .consume_confirmation_token("abc", "192.0.2.10:8060", "key", 1_700_000_100)
+                .expect("consume still works")
         );
     }
 }
