@@ -6,7 +6,7 @@
 pub(crate) mod migrations;
 
 use std::fmt::Display;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fsqlite::{AsyncConnection, FrankenError, Row, SqliteValue};
@@ -236,24 +236,27 @@ impl SqliteStore {
     /// Atomically replace the live database at `live` with the backup at
     /// `backup`, for upgrade rollback and recovery (1r4.9).
     ///
-    /// The caller must have closed every handle on `live` (back up first,
-    /// stop the daemon through the resident route): rename/unlink beneath
-    /// an open connection is SQLite's documented corruption case
-    /// (howtocorrupt §2.5 — old and new inodes can share pathname-based
-    /// journals), so no open reader is supported across promotion.
-    /// Enforcement is by bytes: an active writer's un-checkpointable WAL
-    /// refuses. Validation first: the backup must be a SQLite database
-    /// carrying a schema ledger whose max version this binary supports — a
-    /// newer-schema backup is refused,
-    /// never migrated in place and never silently discarded (1r4.7 refusal,
-    /// extended to restore). Live WAL sidecars are checkpointed into the
-    /// live database before promotion (checkpointing preserves committed
-    /// runtime data). A checkpoint leaves the sidecar file in place but
-    /// empty, so only a sidecar that still holds bytes afterwards is
-    /// refused — never deleted; an empty one holds nothing and is removed
-    /// so it cannot shadow the promoted snapshot. Promotion is copy-to-temp
-    /// plus rename, so an interrupted restore leaves `live` untouched:
-    /// recover by retrying the restore or keeping the pre-upgrade backup.
+    /// Offline only: the caller must have closed every handle on `live`
+    /// (back up first, stop the daemon through the resident route).
+    /// Rename/unlink beneath an open connection is SQLite's documented
+    /// corruption case (howtocorrupt §2.5: old and new inodes can share
+    /// pathname-based journals), so no open reader or writer is supported
+    /// across promotion.
+    ///
+    /// Order: (1) validate the backup (SQLite header, then a schema ledger
+    /// whose max version this binary supports; a newer-schema backup is
+    /// refused, never migrated in place or discarded — 1r4.7 extended) on a
+    /// temporary handle joined without a checkpoint, so the backup is never
+    /// mutated; (2) checkpoint the live database with
+    /// `wal_checkpoint(TRUNCATE)` on a temporary joined handle and require
+    /// a complete status: the pragma reports an active writer or held fence
+    /// as `Ok` with `busy=1`, so that row — not the WAL size — proves
+    /// quiescence; (3) only then settle the sidecars: frames beyond the WAL
+    /// header refuse and are never deleted, a header-only WAL and the
+    /// `-shm` index are removed so they cannot shadow the snapshot, and any
+    /// stat error other than NotFound refuses; (4) stage a synced copy and
+    /// promote it by rename, so an interrupted restore leaves `live`
+    /// untouched: retry the restore or keep the pre-upgrade backup.
     pub fn restore_from(backup: &Path, live: &Path) -> Result<(), StoreError> {
         let max = applied_schema_max(backup)?;
         let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
@@ -267,46 +270,9 @@ impl SqliteStore {
             .parent()
             .ok_or_else(|| backend("live path has no parent"))?;
         checkpoint_live(live)?;
-        // SQLite checkpointing truncates the WAL but leaves the (now empty)
-        // file behind until last-close, so WAL existence alone proves
-        // nothing. Only a WAL that still holds bytes after checkpointing is
-        // refused — never deleted: it may hold data no checkpoint could
-        // consolidate. An empty WAL holds nothing and is removed so it
-        // cannot shadow the promoted snapshot.
-        let mut wal = live.as_os_str().to_owned();
-        wal.push("-wal");
-        let wal = Path::new(&wal);
-        // Only NotFound means absent. Any other stat failure (permissions,
-        // I/O) must fail closed: treating an un-inspectable WAL as empty
-        // could unlink data.
-        let bytes = match std::fs::metadata(wal) {
-            Ok(m) => m.len(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(e) => {
-                return Err(backend(format!(
-                    "cannot stat live WAL {wal}: {e}; refusing restore",
-                    wal = wal.display()
-                )));
-            }
-        };
-        if bytes > 0 {
-            return Err(backend(format!(
-                "live WAL {wal} holds {bytes} un-checkpointed bytes; refusing restore",
-                wal = wal.display()
-            )));
-        }
-        if wal.exists() {
-            remove_if_present(wal, "remove empty WAL")?;
-        }
-        // The -shm file is only a shared-memory index over the WAL (locks
-        // and frame locations), never durable bytes: with the WAL empty or
-        // gone it indexes nothing, so it is removed rather than gated on
-        // size (a live index is normally tens of kilobytes).
-        let mut shm = live.as_os_str().to_owned();
-        shm.push("-shm");
-        remove_if_present(Path::new(&shm), "remove stale shm index")?;
+        settle_sidecars(live)?;
         let tmp = parent.join(".restore.tmp");
-        std::fs::copy(backup, &tmp).map_err(|e| backend(format!("copy backup to staging: {e}")))?;
+        stage_copy(backup, &tmp)?;
         std::fs::rename(&tmp, live).map_err(|e| backend(format!("promote staged restore: {e}")))?;
         Ok(())
     }
@@ -432,11 +398,40 @@ fn int(row: &Row, i: usize) -> Result<i64, StoreError> {
         .and_then(SqliteValue::as_integer)
         .ok_or_else(|| backend(format!("column {i} is not INTEGER")))
 }
+
+/// Size of the WAL file header. A completed checkpoint leaves at most this
+/// many bytes behind until the last close, so it bounds a frameless WAL.
+/// It is a secondary refusal only: it never substitutes for the proved
+/// complete checkpoint status.
+const WAL_HEADER_BYTES: u64 = 32;
+
+/// Join a temporary connection. `Drop` only DETACHES the worker (fsqlite
+/// 0.4.9 `async_api`), so a merely dropped handle can still hold the
+/// database while the caller stats, unlinks or renames files; an explicit
+/// close joins the worker first. It closes WITHOUT a close-time checkpoint:
+/// a validation handle must not mutate its database, and the live handle
+/// was already checkpointed (or is deliberately left untouched on
+/// refusal). Both the primary outcome and a failed close are preserved.
+fn join_temporary<T>(
+    mut conn: AsyncConnection,
+    primary: Result<T, StoreError>,
+    what: &str,
+) -> Result<T, StoreError> {
+    match (primary, conn.close_without_checkpoint_sync()) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(close)) => Err(backend(format!("{what}: close failed: {close}"))),
+        (Err(primary), Ok(())) => Err(primary),
+        (Err(StoreError::Backend(primary)), Err(close)) => {
+            Err(backend(format!("{primary}; {what}: close failed: {close}")))
+        }
+    }
+}
+
 /// Max applied schema version in the database at `path`, read without
-/// migrating (restore validation must never mutate the backup). A missing
-/// ledger means the file is not a zestroku store: refuse, do not assume.
-/// A file without the SQLite header is refused before any SQL runs, so the
-/// error names the cause instead of leaking driver diagnostics.
+/// migrating (restore validation must never mutate the backup). A file
+/// without the SQLite header is refused before any SQL runs; a valid
+/// SQLite file with no schema ledger is refused separately, since neither
+/// is a zestroku store. The validation handle is joined before returning.
 fn applied_schema_max(path: &Path) -> Result<i64, StoreError> {
     use std::io::Read as _;
     let mut header = [0u8; 16];
@@ -456,37 +451,127 @@ fn applied_schema_max(path: &Path) -> Result<i64, StoreError> {
         )));
     }
     let conn = AsyncConnection::open_sync(path.to_string_lossy().into_owned()).map_err(backend)?;
-    let rows = conn
+    let ledger = conn
         .query_with_params_sync("SELECT version FROM schema_migrations", &[])
-        .map_err(|e| backend(format!("backup has no schema ledger: {e}")))?;
-    rows.iter()
-        .map(|r| {
-            r.get(0)
-                .and_then(SqliteValue::as_integer)
-                .ok_or_else(|| backend("schema ledger version is not INTEGER"))
-        })
-        .try_fold(0i64, |max, v| v.map(|v| max.max(v)))
+        .map_err(|e| backend(format!("backup has no schema ledger: {e}")))
+        .and_then(|rows| {
+            rows.iter()
+                .map(|r| {
+                    r.get(0)
+                        .and_then(SqliteValue::as_integer)
+                        .ok_or_else(|| backend("schema ledger version is not INTEGER"))
+                })
+                .try_fold(0i64, |max, v| v.map(|v| max.max(v)))
+        });
+    join_temporary(conn, ledger, "backup validation handle")
 }
 
-/// Consolidate live WAL sidecars into the live database (preserving every
-/// committed byte) so promotion replaces one self-contained file. A missing
-/// live file needs no checkpoint. A failed checkpoint is fatal: masking it
-/// would hide driver regressions behind the byte recheck.
+/// Whether a `PRAGMA wal_checkpoint(TRUNCATE)` status row (busy, log,
+/// checkpointed) proves the checkpoint finished. The pragma returns
+/// `Ok(rows)` even when it could not run: a checkpoint blocked by an
+/// active writer or a held fence is `busy=1` with frames left, not an
+/// error. Only `0|0|0` (TRUNCATE completed, log reset) or SQLite's
+/// `0|-1|-1` sentinel (database not in WAL mode: no WAL to checkpoint)
+/// proves quiescence.
+fn checkpoint_complete(busy: i64, log: i64, done: i64) -> bool {
+    busy == 0 && ((log, done) == (0, 0) || (log, done) == (-1, -1))
+}
+
+fn require_complete_checkpoint(rows: &[Row]) -> Result<(), StoreError> {
+    let [row] = rows else {
+        return Err(backend(format!(
+            "live checkpoint returned {} status rows, want 1",
+            rows.len()
+        )));
+    };
+    let (busy, log, done) = (int(row, 0)?, int(row, 1)?, int(row, 2)?);
+    if checkpoint_complete(busy, log, done) {
+        Ok(())
+    } else {
+        Err(backend(format!(
+            "live checkpoint incomplete (busy={busy} log={log} checkpointed={done})"
+        )))
+    }
+}
+
+/// Consolidate live WAL frames into the live database (preserving every
+/// committed byte) on a temporary handle that is joined before returning,
+/// and require a complete checkpoint status. A missing live file needs no
+/// checkpoint; any other stat failure refuses.
 fn checkpoint_live(live: &Path) -> Result<(), StoreError> {
-    if !live.exists() {
-        return Ok(());
+    match std::fs::metadata(live) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(backend(format!(
+                "cannot stat live database {}: {e}; refusing restore",
+                live.display()
+            )));
+        }
     }
     let conn = AsyncConnection::open_sync(live.to_string_lossy().into_owned())
         .map_err(|e| backend(format!("cannot open live database for checkpoint: {e}")))?;
-    // PRAGMA returns a result row, so it must go through the query path.
-    // A failed checkpoint is fatal here (not tolerated): the byte recheck
-    // below can only refuse what it sees, and a silent skip would mask a
-    // driver regression. A busy-but-progressing checkpoint still returns
-    // Ok; un-consolidated bytes are refused by size below.
-    conn.query_with_params_sync("PRAGMA wal_checkpoint(TRUNCATE)", &[])
-        .map_err(|e| backend(format!("live checkpoint failed: {e}")))?;
-    Ok(())
+    // PRAGMA returns a status row, so it goes through the query path.
+    let status = conn
+        .query_with_params_sync("PRAGMA wal_checkpoint(TRUNCATE)", &[])
+        .map_err(|e| backend(format!("live checkpoint failed: {e}")))
+        .and_then(|rows| require_complete_checkpoint(&rows));
+    join_temporary(conn, status, "live checkpoint handle")
 }
+
+/// `live` plus a sidecar suffix (`-wal`, `-shm`).
+fn sidecar(live: &Path, suffix: &str) -> PathBuf {
+    let mut name = live.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Settle the live sidecars. Call ONLY after a proved-complete checkpoint
+/// with every temporary handle joined: the WAL size is no proof of either.
+/// Frames beyond the header refuse — never deleted, they may be data no
+/// checkpoint consolidated. A header-only WAL and the `-shm` index (a
+/// shared-memory index over the WAL, never durable bytes) are removed so
+/// they cannot shadow the promoted snapshot. Only NotFound means absent:
+/// any other stat failure refuses rather than treating the WAL as empty.
+fn settle_sidecars(live: &Path) -> Result<(), StoreError> {
+    let wal = sidecar(live, "-wal");
+    let bytes = match std::fs::metadata(&wal) {
+        Ok(meta) => meta.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => {
+            return Err(backend(format!(
+                "cannot stat live WAL {}: {e}; refusing restore",
+                wal.display()
+            )));
+        }
+    };
+    if bytes > WAL_HEADER_BYTES {
+        return Err(backend(format!(
+            "live WAL {} holds {bytes} bytes beyond its {WAL_HEADER_BYTES}-byte header \
+             (un-checkpointed frames); refusing restore",
+            wal.display()
+        )));
+    }
+    remove_if_present(&wal, "remove frameless WAL")?;
+    remove_if_present(&sidecar(live, "-shm"), "remove stale shm index")
+}
+
+/// Copy `backup` to `tmp` and flush it to disk before promotion, so a
+/// crash after the rename cannot expose a short or unwritten database.
+fn stage_copy(backup: &Path, tmp: &Path) -> Result<(), StoreError> {
+    fn copy_synced(backup: &Path, tmp: &Path) -> std::io::Result<()> {
+        let mut src = std::fs::File::open(backup)?;
+        let mut dst = std::fs::File::create(tmp)?;
+        std::io::copy(&mut src, &mut dst)?;
+        dst.sync_all()
+    }
+    copy_synced(backup, tmp).map_err(|e| {
+        // A failed stage removes its partial file; `live` is untouched.
+        let _ = std::fs::remove_file(tmp);
+        backend(format!("stage backup copy: {e}"))
+    })
+}
+
 /// Remove `path`, tolerating a concurrent unlink (NotFound). Any other
 /// removal failure is fatal: a stale sidecar beside the promoted snapshot
 /// risks recovery confusion.
@@ -981,3 +1066,5 @@ impl Store for SqliteStore {
 }
 #[cfg(test)]
 mod transaction_tests;
+#[cfg(test)]
+mod wal_gate_tests;
