@@ -209,13 +209,13 @@ impl SqliteStore {
         // a database whose schema is newer than its supported catalog.
         // Fail closed before any migration or data write.
         let supported = migrations.iter().map(|m| m.version).max().unwrap_or(0);
-        if let Some(&max) = applied.iter().max() {
-            if max > supported {
-                return Err(backend(format!(
-                    "store schema version {max} is newer than this binary supports \
-                     ({supported}); refusing to migrate or write (open with a newer binary)"
-                )));
-            }
+        if let Some(&max) = applied.iter().max()
+            && max > supported
+        {
+            return Err(backend(format!(
+                "store schema version {max} is newer than this binary supports \
+                 ({supported}); refusing to migrate or write (open with a newer binary)"
+            )));
         }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -721,14 +721,13 @@ impl Store for SqliteStore {
     }
 
     fn peek_confirmation_token_expiry(&self, token_hash: &str) -> Result<Option<i64>, StoreError> {
-        Ok(self
-            .query(
-                "SELECT expires_at FROM confirmation_tokens WHERE token_hash = ?1",
-                &[s(token_hash)],
-            )?
-            .first()
-            .map(|row| int(row, 0))
-            .transpose()?)
+        self.query(
+            "SELECT expires_at FROM confirmation_tokens WHERE token_hash = ?1",
+            &[s(token_hash)],
+        )?
+        .first()
+        .map(|row| int(row, 0))
+        .transpose()
     }
     fn update_action_result(&self, id: i64, result: &str) -> Result<(), StoreError> {
         self.exec(

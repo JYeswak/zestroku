@@ -265,6 +265,11 @@ occupied port exits unsuccessfully without claiming readiness. SIGINT
 (Ctrl-C) and SIGTERM both stop admission and drain the running HTTP server.
 `zestroku --version` prints `zestroku <semver> <git-sha7>[-dirty]`.
 
+The store refuses a database whose applied schema version is newer than the
+running binary supports. Use a compatible newer binary; do not delete migration
+history to force an older binary to open it. This protects the store boundary,
+but does not provide a complete binary-and-data upgrade or rollback workflow.
+
 ## Ground truth (verified live 2026-10-09)
 
 - ECP `:8060`, no pairing; XML responses.

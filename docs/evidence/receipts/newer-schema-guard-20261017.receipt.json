@@ -1,0 +1,20 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_569410712a2eed968396d8e28574ff78cc116d3f840b52083c6503248c9ae1f7",
+ "limitations": [
+  "Actual older-catalog RED1/101 then guarded GREEN1, finalcore64/workspace226/strictClippy0 on frozen5c inputs. Publicfe44 check0 but fullruntime fails independent hung-Tailscale case. Fullfmt refused103 for slots4, not passed; no release/rollback/install/selfclose claim."
+ ],
+ "operation": "newer-schema-real-store-red-green",
+ "parameters": {
+  "base": "5c3738d5f33dbaa05cf8f561af6ff95c0a72618b",
+  "bead": "zestroku-owner-local-usability-1r4.7",
+  "overlay": "1f56f4b173f8a9c234001adef99a33e134600689cbfe939be0223ded6e72ebc6",
+  "result_path": "docs/evidence/newer-schema-guard-20261017.json"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 120214,
+  "sha256": "d015dd9066bea8d783d8731f40aa9dc04d40061d832ef3b97cb28e9a5d7b8561"
+ }
+}
