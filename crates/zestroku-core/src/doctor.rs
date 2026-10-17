@@ -650,10 +650,6 @@ mod tests {
         }
     }
 
-    fn runtime() -> asupersync::Runtime {
-        asupersync::Runtime::new().expect("test runtime")
-    }
-
     #[test]
     fn registry_passes_on_a_healthy_fixture() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -910,6 +906,7 @@ mod tests {
         ($($name:ident($($arg:ident : $ty:ty),*) -> $ret:ty;)*) => {
             impl crate::store::Store for BrokenStore {
                 $(fn $name(&self, $($arg: $ty),*) -> $ret {
+                    $(let _ = &$arg;)*
                     Err(crate::store::StoreError::Backend("broken fixture".into()))
                 })*
             }
