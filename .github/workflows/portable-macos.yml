@@ -14,6 +14,8 @@ env:
   CARGO_BUILD_JOBS: 3
   CARGO_INCREMENTAL: 0
   CARGO_NET_GIT_FETCH_WITH_CLI: true
+  ZESTROKU_BUILD_SHA: ${{ github.sha }}
+  ZESTROKU_BUILD_DIRTY: "false"
 
 jobs:
   stock-macos:
@@ -58,13 +60,16 @@ jobs:
           test "$(command -v cargo)" = "$cargo_path"
           test "$(command -v bun)" = "$bun_path"
           printf 'cargo=%s\nbun=%s\n' "$cargo_path" "$bun_path"
+          binary="$PWD/target/debug/zestroku"
+          test -x "$binary"
           test "$(bun --version)" = "1.4.3"
           if command -v rch >/dev/null 2>&1 || command -v omp-kit >/dev/null 2>&1; then
             printf 'RCH and omp-kit must be absent from the mission-check PATH\n' >&2
             exit 1
           fi
           unset RCH_REQUIRE_REMOTE ZESTROKU_MISSION_RUN_RCH
-          bun scripts/mission-check.ts --pillar safe-control
+          ZESTROKU_MISSION_BINARY="$binary" \
+            bun scripts/mission-check.ts --pillar safe-control
 
       - name: test (stock, no --config overrides)
         # Keep the full workspace test observable when mission registration is UNKNOWN.

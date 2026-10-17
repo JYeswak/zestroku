@@ -18,8 +18,8 @@
 // - Rust suites (simulated): RCH uses immutable ctx.source when selected;
 //   local cargo is the fallback when RCH is absent. Local results do not
 //   establish immutable-source or product-build provenance. Only observed
-//   #[test] names are required; zero-run (`test result: ok. 0 passed`) is
-//   an explicit FAIL, never green.
+//   #[test] names must pass; unrelated selected test binaries may report zero
+//   matches, but a missing expected name remains an explicit FAIL.
 // - Live (live): read-only `info` only when ZESTROKU_MISSION_LIVE_DEVICE is
 //   configured; absent live prerequisites are UNKNOWN, never PASS.
 // - stdout/stderr text alone never proves audit completion: mutate.rs warns
@@ -276,13 +276,15 @@ function suiteCase(
   if (output.startsWith("SUITE-FAILED")) {
     return result(id, "FAIL", `Rust suite failed: ${sanitizeDetail(output)}`, "invariant", "simulated");
   }
-  if (output.includes("test result: ok. 0 passed")) {
-    return result(id, "FAIL", `filter matched zero tests (zero-run), not a pass; expected ${names.join(", ")}`, "invariant", "simulated");
-  }
   const missing = names.filter((name) => !output.includes(`test ${name} ... ok`));
   const suiteOk = output.includes("test result: ok");
+  // Cargo emits one result per selected test target; a zero-run sibling is
+  // harmless only when every requested test passes in a green suite.
   if (missing.length === 0 && suiteOk) {
     return result(id, "PASS", passDetail, "invariant", "simulated", covers);
+  }
+  if (missing.length > 0 && output.includes("test result: ok. 0 passed")) {
+    return result(id, "FAIL", `expected named tests missing in a zero-run target; expected ${names.join(", ")}, missing=[${missing.join(", ")}]`, "invariant", "simulated");
   }
   return result(id, "FAIL", `expected green runs of ${names.join(", ")}; missing=[${missing.join(", ")}], suiteOk=${suiteOk}`, "invariant", "simulated");
 }

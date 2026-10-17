@@ -312,6 +312,30 @@ describe("run() against executable fixtures", () => {
     expect(replay.detail.includes("zero-run")).toBe(true);
   }, LOCAL_TIMEOUT);
 
+  test("an unrelated target zero-run does not hide a requested passing test", async () => {
+    const output = [
+      "running 1 test",
+      "test tier_refusal_precedes_http_token_consumption_and_snapshot_is_audited ... ok",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;",
+      "running 0 tests",
+      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;",
+    ].join("\n");
+    const mixedTargets: ExecFn = async () => ({
+      code: 0,
+      stdout: output,
+      stderr: "",
+      timedOut: false,
+    });
+    const cases = await run(ctxFor(
+      binOk,
+      { ZESTROKU_MISSION_RUN_RCH: "1" },
+      join(SCRATCH, "mixed-target-zero-run"),
+      realExec,
+      mixedTargets,
+    ));
+    expect(byId(cases, "safe-control.snapshot-before-state-audited").outcome).toBe("PASS");
+  }, LOCAL_TIMEOUT);
+
   test("missing binary is UNKNOWN everywhere, never green", async () => {
     const cases = await run(ctxFor("/nonexistent/zestroku", {}, join(SCRATCH, "missing")));
     expect(cases.length).toBeGreaterThan(0);
