@@ -42,9 +42,9 @@ fn unbound_legacy_grant_stays_unresolved_and_read_only() {
         .execute_with_params_sync(
             "INSERT INTO confirmation_tokens (token_hash, device_id, action, expires_at, consumed_at) VALUES (?1, ?2, ?3, ?4, NULL)",
             &[
-                SqliteValue::Text(token_hash.clone()),
-                SqliteValue::Text(format!("{}:{}", device.host, device.port)),
-                SqliteValue::Text(command.path.clone()),
+                SqliteValue::Text(token_hash.clone().into()),
+                SqliteValue::Text(format!("{}:{}", device.host, device.port).into()),
+                SqliteValue::Text(command.path.clone().into()),
                 SqliteValue::Integer(1_300),
             ],
         )
