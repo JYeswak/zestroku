@@ -215,3 +215,37 @@ fn restore_refuses_wal_bytes_no_checkpoint_can_consolidate() {
     assert_eq!(kept.list_devices().unwrap().len(), 1);
     kept.close().unwrap();
 }
+
+#[test]
+fn restore_fails_closed_when_the_wal_cannot_be_statted() {
+    let dir = tempfile::tempdir().unwrap();
+    let live = dir.path().join("actions.db");
+    let store = SqliteStore::open(&live).unwrap();
+    seed(&store);
+    let backup = dir.path().join("actions.backup.db");
+    store.backup_to(&backup).unwrap();
+    store.close().unwrap();
+    // A regular file where the WAL would live: stat fails with ENOTDIR
+    // (deterministic without permission games), never NotFound.
+    std::fs::write(dir.path().join("actions.db-wal"), b"blocker").unwrap();
+    let blocker_live = dir.path().join("actions.db-wal").join("actions.db");
+    let err = SqliteStore::restore_from(&backup, &blocker_live).unwrap_err();
+    assert!(err.to_string().contains("cannot stat"), "{err}");
+}
+
+#[test]
+fn restore_names_a_valid_database_missing_its_ledger() {
+    let dir = tempfile::tempdir().unwrap();
+    let live = dir.path().join("actions.db");
+    SqliteStore::open(&live).unwrap().close().unwrap();
+    // Valid SQLite, but no schema_migrations table: distinct from
+    // malformed bytes (which fail the header check instead).
+    let bare = dir.path().join("bare.db");
+    let raw = AsyncConnection::open_sync(bare.to_string_lossy().into_owned()).unwrap();
+    raw.execute_sync("CREATE TABLE other(x TEXT)").unwrap();
+    drop(raw);
+    let err = SqliteStore::restore_from(&bare, &live).unwrap_err();
+    assert!(err.to_string().contains("no schema ledger"), "{err}");
+    assert!(!dir.path().join(".restore.tmp").exists());
+    SqliteStore::open(&live).unwrap().close().unwrap();
+}

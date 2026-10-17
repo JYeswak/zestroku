@@ -236,10 +236,12 @@ impl SqliteStore {
     /// Atomically replace the live database at `live` with the backup at
     /// `backup`, for upgrade rollback and recovery (1r4.9).
     ///
-    /// The caller must have closed every handle on `live` (back up first,
-    /// stop the daemon through the resident route). Validation first: the
-    /// backup must be a SQLite database carrying a schema ledger whose max
-    /// version this binary supports — a newer-schema backup is refused,
+    /// The caller must have closed every writer handle on `live` (back up
+    /// first, stop the daemon through the resident route); idle open readers
+    /// are tolerated, while an active writer's un-checkpointable bytes are
+    /// refused. Validation first: the backup must be a SQLite database
+    /// carrying a schema ledger whose max version this binary supports — a
+    /// newer-schema backup is refused,
     /// never migrated in place and never silently discarded (1r4.7 refusal,
     /// extended to restore). Live WAL sidecars are checkpointed into the
     /// live database before promotion (checkpointing preserves committed
@@ -271,7 +273,19 @@ impl SqliteStore {
         let mut wal = live.as_os_str().to_owned();
         wal.push("-wal");
         let wal = Path::new(&wal);
-        let bytes = std::fs::metadata(wal).map(|m| m.len()).unwrap_or(0);
+        // Only NotFound means absent. Any other stat failure (permissions,
+        // I/O) must fail closed: treating an un-inspectable WAL as empty
+        // could unlink data.
+        let bytes = match std::fs::metadata(wal) {
+            Ok(m) => m.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) => {
+                return Err(backend(format!(
+                    "cannot stat live WAL {wal}: {e}; refusing restore",
+                    wal = wal.display()
+                )));
+            }
+        };
         if bytes > 0 {
             return Err(backend(format!(
                 "live WAL {wal} holds {bytes} un-checkpointed bytes; refusing restore",
@@ -279,7 +293,7 @@ impl SqliteStore {
             )));
         }
         if wal.exists() {
-            std::fs::remove_file(wal).map_err(|e| backend(format!("remove empty WAL: {e}")))?;
+            remove_if_present(wal, "remove empty WAL")?;
         }
         // The -shm file is only a shared-memory index over the WAL (locks
         // and frame locations), never durable bytes: with the WAL empty or
@@ -287,11 +301,7 @@ impl SqliteStore {
         // size (a live index is normally tens of kilobytes).
         let mut shm = live.as_os_str().to_owned();
         shm.push("-shm");
-        let shm = Path::new(&shm);
-        if shm.exists() {
-            std::fs::remove_file(shm)
-                .map_err(|e| backend(format!("remove stale shm index: {e}")))?;
-        }
+        remove_if_present(Path::new(&shm), "remove stale shm index")?;
         let tmp = parent.join(".restore.tmp");
         std::fs::copy(backup, &tmp).map_err(|e| backend(format!("copy backup to staging: {e}")))?;
         std::fs::rename(&tmp, live).map_err(|e| backend(format!("promote staged restore: {e}")))?;
@@ -473,6 +483,16 @@ fn checkpoint_live(live: &Path) -> Result<(), StoreError> {
     conn.query_with_params_sync("PRAGMA wal_checkpoint(TRUNCATE)", &[])
         .map_err(|e| backend(format!("live checkpoint failed: {e}")))?;
     Ok(())
+}
+/// Remove `path`, tolerating a concurrent unlink (NotFound). Any other
+/// removal failure is fatal: a stale sidecar beside the promoted snapshot
+/// risks recovery confusion.
+fn remove_if_present(path: &Path, what: &str) -> Result<(), StoreError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(backend(format!("{what} {}: {e}", path.display()))),
+    }
 }
 
 fn s(v: &str) -> SqliteValue {
