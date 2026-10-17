@@ -36,9 +36,9 @@ fn raw_http_cannot_spend_a_cli_bound_grant() {
         &api_host,
         &serde_json::json!({"app_id": 1001, "confirm": &token}),
     );
-    assert_eq!(status, 403, "{body}");
     assert!(!headers.contains(&token));
     assert!(!body.contains(&token));
+    assert_eq!(status, 403, "{body}");
     assert!(
         sim.received_requests()
             .iter()
@@ -62,9 +62,9 @@ fn raw_http_cannot_spend_a_cli_bound_grant() {
         .args(["launch", &target, "1001", "--confirm", &token])
         .output()
         .expect("run real CLI against resident daemon");
-    assert_eq!(cli.status.code(), Some(0), "{cli:?}");
     assert!(!String::from_utf8_lossy(&cli.stdout).contains(&token));
     assert!(!String::from_utf8_lossy(&cli.stderr).contains(&token));
+    assert_eq!(cli.status.code(), Some(0), "{cli:?}");
     let posts: Vec<_> = sim
         .received_requests()
         .into_iter()
