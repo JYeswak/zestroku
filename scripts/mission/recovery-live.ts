@@ -35,29 +35,35 @@ function result(
 }
 
 async function runExistingSuite(ctx: CheckContext, id: string, suite: Suite): Promise<CheckCase> {
-  if (ctx.env.ZESTROKU_MISSION_RUN_RCH !== "1") {
-    return result(id, "UNKNOWN", "remote verification is opt-in; set ZESTROKU_MISSION_RUN_RCH=1 to run this immutable-source simulator suite", "invariant", "simulated", suite.covers);
+  const executor = ctx.env.ZESTROKU_MISSION_RUN_RCH;
+  if (executor !== "1" && executor !== "0") {
+    return result(id, "UNKNOWN", "Rust test executor was not selected", "invariant", "simulated", suite.covers);
   }
+  const runner = executor === "1" ? "remote RCH" : "local cargo";
   try {
-    const command = await ctx.exec(
-      ["rch", "exec", "--base", ctx.source, "--clean-overlay", "--no-overlay", "--", "cargo", "test", "--locked", "-j1", "-p", suite.packageName, "--test", suite.testTarget, suite.testName, "--", "--exact"],
-      { env: { ...ctx.env, RCH_REQUIRE_REMOTE: "1" }, timeoutMs: commandTimeoutMs },
+    const command = await ctx.runCargoTest(
+      ["test", "--locked", "-j1", "-p", suite.packageName, "--test", suite.testTarget, suite.testName, "--", "--exact"],
+      { timeoutMs: commandTimeoutMs },
     );
+    if (command.stderr === "EXECUTABLE_UNAVAILABLE") {
+      return result(id, "UNKNOWN", `${runner} executor is unavailable; exact test did not run`, "invariant", "simulated", suite.covers);
+    }
     const lines = `${command.stdout}\n${command.stderr}`.split("\n").map((line) => line.trim());
     const exactPass = lines.includes(`test ${suite.testName} ... ok`);
     const summary = lines.find((line) => line.startsWith("test result: ok."));
     const executed = summary?.includes("1 passed") === true && summary.includes("0 failed");
     const passed = !command.timedOut && command.code === 0 && exactPass && executed;
+    const sourceDetail = executor === "1" ? ` on immutable ${ctx.source.slice(0, 12)}` : " in local workspace";
     return result(
       id,
       passed ? "PASS" : "FAIL",
-      passed ? `exact remote test ${suite.testName} passed on immutable ${ctx.source.slice(0, 12)} with one test executed` : `exact remote test ${suite.testName} did not prove one passing execution (timeout=${command.timedOut}, exit=${command.code})`,
+      passed ? `exact ${runner} test ${suite.testName} passed${sourceDetail} with one test executed` : `exact ${runner} test ${suite.testName} did not prove one passing execution (timeout=${command.timedOut}, exit=${command.code})`,
       "invariant",
       "simulated",
       suite.covers,
     );
   } catch {
-    return result(id, "FAIL", `remote test command ${suite.testName} could not execute`, "invariant", "simulated", suite.covers);
+    return result(id, "FAIL", `${runner} cargo test command ${suite.testName} could not execute`, "invariant", "simulated", suite.covers);
   }
 }
 

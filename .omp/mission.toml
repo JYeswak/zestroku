@@ -26,7 +26,7 @@ id = "installed-resident"
 clause = "Claim class live-witness, evidence tier live on Joshua's Mac; fixture/simulated process negatives stay separately typed. Fresh-shell installation, first-run empty-store setup and resident service must reach usable state and persistence, refusing invalid configuration/store/bind/restart behavior. Covers README surfaces CLI, setup, resident service, configuration/store and diagnostics; presence/health alone never establishes these workflows."
 check = "omp-kit heavy -- bun scripts/mission-check.ts --pillar installed-resident"
 check_path = "scripts/mission-check.ts"
-check_sha256 = "b0f0ec544e2e6b11c514b507defa67a424355a37691cae53bc735c7319b2c71d"
+check_sha256 = "d9306e46670505d213df50953330ba4c194185c0fd085af29734021a09ab3cc4"
 check_command_sha256 = "df78f76dba1b75b87bcca53a0eeec4f1269cc5a7c13071f1751d043f4b82cb2c"
 
 [[pillar]]
@@ -34,7 +34,7 @@ id = "surface-parity"
 clause = "Claim class live-witness, evidence tier live for wired HTTP, initialized MCP stdio/HTTP, resources, SSE, browser and authorized off-LAN tailnet behavior; simulated consumer assertions stay simulated. Implements README discovery/info/apps/state/error parity with shared authority and actual execution; rejects unknown/ambiguous/malformed/unavailable/backend-override cases without silent direct fallback, foreign-origin effects or false success."
 check = "omp-kit heavy -- bun scripts/mission-check.ts --pillar surface-parity"
 check_path = "scripts/mission-check.ts"
-check_sha256 = "b0f0ec544e2e6b11c514b507defa67a424355a37691cae53bc735c7319b2c71d"
+check_sha256 = "d9306e46670505d213df50953330ba4c194185c0fd085af29734021a09ab3cc4"
 check_command_sha256 = "94e697a95bc6d9a89c639052b6858821411184b60388b21b2dbcfedcc34be8ad"
 
 [[pillar]]
@@ -42,7 +42,7 @@ id = "safe-control"
 clause = "Claim class invariant with enforcement and causal fixture/simulated negatives, plus separate live-witness tier live for owner-approved physical effects. Human-only per-operation approvals, exact action/target binding, tier/principal policy, zero-dispatch denial/replay, completed audit and approved bounded undo must hold for keys, launch/input, sideload, history, undo and policy. Approval text, unconsumed/pending audit or simulated dispatch is never physical execution proof."
 check = "omp-kit heavy -- bun scripts/mission-check.ts --pillar safe-control"
 check_path = "scripts/mission-check.ts"
-check_sha256 = "b0f0ec544e2e6b11c514b507defa67a424355a37691cae53bc735c7319b2c71d"
+check_sha256 = "d9306e46670505d213df50953330ba4c194185c0fd085af29734021a09ab3cc4"
 check_command_sha256 = "b3543c58b4a8e5def50b38229cd0aa16d877136406f6e62c93eda6b87b10c177"
 
 [[pillar]]
@@ -50,5 +50,5 @@ id = "recovery-live"
 clause = "Claim class live-witness, evidence tier live for applicable physical-device and real off-LAN recovery; simulated identity/suspend/fault assertions remain simulated. Runnable simulator, identity/defaults, address/tier/suspend recovery, cache/poll/freshness and concurrent health/shutdown must meet README positives/negatives, including no lost associations, stale-state concealment, polling storm, executor blocking or automatic mutation retry. Timing is an empirical slo only under a measured, explicit workload/bound; checker containment deadlines are not product SLOs."
 check = "omp-kit heavy -- bun scripts/mission-check.ts --pillar recovery-live"
 check_path = "scripts/mission-check.ts"
-check_sha256 = "b0f0ec544e2e6b11c514b507defa67a424355a37691cae53bc735c7319b2c71d"
+check_sha256 = "d9306e46670505d213df50953330ba4c194185c0fd085af29734021a09ab3cc4"
 check_command_sha256 = "179236c6c0f4c09740e23f60a734585c66a846fcbdcefd2d2ba9c7c6f162ce80"

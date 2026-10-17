@@ -14,12 +14,12 @@
 //   listener that counts POSTs. Exit codes and socket counts are observed;
 //   audit-row persistence for the local run is NOT claimed (no CLI read
 //   surface exists for the actions table) — row logging is proven by the
-//   RCH suites below, which read the store directly.
-// - Remote RCH suites (simulated): existing source-bound suites on the
-//   immutable ctx.source revision with RCH_REQUIRE_REMOTE=1 (never a local
-//   build; the dispatcher refuses local cargo). Only observed #[test] names
-//   are referenced; each named test must appear as `test <name> ... ok` and
-//   zero-run (`test result: ok. 0 passed`) is an explicit FAIL, never green.
+//   Rust suites below, which read the store directly.
+// - Rust suites (simulated): RCH uses immutable ctx.source when selected;
+//   local cargo is the fallback when RCH is absent. Local results do not
+//   establish immutable-source or product-build provenance. Only observed
+//   #[test] names are required; zero-run (`test result: ok. 0 passed`) is
+//   an explicit FAIL, never green.
 // - Live (live): read-only `info` only when ZESTROKU_MISSION_LIVE_DEVICE is
 //   configured; absent live prerequisites are UNKNOWN, never PASS.
 // - stdout/stderr text alone never proves audit completion: mutate.rs warns
@@ -36,11 +36,11 @@
 // product exposes no undo acceptance to consume.
 //
 // ENV NAMES (all inputs bound here, no hidden transitive sources):
-// ZESTROKU_MISSION_RUN_RCH=1 (dispatcher opt-in for remote suites),
+// ZESTROKU_MISSION_RUN_RCH=1 when RCH is selected and 0 for local cargo,
 // ZESTROKU_MISSION_LIVE_DEVICE (owner device host[:port] for read-only
 // info), ZESTROKU_DB / ZESTROKU_TIER / HOME (isolated per-run store, tier
-// override, home dir under ctx.scratch), RCH_REQUIRE_REMOTE=1 (forced for
-// every rch invocation by this checker). Transitive sources: ctx.source
+// override, home dir under ctx.scratch). The dispatcher sets
+// RCH_REQUIRE_REMOTE=1 for every remote invocation. Transitive sources: ctx.source
 // (immutable base), ctx.binary (dispatcher-supplied), ctx.scratch.
 //
 // This module never mints approvals, never touches production tokens, never
@@ -231,33 +231,35 @@ async function denialZeroPost(ctx: CheckContext, versionOk: boolean): Promise<Ch
   }
 }
 
-async function rchSuite(
+async function rustTestSuite(
   ctx: CheckContext,
   target: string[],
   filters: string[],
 ): Promise<{ ran: boolean; unknownReason?: string; output?: string }> {
   const source = ctx.source.trim();
   if (!isFullRevision(source)) {
-    return { ran: false, unknownReason: "ctx.source is not a full revision; immutable remote proof unaddressable" };
+    return { ran: false, unknownReason: "ctx.source is not a full revision; Rust suite source is unaddressable" };
   }
-  if (ctx.env.ZESTROKU_MISSION_RUN_RCH !== "1") {
-    return { ran: false, unknownReason: "ZESTROKU_MISSION_RUN_RCH is not 1; remote suites run only in dispatcher runs with admitted slots" };
+  const executor = ctx.env.ZESTROKU_MISSION_RUN_RCH;
+  if (executor !== "1" && executor !== "0") {
+    return { ran: false, unknownReason: "Rust test executor was not selected" };
   }
-  const attempted = await tryExec(
-    ctx,
-    ["rch", "exec", "--base", source, "--clean-overlay", "--no-overlay", "--",
-      "cargo", "test", "-j", "2", "--locked", ...target, "--", ...filters],
-    { RCH_REQUIRE_REMOTE: "1" },
-    RCH_TIMEOUT_MS,
-  );
-  if (!attempted.ok) {
-    return { ran: false, unknownReason: `rch invocation failed to start (slots or binary): ${attempted.reason}` };
+  const runner = executor === "1" ? "remote RCH" : "local cargo";
+  try {
+    const command = await ctx.runCargoTest(
+      ["test", "-j", "2", "--locked", ...target, "--", ...filters],
+      { timeoutMs: RCH_TIMEOUT_MS },
+    );
+    if (command.stderr === "EXECUTABLE_UNAVAILABLE") {
+      return { ran: false, unknownReason: `${runner} executor is unavailable` };
+    }
+    if (command.timedOut || command.code !== 0) {
+      return { ran: true, output: `SUITE-FAILED ${runner} code=${command.code} timedOut=${command.timedOut} ${sanitizeDetail(`${command.stdout}\n${command.stderr}`)}` };
+    }
+    return { ran: true, output: `${command.stdout}\n${command.stderr}` };
+  } catch {
+    return { ran: false, unknownReason: `${runner} cargo test command could not start` };
   }
-  const { code, stdout, stderr, timedOut } = attempted.value;
-  if (timedOut || code !== 0) {
-    return { ran: true, output: `REMOTE-FAILED code=${code} timedOut=${timedOut} ${sanitizeDetail(`${stdout}\n${stderr}`)}` };
-  }
-  return { ran: true, output: `${stdout}\n${stderr}` };
 }
 
 function suiteCase(
@@ -268,11 +270,11 @@ function suiteCase(
   covers?: readonly string[],
 ): CheckCase {
   if (!suite.ran) {
-    return result(id, "UNKNOWN", suite.unknownReason ?? "remote suite did not run; behavior unobserved", "invariant", "simulated");
+    return result(id, "UNKNOWN", suite.unknownReason ?? "Rust test suite did not run; behavior unobserved", "invariant", "simulated");
   }
   const output = suite.output ?? "";
-  if (output.startsWith("REMOTE-FAILED")) {
-    return result(id, "FAIL", `remote suite failed: ${sanitizeDetail(output)}`, "invariant", "simulated");
+  if (output.startsWith("SUITE-FAILED")) {
+    return result(id, "FAIL", `Rust suite failed: ${sanitizeDetail(output)}`, "invariant", "simulated");
   }
   if (output.includes("test result: ok. 0 passed")) {
     return result(id, "FAIL", `filter matched zero tests (zero-run), not a pass; expected ${names.join(", ")}`, "invariant", "simulated");
@@ -392,65 +394,66 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
   cases.push(await denialZeroPost(ctx, versionOk));
 
   const rev = revision === "" ? ctx.source.trim().slice(0, 12) : revision;
-  const rchA = await rchSuite(ctx, RCH_A_TARGET, RCH_A_FILTERS);
+  const execution = ctx.env.ZESTROKU_MISSION_RUN_RCH === "1" ? "remote RCH" : "local cargo";
+  const rchA = await rustTestSuite(ctx, RCH_A_TARGET, RCH_A_FILTERS);
   cases.push(suiteCase(
     "safe-control.replay-single-use",
     rchA,
     ["minted_cli_token_authorizes_once_then_replay_is_denied"],
-    `minted CLI key token authorized once then replay denied with denied audit row (remote mutation_cli @${rev})`,
+    `minted CLI key token authorized once then replay denied with denied audit row (${execution} mutation_cli @${rev})`,
     ["cap.key.negative", "cap.history.negative"],
   ));
   cases.push(suiteCase(
     "safe-control.free-text-denial-no-dispatch",
     rchA,
     ["free_text_confirm_is_rejected_and_audited_without_dispatch", "unconfirmed_keypress_refuses_with_audit_exit4"],
-    `free-text and absent key confirm refused and audited without dispatch (remote mutation_cli @${rev})`,
+    `free-text and absent key confirm refused and audited without dispatch (${execution} mutation_cli @${rev})`,
     ["cap.key.negative", "cap.history.negative"],
   ));
   cases.push(suiteCase(
     "safe-control.install-gated-confirmation-audit",
     rchA,
     ["sideload_requires_confirmation_then_authenticates_and_audits_on_installer_port"],
-    `unconfirmed sideload refused before installer HTTP; confirmed install authenticated and audited (remote mutation_cli @${rev})`,
+    `unconfirmed sideload refused before installer HTTP; confirmed install authenticated and audited (${execution} mutation_cli @${rev})`,
     ["cap.install.negative"],
   ));
 
-  const rchB = await rchSuite(ctx, RCH_B_TARGETS, RCH_B_FILTERS);
+  const rchB = await rustTestSuite(ctx, RCH_B_TARGETS, RCH_B_FILTERS);
   cases.push(suiteCase(
     "safe-control.snapshot-before-state-audited",
     rchB,
     ["tier_refusal_precedes_http_token_consumption_and_snapshot_is_audited"],
-    `launch tier refusal preceded token consumption with zero POSTs and the active-app snapshot audited (remote mutation_gate_contract @${rev})`,
+    `launch tier refusal preceded token consumption with zero POSTs and the active-app snapshot audited (${execution} mutation_gate_contract @${rev})`,
     ["cap.launch.negative", "cap.policy.negative"],
   ));
   cases.push(suiteCase(
     "safe-control.invalid-token-binding-denied-audited",
     rchB,
     ["http_approval_requires_nonblank_single_use_device_and_command_binding", "open_and_unknown_http_tiers_deny_before_mutation_post"],
-    `missing/blank/free-text/wrong-action/wrong-device/expired tokens and open/unknown tiers denied with audited rows and snapshot-only device traffic (remote mutation_gate_contract @${rev})`,
+    `missing/blank/free-text/wrong-action/wrong-device/expired tokens and open/unknown tiers denied with audited rows and snapshot-only device traffic (${execution} mutation_gate_contract @${rev})`,
     ["cap.launch.negative", "cap.history.negative", "cap.policy.negative"],
   ));
   cases.push(suiteCase(
     "safe-control.body-smuggling-refused-closed-schema",
     rchB,
     ["key_and_launch_mutation_routes_document_closed_request_bodies"],
-    `mutation request bodies stay closed: host/port/tier/principal/backend_url cannot ride the body (remote mutation_schema_contract @${rev}); unknown-principal owner mapping is a tailnet surface outside this pillar and remains unproven here`,
+    `mutation request bodies stay closed: host/port/tier/principal/backend_url cannot ride the body (${execution} mutation_schema_contract @${rev}); unknown-principal owner mapping is a tailnet surface outside this pillar and remains unproven here`,
     ["cap.policy.negative"],
   ));
   cases.push(suiteCase(
     "safe-control.dispatch-failure-recorded-as-failure",
     rchB,
     ["approved_http_dispatch_failures_finish_as_failures"],
-    `approved launch dispatch failures finished as failures, never completed, after snapshot plus exactly one POST (remote mutation_outcome_contract @${rev})`,
+    `approved launch dispatch failures finished as failures, never completed, after snapshot plus exactly one POST (${execution} mutation_outcome_contract @${rev})`,
     ["cap.launch.negative", "cap.history.positive"],
   ));
 
-  const rchC = await rchSuite(ctx, RCH_C_TARGET, RCH_C_FILTERS);
+  const rchC = await rustTestSuite(ctx, RCH_C_TARGET, RCH_C_FILTERS);
   cases.push(suiteCase(
     "safe-control.completed-dispatch-with-true-before-state",
     rchC,
     ["real_http_mutations_use_inventory_bound_approval_snapshot_and_audit"],
-    `real daemon plus SimDevice: approved launch then key each dispatched exactly once with completed audit rows carrying true before-states (tier_source=recorded snapshots), failure recorded as failure, tokens absent from every surface (remote mutation_api @${rev})`,
+    `real daemon plus SimDevice: approved launch then key each dispatched exactly once with completed audit rows carrying true before-states (tier_source=recorded snapshots), failure recorded as failure, tokens absent from every surface (${execution} mutation_api @${rev})`,
     ["cap.key.positive", "cap.launch.positive", "cap.history.positive"],
   ));
 

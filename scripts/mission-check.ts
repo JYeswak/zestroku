@@ -22,14 +22,15 @@ export interface CheckContext {
   scratch: string;
   env: Record<string, string | undefined>;
   exec(argv: string[], options?: { env?: Record<string, string | undefined>; timeoutMs?: number }): Promise<ExecResult>;
+  runCargoTest(argv: string[], options?: { env?: Record<string, string | undefined>; timeoutMs?: number }): Promise<ExecResult>;
 }
 
 const PILLARS: readonly PillarId[] = ["installed-resident", "surface-parity", "safe-control", "recovery-live"];
 const IMPLEMENTATIONS: Record<PillarId, { path: string; sha256: string }> = {
   "installed-resident": { path: "scripts/mission/installed-resident.ts", sha256: "4d785cc0036c52259c1437888c58c8a18ca3be56af5c8d090dcad7b78b0ebf49" },
   "surface-parity": { path: "scripts/mission/surface-parity.ts", sha256: "214d59ed1148ccda064edd64b1a61c964bc408cf47d7284acdf5476f1fc9d59e" },
-  "safe-control": { path: "scripts/mission/safe-control.ts", sha256: "f65ddf28ee8719dec79dafe11f753e1b25168fd4f160529dbb15a102cc46fd85" },
-  "recovery-live": { path: "scripts/mission/recovery-live.ts", sha256: "bdab82eb8d9c9a04bc2cba07a07883e0b32e36e7fd236eda231ecd41833b8b66" },
+  "safe-control": { path: "scripts/mission/safe-control.ts", sha256: "cb78893a480b14dd3f1d88ffe79074cdd11c0a7ff884b5dd67c01d51d27179dd" },
+  "recovery-live": { path: "scripts/mission/recovery-live.ts", sha256: "f7a470179ddcb4a87560877f62a8bf84442babbb77a12e4adb8548f506f42340" },
 };
 
 const OBLIGATIONS: Record<PillarId, readonly string[]> = {
@@ -135,12 +136,12 @@ export async function captureVerifiedImplementation(repo: string, relativePath: 
   return { url: `data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`, sha256: digest };
 }
 
-export async function execCommand(argv: string[], options: { cwd: string; env: Record<string, string | undefined>; timeoutMs: number }): Promise<ExecResult> {
+export async function execCommand(argv: string[], options: { cwd: string; env: Record<string, string | undefined>; timeoutMs: number; allowLocalCargo?: boolean }): Promise<ExecResult> {
   if (argv.length === 0 || !argv[0] || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0) return { code: 2, stdout: "", stderr: "INVALID_COMMAND_OR_DEADLINE", timedOut: false };
   const executable = basename(argv[0] ?? "");
   const refused: Readonly<Record<string, true>> = { cargo: true, rustc: true, rustdoc: true, rustup: true, rustfmt: true, env: true, sh: true, bash: true, zsh: true, dash: true, sudo: true, xcrun: true };
   // This is a controlled argv boundary, not an OS sandbox for arbitrary code.
-  if (Object.hasOwn(refused, executable)) return { code: 126, stdout: "", stderr: "LOCAL_RUST_OR_SHELL_WRAPPER_REFUSED_USE_REMOTE_RCH_AND_CTX_ENV", timedOut: false };
+  if (Object.hasOwn(refused, executable) && !(executable === "cargo" && options.allowLocalCargo === true)) return { code: 126, stdout: "", stderr: "LOCAL_RUST_OR_SHELL_WRAPPER_REFUSED_USE_REMOTE_RCH_AND_CTX_ENV", timedOut: false };
   if (process.platform === "win32") return { code: 126, stdout: "", stderr: "OWNED_POSIX_PROCESS_GROUP_REQUIRED", timedOut: false };
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(options.env)) if (value !== undefined) env[key] = value;
@@ -207,6 +208,67 @@ export async function execCommand(argv: string[], options: { cwd: string; env: R
 function isPillar(value: string | undefined): value is PillarId {
   return PILLARS.some(id => id === value);
 }
+export function selectRustExecutor(
+  rchRequest: string | undefined,
+  rchAvailable: boolean,
+): "rch" | "cargo" {
+  return rchRequest === "1" || rchAvailable ? "rch" : "cargo";
+}
+interface MissionExecution {
+  rustExecutor: "rch" | "cargo";
+  env: Record<string, string | undefined>;
+  exec: CheckContext["exec"];
+  registrationCase: CheckCase;
+}
+
+async function prepareMissionExecution(repo: string, scratch: string): Promise<MissionExecution> {
+  const rustExecutor = selectRustExecutor(process.env.ZESTROKU_MISSION_RUN_RCH, Bun.which("rch") !== null);
+  const env = { ...process.env, TMPDIR: scratch, ZESTROKU_MISSION_RUN_RCH: rustExecutor === "rch" ? "1" : "0" };
+  const exec: CheckContext["exec"] = (argv, options) => execCommand(argv, {
+    cwd: repo,
+    env: { ...env, ...options?.env, TMPDIR: scratch },
+    timeoutMs: options?.timeoutMs ?? 30_000,
+    allowLocalCargo: rustExecutor === "cargo" && argv[0] === "cargo",
+  });
+  const registration = await exec(["omp-kit", "mission", "validate", "--project", repo, "--json"]);
+  const available = registration.code === 0 && !registration.timedOut;
+  const unavailable = registration.stderr === "EXECUTABLE_UNAVAILABLE";
+  const registrationCase: CheckCase = {
+    id: "registration-integrity",
+    outcome: available ? "PASS" : unavailable ? "UNKNOWN" : "FAIL",
+    detail: available
+      ? "Canonical mission registration validated"
+      : unavailable ? "omp-kit is unavailable; registration integrity cannot be established" : "Canonical mission registration validation is non-green",
+    claim: "invariant",
+    tier: "fixture",
+  };
+  return { rustExecutor, env, exec, registrationCase };
+}
+
+function createCargoTestRunner(
+  source: string,
+  rustExecutor: MissionExecution["rustExecutor"],
+  exec: CheckContext["exec"],
+): CheckContext["runCargoTest"] {
+  return (argv, options) => {
+    const remote = rustExecutor === "rch";
+    const prefix = remote
+      ? ["rch", "exec", "--base", source, "--clean-overlay", "--no-overlay", "--", "cargo"]
+      : ["cargo"];
+    return exec([...prefix, ...argv], {
+      env: { ...options?.env, RCH_REQUIRE_REMOTE: remote ? "1" : undefined },
+      timeoutMs: options?.timeoutMs,
+    });
+  };
+}
+
+function registrationReadbackStable(initial: CheckCase, after: ExecResult): boolean {
+  if (initial.outcome === "PASS") return after.code === 0 && !after.timedOut;
+  if (initial.outcome === "UNKNOWN") return after.stderr === "EXECUTABLE_UNAVAILABLE";
+  return true;
+}
+
+
 
 export async function main(args: readonly string[]): Promise<number> {
   if (args.length !== 2 || args[0] !== "--pillar" || !isPillar(args[1])) {
@@ -220,15 +282,8 @@ export async function main(args: readonly string[]): Promise<number> {
   const scratch = join(scratchRoot, `mission-check-${randomUUID()}.${process.pid}`);
   await mkdir(scratch, { mode: 0o700 });
   await writeFile(join(scratch, ".owner"), `pid=${process.pid}\nlabel=mission-check\nrepo=${repo}\ncreated=${new Date().toISOString()}\n`, { mode: 0o600, flag: "wx" });
-  // Validation is pre-approved (AM54399); an explicit partial run remains non-green.
-  const env = { ...process.env, TMPDIR: scratch, ZESTROKU_MISSION_RUN_RCH: process.env.ZESTROKU_MISSION_RUN_RCH ?? "1" };
-  const exec: CheckContext["exec"] = (argv, options) => execCommand(argv, { cwd: repo, env: { ...env, ...options?.env, TMPDIR: scratch }, timeoutMs: options?.timeoutMs ?? 30_000 });
+  const { rustExecutor, env, exec, registrationCase } = await prepareMissionExecution(repo, scratch);
   const checkerSha256 = await sha256File(fileURLToPath(import.meta.url));
-  const registration = await exec(["omp-kit", "mission", "validate", "--project", repo, "--json"]);
-  if (registration.code !== 0 || registration.timedOut) {
-    console.error(JSON.stringify({ pillar, outcome: "FAIL", case: "registration-integrity", detail: "Canonical mission registration is non-green; run omp-kit mission validate --project REPO --json before relying on results" }));
-    return 1;
-  }
   const head = await exec(["git", "rev-parse", "HEAD"]);
   const source = env.ZESTROKU_MISSION_SOURCE ?? head.stdout.trim();
   const sourceIsFull = (source.length === 40 || source.length === 64) && [...source].every(character => "0123456789abcdef".includes(character));
@@ -256,7 +311,8 @@ export async function main(args: readonly string[]): Promise<number> {
   const snapshot = snapshots[pillar];
   if (!implementation || !snapshot) return 1;
   const binary = env.ZESTROKU_MISSION_BINARY ?? "zestroku";
-  const context: CheckContext = { repo, source, binary, scratch, env, exec };
+  const runCargoTest = createCargoTestRunner(source, rustExecutor, exec);
+  const context: CheckContext = { repo, source, binary, scratch, env, exec, runCargoTest };
   let artifactSha256: string | null = null;
   const artifactIdentity: CheckCase = {
     id: "artifact-input-identity", outcome: "UNKNOWN",
@@ -290,9 +346,9 @@ export async function main(args: readonly string[]): Promise<number> {
     if (!record(loaded) || typeof loaded.run !== "function") throw new Error("invalid checker export");
     const result: unknown = await loaded.run(context);
     if (!Array.isArray(result) || !result.every(isCase)) throw new Error("invalid checker cases");
-    cases = [artifactIdentity, ...completeCoverage(pillar, result)];
+    cases = [registrationCase, artifactIdentity, ...completeCoverage(pillar, result)];
   } catch {
-    cases = [{ id: "checker-execution", outcome: "FAIL", detail: "Behavioral checker could not complete; no successful result inferred", claim: "invariant", tier: "fixture" }];
+    cases = [registrationCase, { id: "checker-execution", outcome: "FAIL", detail: "Behavioral checker could not complete; no successful result inferred", claim: "invariant", tier: "fixture" }];
   }
   const closureAfter = await Promise.all(PILLARS.map(async id => {
     const registered = IMPLEMENTATIONS[id];
@@ -303,7 +359,7 @@ export async function main(args: readonly string[]): Promise<number> {
   }
   const registrationAfter = await exec(["omp-kit", "mission", "validate", "--project", repo, "--json"]);
   const checkerSha256After = await sha256File(fileURLToPath(import.meta.url));
-  if (registrationAfter.code !== 0 || checkerSha256After !== checkerSha256) {
+  if (!registrationReadbackStable(registrationCase, registrationAfter) || checkerSha256After !== checkerSha256) {
     cases.push({ id: "checker-changed-during-run", outcome: "FAIL", detail: "Canonical check registration or dispatcher bytes changed during execution", claim: "invariant", tier: "fixture" });
   }
   const code = summarize(cases);

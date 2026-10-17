@@ -82,7 +82,7 @@ function realExec(
   return promise;
 }
 
-function ctxFor(binary: string, env: Record<string, string | undefined>, scratch: string, exec?: ExecFn): CheckContext {
+function ctxFor(binary: string, env: Record<string, string | undefined>, scratch: string, exec?: ExecFn, runCargoTest?: ExecFn): CheckContext {
   return {
     repo: REPO,
     binary,
@@ -90,6 +90,7 @@ function ctxFor(binary: string, env: Record<string, string | undefined>, scratch
     scratch,
     env,
     exec: exec ?? realExec,
+    runCargoTest: runCargoTest ?? (async () => ({ code: 127, stdout: "", stderr: "RUST_EXECUTOR_UNSELECTED", timedOut: false })),
   };
 }
 
@@ -297,16 +298,15 @@ describe("run() against executable fixtures", () => {
   }, LOCAL_TIMEOUT);
 
   test("zero-run remote output is FAIL, not green", async () => {
-    // Causal evaluator negative on the checker's own zero-run guard: a
-    // remote suite that matches zero tests must fail the case. The crafted
-    // output below is never asserted PASS anywhere in this file.
-    const stubRch: ExecFn = async (argv, options) => {
-      if (argv[0] === "rch") {
-        return { code: 0, stdout: "test result: ok. 0 passed; 0 failed; 0 ignored;", stderr: "", timedOut: false };
-      }
-      return realExec(argv, options);
-    };
-    const cases = await run(ctxFor(binOk, { ZESTROKU_MISSION_RUN_RCH: "1" }, join(SCRATCH, "zerorun"), stubRch));
+    // Causal evaluator negative on the checker's own zero-run guard. The
+    // crafted output is never asserted PASS anywhere in this file.
+    const zeroRun: ExecFn = async () => ({
+      code: 0,
+      stdout: "test result: ok. 0 passed; 0 failed; 0 ignored;",
+      stderr: "",
+      timedOut: false,
+    });
+    const cases = await run(ctxFor(binOk, { ZESTROKU_MISSION_RUN_RCH: "1" }, join(SCRATCH, "zerorun"), realExec, zeroRun));
     const replay = byId(cases, "safe-control.replay-single-use");
     expect(replay.outcome).toBe("FAIL");
     expect(replay.detail.includes("zero-run")).toBe(true);
