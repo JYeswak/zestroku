@@ -18,12 +18,18 @@ fn commit_failure_rolls_back_before_same_connection_reuse() {
         )
         .expect("create deferred-foreign-key fixture on Store connection");
 
+    let body_completed = std::cell::Cell::new(false);
     let commit_error = store
         .in_transaction(|conn| {
             conn.execute_batch_sync("INSERT INTO commit_child(parent_id) VALUES (41)")?;
+            body_completed.set(true);
             Ok(())
         })
         .expect_err("deferred foreign key must fail COMMIT, not the body");
+    assert!(
+        body_completed.get(),
+        "deferred-FK error must happen after the transaction body completes"
+    );
     assert!(
         commit_error
             .to_string()
