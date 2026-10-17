@@ -30,12 +30,7 @@ async fn get(port: u16, route: &str) -> (u16, String) {
 
 async fn walk_one(label: &'static str, port: u16, is_tv: bool, trace: &mut Vec<Step>) -> bool {
     let mut ok = true;
-    for route in [
-        "device-info",
-        "apps",
-        "active-app",
-        "tv-active-channel",
-    ] {
+    for route in ["device-info", "apps", "active-app", "tv-active-channel"] {
         let (status, body) = get(port, route).await;
         let expected = match route {
             "tv-active-channel" if !is_tv => 404,
