@@ -17,6 +17,7 @@ mod apps;
 mod complete;
 mod daemon_client;
 mod devices;
+mod doctor;
 mod install;
 mod installer;
 mod inventory;
@@ -46,7 +47,10 @@ USAGE:
     zestroku launch <host> <app-id> [--confirm <token>]  launch (Permissive)
     zestroku launch <host> --app <name> [--confirm <token>]  resolve an installed app
     zestroku install <host> <zip> --password-stdin [--installer-port <port>] [--confirm <token>]
+    zestroku log [--json]                 read the action audit log
+    zestroku undo <host> [--confirm <token>]  relaunch the previous app
     zestroku mcp                         MCP server on stdio (agent tools)
+    zestroku doctor [--json]           read-only health checks (exit 0/6/7)
     zestroku serve [--bind <ip:port>]    HTTP API daemon (loopback default)
 
 Install uses http://<host>:80/plugin_install by default; credentials are supplied through stdin, never arguments or the action log.
@@ -210,7 +214,12 @@ fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
         Ok(device) => args[target_index] = device.id,
         Err(zestroku_core::targets::TargetResolutionError::NotFound { .. })
             if !strict && !smart_class => {}
-        Err(error @ zestroku_core::targets::TargetResolutionError::AmbiguousName { .. }) => {
+        Err(
+            error @ zestroku_core::targets::TargetResolutionError::AmbiguousName {
+                target,
+                candidates,
+            },
+        ) => {
             if mutation {
                 let surface = if verb == "approve" {
                     &args[1]
@@ -222,12 +231,14 @@ fn resolve_cli_target(args: &mut [String]) -> Result<(), (ExitCode, String)> {
                     .unwrap_or_default()
                     .as_secs()
                     .min(i64::MAX as u64) as i64;
+                // Structured non-secret intent: the raw argv may carry an
+                // owner-supplied --confirm token, which must never persist.
                 let action = zestroku_core::store::ActionRow {
                     id: 0,
                     at,
                     client: "cli".into(),
                     surface: surface.to_owned(),
-                    intent: args.join(" "),
+                    intent: format!("{surface} target={target} candidates=[{candidates}]"),
                     decision: "denied".into(),
                     result: "AMBIGUOUS_NAME".into(),
                     before_state: "not queried: ambiguous target".into(),
@@ -443,6 +454,71 @@ fn run_read_command(verb: &str, opts: &ReadOpts) -> ExitCode {
     }
 }
 
+fn run_action_log(args: &[String]) -> ExitCode {
+    let json = match args {
+        [] => false,
+        [flag] if flag == "--json" => true,
+        [flag] => {
+            eprintln!("zestroku log: unknown option {flag}");
+            return ExitCode::from(2);
+        }
+        _ => {
+            eprintln!("zestroku log: expected at most --json");
+            return ExitCode::from(2);
+        }
+    };
+    let store = match store_db::open() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("zestroku log: action log unavailable: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut actions = match store.list_actions() {
+        Ok(actions) => actions,
+        Err(error) => {
+            eprintln!("zestroku log: cannot read action log: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    actions.reverse();
+    if json {
+        let actions: Vec<_> = actions
+            .into_iter()
+            .map(|action| {
+                serde_json::json!({
+                    "id": action.id,
+                    "at": action.at,
+                    "client": action.client,
+                    "surface": action.surface,
+                    "intent": action.intent,
+                    "decision": action.decision,
+                    "result": action.result,
+                    "before_state": action.before_state,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::json!({"actions": actions}));
+    } else if actions.is_empty() {
+        println!("no actions recorded");
+    } else {
+        for action in actions {
+            println!(
+                "#{} at={} client={} surface={} intent={:?} decision={} result={:?} before={:?}",
+                action.id,
+                action.at,
+                action.client,
+                action.surface,
+                action.intent,
+                action.decision,
+                action.result,
+                action.before_state,
+            );
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if let Err((code, error)) = resolve_cli_target(&mut args) {
@@ -453,6 +529,9 @@ fn main() -> ExitCode {
         Some("devices") => devices::run(&args[1..]),
         Some("alias") => aliases::run(&args[1..]),
         Some("apps") => apps::run(&args[1..]),
+        Some("log") => run_action_log(&args[1..]),
+        Some("undo") => mutate::undo_last(&args[1..]),
+        Some("doctor") => doctor::run(&args[1..]),
         Some("serve") => serve::run(&args[1..]),
         Some("mcp") => match zestroku_mcp::run_stdio() {
             Ok(()) => ExitCode::SUCCESS,
