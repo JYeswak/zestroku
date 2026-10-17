@@ -5,6 +5,9 @@
 #[path = "common/mutation_daemon.rs"]
 mod mutation_daemon;
 
+#[path = "mutation_api/principals.rs"]
+mod principals;
+
 use mutation_daemon::{http_free_port, mint_http_approval, seed_http_device, start_http_daemon};
 
 fn post_json_to_daemon(
@@ -402,87 +405,4 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
                 && !action.result.contains(secret)
         }));
     }
-}
-#[test]
-fn raw_http_cannot_spend_a_cli_bound_grant() {
-    use zestroku_core::store::{SqliteStore, Store};
-    use zestroku_proto::launch;
-    use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
-
-    let sim = SimDevice::start(SimConfig {
-        kind: DeviceKind::Express,
-        tier: SimTier::Permissive,
-    });
-    let directory = tempfile::tempdir().expect("temporary client-bound database");
-    let db = directory.path().join("daemon.db");
-    let client_db = directory.path().join("client.db");
-    let target = seed_http_device(&db, sim.port());
-    let api_port = http_free_port();
-    let api_host = format!("127.0.0.1:{api_port}");
-    let daemon_url = format!("http://{api_host}");
-    let _daemon = start_http_daemon(&db, api_port);
-    let token = mint_http_approval(
-        &db,
-        sim.port(),
-        &launch(1001),
-        zestroku_core::mutation::ClientPrincipal::Cli,
-    );
-    let path = format!("/v1/devices/{target}/launch");
-
-    // The raw HTTP helper spoofs X-Zestroku-Client: cli, but the omitted body
-    // label defaults to loopback-http and cannot spend this CLI-bound grant.
-    let (status, headers, body) = post_json_to_daemon(
-        api_port,
-        &path,
-        &api_host,
-        &serde_json::json!({"app_id": 1001, "confirm": &token}),
-    );
-    assert_eq!(status, 403, "{body}");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&body).unwrap()["error"],
-        "policy_denied"
-    );
-    assert!(!headers.contains(&token));
-    assert!(!body.contains(&token));
-    assert!(
-        sim.received_requests()
-            .iter()
-            .all(|(method, _)| method != "POST"),
-        "misattributed HTTP must produce no device mutation"
-    );
-    let denied = SqliteStore::open(&db)
-        .expect("open audit after misattribution")
-        .list_actions()
-        .expect("read denial audit");
-    assert_eq!(denied.len(), 1);
-    assert_eq!(denied[0].client, "unknown");
-    assert_eq!(denied[0].result, "POLICY_DENIED");
-
-    let cli = std::process::Command::new(env!("CARGO_BIN_EXE_zestroku"))
-        .env("ZESTROKU_DB", &client_db)
-        .env("ZESTROKU_DAEMON_URL", &daemon_url)
-        .env_remove("ZESTROKU_DIRECT")
-        .env_remove("ZESTROKU_TIER")
-        .env_remove("ZESTROKU_TRANSPORT")
-        .args(["launch", &target, "1001", "--confirm", &token])
-        .output()
-        .expect("run real CLI against resident daemon");
-    assert_eq!(cli.status.code(), Some(0), "{cli:?}");
-    assert!(!String::from_utf8_lossy(&cli.stdout).contains(&token));
-    assert!(!String::from_utf8_lossy(&cli.stderr).contains(&token));
-    let posts: Vec<_> = sim
-        .received_requests()
-        .into_iter()
-        .filter_map(|(method, path)| (method == "POST").then_some(path))
-        .collect();
-    assert_eq!(posts, ["/launch/1001"]);
-    let actions = SqliteStore::open(&db)
-        .expect("open audit after CLI retry")
-        .list_actions()
-        .expect("read ordered actions");
-    assert_eq!(actions.len(), 2);
-    assert_eq!(actions[1].client, "cli");
-    assert_eq!(actions[1].decision, "approved");
-    assert_eq!(actions[1].result, "completed");
-    assert_eq!(sim.launch_count(), 1);
 }
