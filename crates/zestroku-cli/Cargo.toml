@@ -21,6 +21,7 @@ getrandom = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 zestroku-sim = { path = "../zestroku-sim" }
 
 [[bin]]

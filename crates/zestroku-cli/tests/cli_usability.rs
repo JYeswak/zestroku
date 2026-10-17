@@ -1,7 +1,8 @@
 //! 1r4.2 usability: completion candidates from a seeded store and explicit
-//! read-mode flags, exercised through the real binary. No network: every
-//! case either reads the local store or fails before any I/O (usage errors,
-//! refused daemon connections).
+//! read-mode flags, exercised through the real binary. Loopback only: every
+//! case either reads the local store, fails before any I/O (usage errors,
+//! refused daemon connections), or talks solely to in-process loopback
+//! simulators that never leave the host.
 #![forbid(unsafe_code)]
 
 use std::process::Command;
@@ -408,24 +409,40 @@ fn direct_json_renders_typed_document_from_loopback_device() {
 
 #[test]
 fn ambiguous_mutation_audit_never_persists_the_confirmation_secret() {
-    // Two TV-class devices make `tv` ambiguous; a mutation carrying a
-    // confirmation token must deny with AMBIGUOUS_NAME while the raw
-    // token appears nowhere persisted or printed.
-    const TOKEN: &str = "confirm-token-abcdef123456";
+    // Two TV-class loopback simulators make `tv` ambiguous. A REAL
+    // single-use grant minted for one of them must deny with AMBIGUOUS_NAME
+    // while the raw token appears nowhere persisted or printed, both sims
+    // observe zero requests, and the grant survives for reuse on the
+    // resolved endpoint (exit 0, exactly one POST, then replay refusal).
+    use sha2::{Digest, Sha256};
+    use zestroku_core::mutation::{ClientPrincipal, issue_approval};
+    use zestroku_proto::keypress_raw;
+    use zestroku_types::{AccessTier, Device};
+
+    let sim_a = zestroku_sim::SimDevice::start(zestroku_sim::SimConfig {
+        kind: zestroku_sim::DeviceKind::Express,
+        tier: zestroku_sim::SimTier::Permissive,
+    });
+    let sim_b = zestroku_sim::SimDevice::start(zestroku_sim::SimConfig {
+        kind: zestroku_sim::DeviceKind::Express,
+        tier: zestroku_sim::SimTier::Permissive,
+    });
+    let id_a = format!("127.0.0.1:{}", sim_a.port());
     let dir = tempfile::tempdir().expect("tempdir");
     let db = dir.path().join("actions.db");
     let store = SqliteStore::open(&db).expect("open store");
-    for (id, ip, num) in [
-        ("192.0.2.20:8060", "192.0.2.20", "L100"),
-        ("192.0.2.21:8060", "192.0.2.21", "L101"),
+    for (id, port) in [
+        (&id_a, sim_a.port()),
+        (&format!("127.0.0.1:{}", sim_b.port()), sim_b.port()),
     ] {
+        let port = port.to_string();
         store
             .upsert_device(&DeviceRow {
                 id: id.into(),
                 name: "Fixture Roku TV".into(),
-                ip: ip.into(),
+                ip: "127.0.0.1".into(),
                 model: "Roku TV".into(),
-                model_num: num.into(),
+                model_num: format!("L{port}"),
                 firmware: "15.2.4".into(),
                 wifi_driver: "fixture".into(),
                 access_tier: "permissive".into(),
@@ -433,24 +450,59 @@ fn ambiguous_mutation_audit_never_persists_the_confirmation_secret() {
             })
             .expect("seed tv device");
     }
-    let output = run(&db, &["key", "tv", "Home", "--confirm", TOKEN]);
+    let device = Device {
+        host: "127.0.0.1".into(),
+        port: sim_a.port(),
+        model_name: "Fixture Roku TV".into(),
+        model_number: format!("L{}", sim_a.port()),
+        software_version: "15.2.4".into(),
+        is_tv: true,
+        access_tier: AccessTier::Permissive,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs()
+        .min(i64::MAX as u64) as i64;
+    let grant = issue_approval(
+        &store,
+        &device,
+        &keypress_raw("Home"),
+        ClientPrincipal::Cli,
+        now,
+    )
+    .expect("mint real grant");
+    let hash = Sha256::digest(grant.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    drop(store);
+
+    // Closed-port daemon URL: an AMBIGUOUS denial proves the denial precedes
+    // any dispatch (dispatch first would surface DAEMON_UNAVAILABLE), and
+    // both simulators must observe zero requests.
+    let output = run_env(
+        &db,
+        &["key", "tv", "Home", "--confirm", &grant],
+        &[("ZESTROKU_DAEMON_URL", "http://127.0.0.1:1")],
+    );
     assert_eq!(output.status.code(), Some(4));
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stdout.contains(TOKEN), "token leaked to stdout");
+    assert!(!stdout.contains(&grant), "token leaked to stdout");
     assert!(stderr.contains("AMBIGUOUS_NAME"), "{stderr}");
-    assert!(!stderr.contains(TOKEN), "token leaked to stderr");
-    let actions = SqliteStore::open(&db)
-        .expect("reopen store")
-        .list_actions()
-        .expect("list actions");
+    assert!(!stderr.contains(&grant), "token leaked to stderr");
+    assert!(sim_a.received_requests().is_empty(), "ECP left the host");
+    assert!(sim_b.received_requests().is_empty(), "ECP left the host");
+    let store = SqliteStore::open(&db).expect("reopen store");
+    let actions = store.list_actions().expect("list actions");
     let denied: Vec<_> = actions
         .iter()
         .filter(|action| action.result == "AMBIGUOUS_NAME" && action.decision == "denied")
         .collect();
     assert_eq!(denied.len(), 1, "{actions:?}");
     assert!(
-        !denied[0].intent.contains(TOKEN),
+        !denied[0].intent.contains(&grant),
         "token persisted: {}",
         denied[0].intent
     );
@@ -459,4 +511,64 @@ fn ambiguous_mutation_audit_never_persists_the_confirmation_secret() {
         "{}",
         denied[0].intent
     );
+    // The grant survives the ambiguous denial: still peekable, nothing approved.
+    assert!(
+        store
+            .peek_confirmation_grant(&hash)
+            .expect("peek grant")
+            .is_some(),
+        "real grant consumed by the ambiguous denial"
+    );
+    assert!(
+        actions.iter().all(|action| action.decision != "approved"),
+        "{actions:?}"
+    );
+    drop(store);
+
+    // Same grant on the resolved endpoint: exit 0 with exactly one POST of
+    // the granted command, then replay refusal with the consumed grant.
+    let output = run_env(
+        &db,
+        &["key", &id_a, "Home", "--confirm", &grant],
+        &[("ZESTROKU_DIRECT", "1"), ("ZESTROKU_TIER", "permissive")],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let posts: Vec<_> = sim_a
+        .received_requests()
+        .into_iter()
+        .filter(|(method, _)| method == "POST")
+        .collect();
+    assert_eq!(posts.len(), 1, "{posts:?}");
+    assert!(posts[0].1.ends_with("/keypress/Home"), "{posts:?}");
+
+    // Replaying the consumed grant refuses: consumption proof, since peek
+    // cannot distinguish consumed rows (its query has no consumed filter).
+    let output = run_env(
+        &db,
+        &["key", &id_a, "Home", "--confirm", &grant],
+        &[("ZESTROKU_DIRECT", "1"), ("ZESTROKU_TIER", "permissive")],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("CONFIRMATION_REQUIRED"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Replay dispatched nothing further: still exactly the one granted POST.
+    let posts: Vec<_> = sim_a
+        .received_requests()
+        .into_iter()
+        .filter(|(method, _)| method == "POST")
+        .collect();
+    assert_eq!(posts.len(), 1, "{posts:?}");
 }
