@@ -6,6 +6,7 @@ import {
   captureVerifiedImplementation,
   completeCoverage,
   execCommand,
+  selectRustExecutor,
   summarize,
   verifyImplementation,
 } from "./mission-check";
@@ -112,7 +113,9 @@ describe("registered implementation closure", () => {
     const root = join(scratch, "import-repo");
     await mkdir(root);
     await writeFile(join(root, "helper.ts"), "export const value = 7;\n");
-    const source = "import {value} from './helper.ts'; export {value};\n";
+    // Keep this import as test data, not a module dependency of the test file.
+    const helperSpecifier = "./helper.ts";
+    const source = [`import {value} from '`, helperSpecifier, "'; export {value};\n"].join("");
     await writeFile(join(root, "checker.ts"), source);
     const digest = createHash("sha256").update(source).digest("hex");
     await expect(captureVerifiedImplementation(root, "checker.ts", digest)).rejects.toThrow("UNREGISTERED_IMPLEMENTATION_IMPORT");
@@ -172,5 +175,14 @@ describe("actual child-process boundary", () => {
       expect(result.code).toBe(126);
       expect(result.stderr).toBe("LOCAL_RUST_OR_SHELL_WRAPPER_REFUSED_USE_REMOTE_RCH_AND_CTX_ENV");
     }
+  });
+});
+
+describe("Rust executor selection", () => {
+  test("uses local cargo only when rch is absent and unrequested", () => {
+    expect(selectRustExecutor(undefined, false)).toBe("cargo");
+    expect(selectRustExecutor(undefined, true)).toBe("rch");
+    expect(selectRustExecutor("1", false)).toBe("rch");
+    expect(selectRustExecutor("0", true)).toBe("rch");
   });
 });
