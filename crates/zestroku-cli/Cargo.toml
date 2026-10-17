@@ -10,6 +10,7 @@ zestroku-proto = { path = "../zestroku-proto" }
 zestroku-core = { path = "../zestroku-core" }
 zestroku-mcp = { path = "../zestroku-mcp" }
 zestroku-api = { path = "../zestroku-api" }
+zestroku-sim = { path = "../zestroku-sim" }
 asupersync = { workspace = true }
 fastapi = { workspace = true }
 serde = { workspace = true }
@@ -22,7 +23,6 @@ getrandom = { workspace = true }
 tempfile = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-zestroku-sim = { path = "../zestroku-sim" }
 
 [[bin]]
 name = "zestroku"

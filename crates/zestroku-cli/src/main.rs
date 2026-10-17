@@ -23,6 +23,7 @@ mod installer;
 mod inventory;
 mod mutate;
 mod serve;
+mod sim_scenario;
 mod store_db;
 mod transport;
 
@@ -52,6 +53,8 @@ USAGE:
     zestroku mcp                         MCP server on stdio (agent tools)
     zestroku doctor [--json]           read-only health checks (exit 0/6/7)
     zestroku serve [--bind <ip:port>]    HTTP API daemon (loopback default)
+    zestroku sim --scenario two-devices [--json]
+        read-only scenario walk over loopback simulators
 
 Install uses http://<host>:80/plugin_install by default; credentials are supplied through stdin, never arguments or the action log.
 Info/active-app/apps mode precedence: --direct, then --daemon <url>, then
@@ -536,6 +539,7 @@ fn main() -> ExitCode {
         Some("undo") => mutate::undo_last(&args[1..]),
         Some("doctor") => doctor::run(&args[1..]),
         Some("serve") => serve::run(&args[1..]),
+        Some("sim") => sim_scenario::run(&args[1..]),
         Some("mcp") => match zestroku_mcp::run_stdio() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
