@@ -305,6 +305,7 @@ fn insert_action<S: Store + ?Sized>(
 ) -> Result<i64, MutationError> {
     let row = ActionRow {
         id: 0,
+        at: epoch_seconds(),
         client: context.client.to_owned(),
         surface: context.surface.to_owned(),
         intent: context.intent.to_owned(),

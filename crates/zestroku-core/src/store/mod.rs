@@ -759,13 +759,14 @@ impl Store for SqliteStore {
             "SELECT client, expires_at FROM confirmation_tokens WHERE token_hash = ?1",
             &[s(token_hash)],
         )?;
-        Ok(rows.first().map(|row| ConfirmationGrant {
-            client: row
-                .first()
-                .and_then(SqliteValue::as_text)
-                .map(str::to_owned),
-            expires_at: int(row, 1),
-        }))
+        rows.first()
+            .map(|row| {
+                Ok(ConfirmationGrant {
+                    client: row.get(0).and_then(SqliteValue::as_text).map(str::to_owned),
+                    expires_at: int(row, 1)?,
+                })
+            })
+            .transpose()
     }
     fn update_action_result(&self, id: i64, result: &str) -> Result<(), StoreError> {
         self.exec(
