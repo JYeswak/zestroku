@@ -508,7 +508,7 @@ fn cli_log_reads_action_rows_without_device_requests() {
 
 #[test]
 fn cli_undo_requires_confirmation_and_logs_the_restored_app() {
-    let mut sim = SimDevice::start(SimConfig {
+    let sim = SimDevice::start(SimConfig {
         kind: DeviceKind::Express,
         tier: SimTier::Permissive,
     });

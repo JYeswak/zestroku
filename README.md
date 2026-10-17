@@ -257,9 +257,12 @@ confirmation-gated `POST /v1/devices/{host}/key` and
 `POST /v1/devices/{host}/launch` routes over the shared store on loopback by
 default (`127.0.0.1:8070`).
 It binds loopback or one of this node's Tailscale addresses only, and the
-Host header must match the bind address. The
-info response includes live `access_tier` and `tv_active_channel`; the channel
-field is `null` when the optional ECP probe fails.
+Host header must match the bind address. A tailnet bind checks local
+`tailscale status --json` before opening the store or listener; a command
+that exceeds five seconds is killed and reaped, and startup is refused.
+Loopback startup does not require Tailscale.
+The info response includes live `access_tier` and `tv_active_channel`; the
+channel field is `null` when the optional ECP probe fails.
 The daemon prints its listening address only after binding succeeds; an
 occupied port exits unsuccessfully without claiming readiness. SIGINT
 (Ctrl-C) and SIGTERM both stop admission and drain the running HTTP server.

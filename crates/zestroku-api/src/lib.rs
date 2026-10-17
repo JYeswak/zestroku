@@ -119,16 +119,69 @@ pub fn node_owns_address(ip: &std::net::IpAddr, self_ips: &[std::net::IpAddr]) -
 }
 
 /// Read this node's Tailscale addresses from the local Tailscale source.
+///
+/// A five-second deadline bounds startup. On timeout the owned child is
+/// killed and reaped before returning; stdout is drained concurrently so a
+/// large status response cannot fill its pipe and prevent the child exiting.
 pub fn tailscale_self_ips() -> Result<Vec<std::net::IpAddr>, String> {
-    let output = std::process::Command::new("tailscale")
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let mut child = std::process::Command::new("tailscale")
         .args(["status", "--json"])
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|e| format!("tailscale status failed to run: {e}"))?;
-    if !output.status.success() {
+    let mut stdout = child.stdout.take().expect("Tailscale stdout was piped");
+    let reader = match std::thread::Builder::new().spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    }) {
+        Ok(reader) => reader,
+        Err(error) => {
+            let kill = child.kill();
+            let wait = child.wait();
+            return Err(format!(
+                "tailscale status reader failed: {error}; child cleanup kill={kill:?}, wait={wait:?}"
+            ));
+        }
+    };
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if started.elapsed() >= Duration::from_secs(5) => {
+                break Err("tailscale status timed out after 5 seconds".to_string());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(error) => break Err(format!("tailscale status wait failed: {error}")),
+        }
+    };
+    let status = match status {
+        Ok(status) => Ok(status),
+        Err(error) => {
+            let kill = child.kill();
+            match child.wait() {
+                Ok(_) => Err(error),
+                Err(wait) => Err(format!("{error}; child cleanup kill={kill:?}, wait={wait}")),
+            }
+        }
+    };
+    // Join even on timeout: no reader thread or unreaped child is abandoned.
+    let output = reader
+        .join()
+        .map_err(|_| "tailscale status reader panicked".to_string());
+    let status = status?;
+    if !status.success() {
         return Err("tailscale status exited unsuccessfully".to_string());
     }
-    let text = String::from_utf8(output.stdout)
-        .map_err(|_| "tailscale status is not UTF-8".to_string())?;
+    let text = String::from_utf8(
+        output?.map_err(|error| format!("tailscale status read failed: {error}"))?,
+    )
+    .map_err(|_| "tailscale status is not UTF-8".to_string())?;
     parse_tailscale_ips(&text)
 }
 
