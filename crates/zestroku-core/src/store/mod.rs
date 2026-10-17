@@ -22,6 +22,14 @@ pub enum StoreError {
 fn backend(e: impl Display) -> StoreError {
     StoreError::Backend(e.to_string())
 }
+fn transaction_error(primary: FrankenError, rollback: Result<(), FrankenError>) -> StoreError {
+    match rollback {
+        Ok(()) => backend(primary),
+        Err(rollback) => backend(format!(
+            "{primary}; transaction rollback cleanup failed: {rollback}"
+        )),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceRow {
@@ -255,15 +263,23 @@ impl SqliteStore {
     ) -> Result<T, StoreError> {
         self.conn.begin_transaction_sync().map_err(backend)?;
         match f(&self.conn) {
-            Ok(v) => {
-                self.conn.commit_transaction_sync().map_err(backend)?;
-                Ok(v)
-            }
-            Err(e) => {
-                let _ = self.conn.rollback_transaction_sync();
-                Err(backend(e))
-            }
+            Ok(v) => match self.conn.commit_transaction_sync() {
+                Ok(()) => Ok(v),
+                Err(error) => Err(self.cleanup_transaction_error(error)),
+            },
+            Err(error) => Err(self.cleanup_transaction_error(error)),
         }
+    }
+
+    // fsqlite may leave failed commits active; other failures may already have rolled back.
+    // Clean only an active transaction, retaining cleanup errors beside the primary error.
+    fn cleanup_transaction_error(&self, primary: FrankenError) -> StoreError {
+        let rollback = if self.conn.in_transaction() {
+            self.conn.rollback_transaction_sync()
+        } else {
+            Ok(())
+        };
+        transaction_error(primary, rollback)
     }
 
     fn query(&self, sql: &str, params: &[SqliteValue]) -> Result<Vec<Row>, StoreError> {
@@ -810,3 +826,5 @@ impl Store for SqliteStore {
         self.exec("DELETE FROM diff_results WHERE id = ?1", &[i(id)])
     }
 }
+#[cfg(test)]
+mod transaction_tests;
