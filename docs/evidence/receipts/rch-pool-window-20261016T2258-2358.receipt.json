@@ -1,0 +1,28 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_034654a5f960191bfc700024df42ef023b154128657a9c478c8599c12925162e",
+ "limitations": [
+  "Measured project window includes failed first workspace, corrected workspace and own/peer Clippy on same pool; not an isolated batch delta, paired performance win, RSS or backtrace proof.",
+  "Historical controlled two-pool receipt is preserved separately; no rerun or current two-pool assertion. Native C4/C3 warning and C1 memory-critical retained; no all-worker healthy claim.",
+  "No source publication, current CI, Mac install, physical-device or non-author completion inferred. Plain filtered worker run rejected separately."
+ ],
+ "operation": "rch-locked-workspace-sigterm-clippy-pool-window",
+ "parameters": {
+  "base": "f2886cbb93cdfbf73289c0d1c93bca70094c5554",
+  "bead": "zestroku-zestroku-doctrine-a0h.13",
+  "decisive_output": "workspace exit0/233passed including original SIGTERM; strict Clippy exit0; before22:58:36 compiled Roku pool absent; after23:58:24 Roku pool11644550KB; total delta15904810KB; unrelated delta4260260KB; C4post23.9469GiB warning/C3slot1 11.00996GiB warning; local admission13.514228% fails14%",
+  "mode": "clean-overlay-proof",
+  "overlay": "efc2b04da574ceb59c7dc5b6a958e1ff6a745d67c071d1aeda061eb3363e0488",
+  "policy_comment": "297",
+  "subject_kind": "rch-base-overlay-tree-identity-json",
+  "subject_sha256": "333c16da627c41962e9bed0b97f8908a168ba181c5a90cb30352cc12788e152b",
+  "tree": "e0a186ef4bfff9d70bd1c34a3dde791c591c2614",
+  "worker": "contabo-4"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 99999,
+  "sha256": "ca5c60633d93198e4c550996f6ac6089f73ea1a951a74b7355ca050d8bc96c70"
+ }
+}
