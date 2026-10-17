@@ -36,9 +36,19 @@ pub(super) fn http_free_port() -> u16 {
 }
 
 pub(super) fn start_http_daemon(db: &Path, port: u16) -> HttpApiDaemon {
+    let targets = db.with_extension("targets.toml");
+    std::fs::write(&targets, "target = []\n").expect("write isolated empty startup targets");
     let child = Command::new(env!("CARGO_BIN_EXE_zestroku"))
         .env("ZESTROKU_DB", db)
-        .args(["serve", "--bind", &format!("127.0.0.1:{port}")])
+        .env_remove("ZESTROKU_TARGETS")
+        .args([
+            "serve",
+            "--bind",
+            &format!("127.0.0.1:{port}"),
+            "--no-ssdp",
+            "--targets",
+        ])
+        .arg(&targets)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
