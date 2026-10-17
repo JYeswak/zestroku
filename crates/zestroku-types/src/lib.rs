@@ -60,6 +60,64 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// Stable error-code registry (bead zestroku-m8-error-codes-d2u).
+/// Codes are additive and never renamed: wire snapshots pin the strings,
+/// and renaming any code turns the snapshot test red. The same code renders
+/// in CLI output, HTTP JSON bodies, and MCP error payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ErrorCode {
+    UnknownDevice,
+    AmbiguousName,
+    AmbiguousApp,
+    DeviceUnreachable,
+    DeviceSuspended,
+    TierRefused,
+    ConfirmationRequired,
+    PolicyDenied,
+    AppNotInstalled,
+    StoreUnavailable,
+    LanBlockedByOsPolicy,
+    DaemonUnavailable,
+}
+
+impl ErrorCode {
+    /// The wire-stable code string. Never change an existing arm.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UnknownDevice => "UNKNOWN_DEVICE",
+            Self::AmbiguousName => "AMBIGUOUS_NAME",
+            Self::AmbiguousApp => "AMBIGUOUS_APP",
+            Self::DeviceUnreachable => "DEVICE_UNREACHABLE",
+            Self::DeviceSuspended => "DEVICE_SUSPENDED",
+            Self::TierRefused => "TIER_REFUSED",
+            Self::ConfirmationRequired => "CONFIRMATION_REQUIRED",
+            Self::PolicyDenied => "POLICY_DENIED",
+            Self::AppNotInstalled => "APP_NOT_INSTALLED",
+            Self::StoreUnavailable => "STORE_UNAVAILABLE",
+            Self::LanBlockedByOsPolicy => "LAN_BLOCKED_BY_OS_POLICY",
+            Self::DaemonUnavailable => "DAEMON_UNAVAILABLE",
+        }
+    }
+
+    /// Every registry code in declaration order (snapshot test).
+    pub const fn all() -> [Self; 12] {
+        [
+            Self::UnknownDevice,
+            Self::AmbiguousName,
+            Self::AmbiguousApp,
+            Self::DeviceUnreachable,
+            Self::DeviceSuspended,
+            Self::TierRefused,
+            Self::ConfirmationRequired,
+            Self::PolicyDenied,
+            Self::AppNotInstalled,
+            Self::StoreUnavailable,
+            Self::LanBlockedByOsPolicy,
+            Self::DaemonUnavailable,
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,5 +129,29 @@ mod tests {
             mode: AccessTier::Open,
         };
         assert!(e.to_string().contains("403"));
+    }
+
+    /// Additive-only snapshot: renaming any code (e.g. TIER_REFUSED) or
+    /// reordering the registry turns this red. New codes append at the end.
+    #[test]
+    fn error_codes_snapshot() {
+        let codes: Vec<&str> = ErrorCode::all().iter().map(|c| c.as_str()).collect();
+        assert_eq!(
+            codes,
+            [
+                "UNKNOWN_DEVICE",
+                "AMBIGUOUS_NAME",
+                "AMBIGUOUS_APP",
+                "DEVICE_UNREACHABLE",
+                "DEVICE_SUSPENDED",
+                "TIER_REFUSED",
+                "CONFIRMATION_REQUIRED",
+                "POLICY_DENIED",
+                "APP_NOT_INSTALLED",
+                "STORE_UNAVAILABLE",
+                "LAN_BLOCKED_BY_OS_POLICY",
+                "DAEMON_UNAVAILABLE",
+            ]
+        );
     }
 }
