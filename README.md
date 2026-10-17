@@ -305,9 +305,48 @@ occupied port exits unsuccessfully without claiming readiness. SIGINT
 `zestroku --version` prints `zestroku <semver> <git-sha7>[-dirty]`.
 
 The store refuses a database whose applied schema version is newer than the
-running binary supports. Use a compatible newer binary; do not delete migration
-history to force an older binary to open it. This protects the store boundary,
-but does not provide a complete binary-and-data upgrade or rollback workflow.
+running binary supports. Use a compatible newer binary, or restore a validated
+compatible backup (below); never delete migration history to force an older
+binary to open it.
+
+### Upgrade, backup and rollback (macOS)
+
+`scripts/install-macos.sh` installs a source-bound binary at
+`$PREFIX/bin/zestroku` (default `~/.local`) and preserves the previous one as
+`zestroku.prev`:
+
+```
+scripts/install-macos.sh --artifact ./zestroku --sha256 <digest> \
+  --version <semver> --sha7 <sha7> --data-backup ~/zestroku-pre-upgrade.db
+scripts/install-macos.sh --rollback --restore-data ~/zestroku-pre-upgrade.db
+```
+
+The install refuses, with exit 2 and nothing replaced, a digest mismatch, a
+file that is not an arm64 Mach-O, a candidate whose `--version` is not exactly
+`zestroku <semver> <sha7>`, and a failed data backup. `--data-backup` runs
+`zestroku db backup <file>` from the verified candidate before anything
+replaces or migrates the store: the snapshot keeps the schema the data is at,
+and an existing file is never overwritten.
+
+`zestroku db restore <file>` is offline. It validates the backup (SQLite
+header, a schema ledger the binary supports, so a newer-schema backup is
+refused), checkpoints the live store and requires a complete checkpoint
+status, then promotes a synced copy by rename. It refuses while a writer holds
+the store and never deletes WAL frames it cannot consolidate.
+
+Rollback also asks the PRIOR binary to open the data it will inherit (the
+backup, or a snapshot of the live store for a binary-only rollback) on a
+scratch copy before anything is restored or promoted: data too new for the
+prior binary is refused with binary and data untouched.
+
+The script never stops or starts the resident daemon. After a failed upgrade:
+stop the daemon through your approved launchd route, run the rollback command
+above (the newer binary restores the data first; a refused restore leaves both
+binary and data untouched, and an interrupted restore leaves the live store
+unchanged beside a `.restore.tmp` staging file, so retry or keep the backup),
+then restart the daemon. `ZESTROKU_DB` selects the store for both verbs.
+`scripts/test-install-macos.sh <old> <new>` runs the consumer scenario over
+two real builds; the manual `darwin` workflow runs it when given `old_ref`.
 
 ## Ground truth (verified live 2026-10-09)
 
