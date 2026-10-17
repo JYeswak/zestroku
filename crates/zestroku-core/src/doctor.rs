@@ -351,8 +351,10 @@ pub async fn check_tier_posture<T: Transport>(store: &dyn Store, transport: &T) 
                 );
             }
         };
+        // Tier discrimination lives on query/apps: introspection routes
+        // stay tier-blind by design and cannot discriminate.
         let live = {
-            let cmd = zestroku_proto::query("device-info");
+            let cmd = zestroku_proto::query("apps");
             match transport.send(host, port, &cmd).await {
                 Ok(response) => Some(tier::classify_tier_from_response(&response)),
                 Err(_) => None,
@@ -707,6 +709,7 @@ mod tests {
 
     struct FixtureTransport {
         bodies: std::collections::BTreeMap<(String, u16), (u16, String)>,
+        apps: std::collections::BTreeMap<(String, u16), (u16, String)>,
     }
 
     impl Transport for FixtureTransport {
@@ -714,10 +717,16 @@ mod tests {
             &self,
             host: &str,
             port: u16,
-            _cmd: &Command,
+            cmd: &Command,
         ) -> impl Future<Output = Result<EcpResponse>> + Send {
-            let out = self
-                .bodies
+            // Tier discrimination lives on query/apps; introspection routes
+            // stay tier-blind, so the fixture answers per command path.
+            let table = if cmd.path.contains("/query/apps") {
+                &self.apps
+            } else {
+                &self.bodies
+            };
+            let out = table
                 .get(&(host.to_owned(), port))
                 .cloned()
                 .unwrap_or((404, String::new()));
@@ -778,6 +787,10 @@ mod tests {
         store
     }
 
+    fn connect_ok(_host: &str, _port: u16) -> ConnectOutcome {
+        ConnectOutcome::Ok
+    }
+
     fn refuse_connect(_host: &str, _port: u16) -> ConnectOutcome {
         ConnectOutcome::HostUnreachable
     }
@@ -800,7 +813,7 @@ mod tests {
                 b"HTTP/1.1 200 OK\r\nLOCATION: http://192.0.2.10:8060/\r\nST: roku:ecp\r\nUSN: uuid:roku:ecp:fx\r\n\r\n",
             ),
             discovered_ids: Some(&["192.0.2.10:8060"]),
-            connect: refuse_connect,
+            connect: connect_ok,
             platform_ok: platform_down,
         }
     }
@@ -817,6 +830,10 @@ mod tests {
                     200,
                     "<device-info><model-name>Fixture</model-name></device-info>".to_string(),
                 ),
+            )]),
+            apps: std::collections::BTreeMap::from([(
+                ("192.0.2.10".to_string(), ECP_DEFAULT_PORT),
+                (200, "<apps><app id=\"1001\" /></apps>".to_string()),
             )]),
         };
         let ctx = ctx_for(&store, &db, &transport);
@@ -867,6 +884,7 @@ mod tests {
         let store = seeded(&db);
         let transport = FixtureTransport {
             bodies: std::collections::BTreeMap::new(),
+            apps: std::collections::BTreeMap::new(),
         };
         let ctx = ctx_for(&store, &db, &transport);
         let findings = runtime().block_on(run_checked(&ctx, &[writer]));
@@ -933,6 +951,7 @@ mod tests {
         let store = seeded(&db);
         let transport = FixtureTransport {
             bodies: std::collections::BTreeMap::new(),
+            apps: std::collections::BTreeMap::new(),
         };
         let finding = runtime().block_on(check_device_info(&store, &transport));
         assert_eq!(finding.verdict, Verdict::Fail);
@@ -959,6 +978,7 @@ mod tests {
             .expect("seed device");
         let transport = FixtureTransport {
             bodies: std::collections::BTreeMap::new(),
+            apps: std::collections::BTreeMap::new(),
         };
         let finding = runtime().block_on(check_tier_posture(&store, &transport));
         assert_eq!(finding.verdict, Verdict::Warn);
@@ -967,21 +987,29 @@ mod tests {
 
     #[test]
     fn drifted_tier_warns_with_recorded_and_live() {
-        // Recorded permissive but live Limited-403: mismatch must name both.
+        // Recorded permissive but live apps answers exact Limited-403
+        // while introspection stays 200 (tier-blind): mismatch names both.
         let dir = tempfile::tempdir().expect("tempdir");
         let db = dir.path().join("doctor.db");
         let store = seeded(&db);
         let transport = FixtureTransport {
             bodies: std::collections::BTreeMap::from([(
                 ("192.0.2.10".to_string(), ECP_DEFAULT_PORT),
-                (403, "wrong-body".to_string()),
+                (
+                    200,
+                    "<device-info><model-name>Fixture</model-name></device-info>".to_string(),
+                ),
+            )]),
+            apps: std::collections::BTreeMap::from([(
+                ("192.0.2.10".to_string(), ECP_DEFAULT_PORT),
+                (403, "ECP command not allowed in Limited mode.".to_string()),
             )]),
         };
         let finding = runtime().block_on(check_tier_posture(&store, &transport));
         assert_eq!(finding.verdict, Verdict::Warn);
         assert!(finding.detail.contains("drifted"), "{finding:?}");
         assert!(finding.evidence.contains("permissive"), "{finding:?}");
-        assert!(finding.evidence.contains("unknown"), "{finding:?}");
+        assert!(finding.evidence.contains("limited"), "{finding:?}");
     }
 
     #[test]
@@ -1167,6 +1195,7 @@ mod tests {
         let store = BrokenStore;
         let transport = FixtureTransport {
             bodies: std::collections::BTreeMap::new(),
+            apps: std::collections::BTreeMap::new(),
         };
         let ctx = Ctx {
             store: &store,
