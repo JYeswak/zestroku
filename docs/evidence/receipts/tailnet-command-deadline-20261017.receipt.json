@@ -1,0 +1,19 @@
+{
+ "authority": "pending",
+ "confidence": "observed",
+ "evidence_id": "ev_932bd6c56c9f4d17c8ea2a5faf55107711e36277934bcf6b4e3e18a45caa3530",
+ "limitations": [
+  "Original direct-child startup scenarios passed; independent inherited-writer REWORK, current source failures and local admission refusal remain. No qualified release, install, live Roku or complete original-acceptance claim."
+ ],
+ "operation": "zestroku.tailnet-command-deadline.mixed-qualification",
+ "parameters": {
+  "bead_id": "zestroku-owner-local-usability-1r4.4",
+  "checkpoint": "f73040742609007a0d4e5eb11ee8d5cde4e47c21",
+  "result_path": "docs/evidence/tailnet-command-deadline-20261017.json"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 84370,
+  "sha256": "7c396348c5d933a83019bbbf87a46ead1de64e05e809df6174d7e044b28ea358"
+ }
+}
