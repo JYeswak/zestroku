@@ -107,7 +107,10 @@ pub fn authorize_mutation_at<S: Store + ?Sized>(
     // Shared owner-policy choke (o0r): allowlist, then rate budget, both
     // before any token is consumed. Denials are audited POLICY_DENIED. The
     // rate check-and-record is one store transaction: separate CLI processes
-    // must not both observe remaining budget (TOCTOU).
+    // must not both observe remaining budget (TOCTOU). Transient lock
+    // contention is retried immediately and boundedly (no sleep: the holder
+    // commits in microseconds); exhaustion or real failures propagate, never
+    // deny and never swallow.
     let verb = Policy::verb_of(&command.path).unwrap_or("");
     if !policy.allows(context.client, verb) {
         let action_id = insert_action(store, &context, "denied", POLICY_DENIED)?;
@@ -115,7 +118,7 @@ pub fn authorize_mutation_at<S: Store + ?Sized>(
     }
     if let Some((budget, window)) = policy.budget(verb) {
         let since = now.saturating_sub(window);
-        if !store.try_record_policy_hit(context.client, verb, since, budget as i64, now)? {
+        if !try_record_with_retry(store, context.client, verb, since, budget as i64, now)? {
             let action_id = insert_action(store, &context, "denied", POLICY_DENIED)?;
             return Err(MutationError::PolicyDenied { action_id });
         }
@@ -164,6 +167,52 @@ fn hour_of_day_utc(now: i64) -> u8 {
     (now.rem_euclid(86_400) / 3_600) as u8
 }
 
+/// Bounded immediate attempts for one store mutation.
+const STORE_RETRY_BOUND: u32 = 64;
+
+/// Run one atomic rate check-and-record, retrying transient lock contention
+/// immediately (no sleep: the holder commits in microseconds) up to
+/// STORE_RETRY_BOUND. Budget exhaustion returns false (deny + audit at the
+/// call site); real failures propagate after the bound, never deny.
+fn try_record_with_retry<S: Store + ?Sized>(
+    store: &S,
+    client: &str,
+    verb: &str,
+    since: i64,
+    budget: i64,
+    now: i64,
+) -> Result<bool, MutationError> {
+    retry_on_busy(|| {
+        store
+            .try_record_policy_hit(client, verb, since, budget, now)
+            .map_err(MutationError::Store)
+    })
+}
+
+/// Retry a fallible store mutation on transient lock contention between
+/// separate writers (bounded, no sleep). A busy transaction rolls back, so
+/// single-statement retries never double-apply; exhaustion and real failures
+/// propagate, never deny and never swallow.
+fn retry_on_busy<T>(mut op: impl FnMut() -> Result<T, MutationError>) -> Result<T, MutationError> {
+    let mut attempts = 0;
+    loop {
+        match op() {
+            Err(MutationError::Store(error))
+                if is_lock_contention(&error) && attempts < STORE_RETRY_BOUND =>
+            {
+                attempts += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// True for transient lock contention between separate writers; anything
+/// else is a real failure and must propagate, never deny.
+fn is_lock_contention(error: &StoreError) -> bool {
+    error.to_string().contains("database is busy")
+}
+
 pub fn finish_mutation<S: Store + ?Sized>(
     store: &S,
     action_id: i64,
@@ -202,7 +251,7 @@ fn insert_action<S: Store + ?Sized>(
     decision: &str,
     result: &str,
 ) -> Result<i64, MutationError> {
-    Ok(store.insert_action(&ActionRow {
+    let row = ActionRow {
         id: 0,
         at: epoch_seconds(),
         client: context.client.to_owned(),
@@ -211,5 +260,6 @@ fn insert_action<S: Store + ?Sized>(
         decision: decision.to_owned(),
         result: result.to_owned(),
         before_state: context.before_state.to_owned(),
-    })?)
+    };
+    retry_on_busy(|| store.insert_action(&row).map_err(MutationError::Store))
 }
