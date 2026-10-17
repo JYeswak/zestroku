@@ -1,8 +1,9 @@
-# Darwin cross-build only (zestroku-build-darwin-l6d). These keys apply solely
-# when the build target is aarch64-apple-darwin, so Linux test runs on the rch
-# workers are unaffected. See README "Build and run on the owner's Mac".
-[env]
-CC_aarch64_apple_darwin = { value = "bin/zigcc-darwin-adapter.sh", relative = true, force = true }
-
-[target.aarch64-apple-darwin]
-linker = "bin/zigcc-darwin-adapter.sh"
+# Portable by default (zestroku-2oz.1): no target linker/CC overrides here,
+# so a stock checkout builds natively on Apple Silicon with the system
+# clang and on Linux/rch with plain cc. The Linux -> aarch64-apple-darwin
+# cross build is opt-in per invocation (see README "Build and run on the
+# owner's Mac"): export CC_aarch64_apple_darwin and
+# CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER pointing at
+# bin/zigcc-darwin-adapter.sh alongside --config
+# 'build.target="aarch64-apple-darwin"'. Never commit target overrides
+# back into this file: portable-macos.yml fails if the shim returns.

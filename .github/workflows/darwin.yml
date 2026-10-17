@@ -37,13 +37,8 @@ jobs:
         env:
           ZESTROKU_BUILD_SHA: ${{ github.sha }}
           ZESTROKU_BUILD_DIRTY: "false"
-        run: >-
-          cargo
-          --config 'env.CC_aarch64_apple_darwin.value="clang"'
-          --config 'env.CC_aarch64_apple_darwin.relative=false'
-          --config 'env.CC_aarch64_apple_darwin.force=true'
-          --config 'target.aarch64-apple-darwin.linker="clang"'
-          build --release --locked -p zestroku-cli
+        # Stock toolchain: portable default (2oz.1) needs no --config overrides.
+        run: cargo build --release --locked -p zestroku-cli
 
       - name: identify the binary
         run: |
@@ -59,10 +54,4 @@ jobs:
           if-no-files-found: error
 
       - name: test (offline, native macOS)
-        run: >-
-          cargo
-          --config 'env.CC_aarch64_apple_darwin.value="clang"'
-          --config 'env.CC_aarch64_apple_darwin.relative=false'
-          --config 'env.CC_aarch64_apple_darwin.force=true'
-          --config 'target.aarch64-apple-darwin.linker="clang"'
-          test --workspace
+        run: cargo test --workspace

@@ -110,10 +110,12 @@ cross-build below is the fallback.
 
 `zestroku` is a Mach-O arm64 binary cross-built on the Contabo workers (plain
 `--target` trips rch's os gate; `--config build.target` produces the identical
-binary). `ring` compiles C, so the build links through
-`bin/zigcc-darwin-adapter.sh` (wired in `.cargo/config.toml`, darwin target
-only) onto the fleet's zig shim; a plain `cc` fails with `unrecognized
-command-line option '-arch'`. From a clean checkout at commit C:
+binary). `ring` compiles C, so the cross build links through
+`bin/zigcc-darwin-adapter.sh` onto the fleet's zig shim; a plain `cc` fails
+with `unrecognized command-line option '-arch'`. The cross wiring is opt-in
+per invocation (2oz.1) — `.cargo/config.toml` carries no target overrides,
+so a stock checkout also builds natively on Apple Silicon with system clang.
+From a clean checkout at commit C:
 
 ```
 export ZESTROKU_BUILD_SHA=$(git rev-parse HEAD)
@@ -123,6 +125,8 @@ RCH_WORKER=<your lane worker> RCH_REQUIRE_REMOTE=1 rch exec -- \
   --config 'build.target="aarch64-apple-darwin"' \
   --config "env.ZESTROKU_BUILD_SHA=\"$ZESTROKU_BUILD_SHA\"" \
   --config "env.ZESTROKU_BUILD_DIRTY=\"$ZESTROKU_BUILD_DIRTY\"" \
+  --config 'env.CC_aarch64_apple_darwin={ value = "bin/zigcc-darwin-adapter.sh", relative = true }' \
+  --config 'env.CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER={ value = "bin/zigcc-darwin-adapter.sh", relative = true }' \
   -p zestroku-cli
 ```
 

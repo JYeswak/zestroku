@@ -1,0 +1,46 @@
+name: portable-macos
+
+# Portability gate (zestroku-2oz.1): a stock macOS checkout builds and tests
+# with NO --config overrides and WITHOUT the fleet zigcc shim. The Linux ->
+# darwin cross config is opt-in env (see README "Build and run"), never a
+# committed default, so this job fails if the shim wiring returns to
+# .cargo/config.toml.
+on:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 3
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
+jobs:
+  stock-macos:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fleet shim must be absent
+        run: test ! -e /usr/local/bin/zigcc-aarch64-darwin
+
+      - name: Install pinned nightly (matches rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-08-31
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+          cache-on-failure: true
+
+      - name: build (stock, no --config overrides)
+        run: cargo build --locked -p zestroku-cli
+
+      - name: test (stock, no --config overrides)
+        run: cargo test --locked --workspace
+        timeout-minutes: 60
