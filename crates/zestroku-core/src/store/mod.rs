@@ -229,6 +229,7 @@ impl SqliteStore {
         let escaped = dest.to_string_lossy().replace('\'', "''");
         self.conn
             .execute_sync(&format!("VACUUM INTO '{escaped}'"))
+            .map(|_| ())
             .map_err(backend)
     }
 
