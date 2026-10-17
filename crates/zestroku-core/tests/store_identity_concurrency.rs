@@ -3,7 +3,11 @@
 //! separate SqliteStore instances prove the returned keys address their own rows.
 
 use fsqlite::AsyncConnection;
+use zestroku_core::mutation::{MutationContext, MutationError, authorize_mutation_at};
+use zestroku_core::policy::Policy;
 use zestroku_core::store::{ActionRow, DiffRow, SqliteStore, Store};
+use zestroku_proto::launch;
+use zestroku_types::{AccessTier, Device};
 
 fn action(intent: &str) -> ActionRow {
     ActionRow {
@@ -125,4 +129,87 @@ fn inserted_action_and_diff_ids_select_their_own_rows_across_connections() {
     );
     first.close().unwrap();
     second.close().unwrap();
+}
+
+#[test]
+fn busy_insert_retry_has_no_duplicate_action_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("retry.db");
+    let store = SqliteStore::open(&path).unwrap();
+    let device = Device {
+        host: "192.0.2.10".into(),
+        port: 8060,
+        model_name: "Test Roku".into(),
+        model_number: "3941X".into(),
+        software_version: "15.0.0".into(),
+        is_tv: false,
+        access_tier: AccessTier::Permissive,
+    };
+    let context = MutationContext {
+        client: "unknown-client",
+        surface: "launch",
+        intent: "launch retry fixture",
+        before_state: "{\"app\":\"home\"}",
+    };
+
+    let mut control = AsyncConnection::open_sync(path.to_string_lossy().into_owned()).unwrap();
+    control
+        .execute_batch_sync(
+            "CREATE TRIGGER fail_retry_insert AFTER INSERT ON actions \
+             WHEN NEW.intent = 'launch retry fixture' \
+             BEGIN SELECT RAISE(ABORT, 'database is busy (fixture)'); END;",
+        )
+        .unwrap();
+    control.close_sync().unwrap();
+
+    let first = authorize_mutation_at(
+        &store,
+        &device,
+        &launch(12),
+        context,
+        None,
+        &Policy::default(),
+        1_000,
+    )
+    .expect_err("the injected statement failure must exhaust the bounded retry");
+    assert!(
+        matches!(first, MutationError::Store(_)),
+        "expected the stored error to propagate, got {first}"
+    );
+    assert!(
+        first.to_string().contains("database is busy"),
+        "unexpected injected error: {first}"
+    );
+    assert!(
+        store.list_actions().unwrap().is_empty(),
+        "aborted INSERT attempts must not leave committed action rows"
+    );
+
+    let mut control = AsyncConnection::open_sync(path.to_string_lossy().into_owned()).unwrap();
+    control
+        .execute_batch_sync("DROP TRIGGER fail_retry_insert;")
+        .unwrap();
+    control.close_sync().unwrap();
+
+    let second = authorize_mutation_at(
+        &store,
+        &device,
+        &launch(12),
+        context,
+        None,
+        &Policy::default(),
+        1_000,
+    )
+    .expect_err("the unresolved frontend must still be denied and audited");
+    let action_id = match second {
+        MutationError::PolicyDenied { action_id } => action_id,
+        other => panic!("expected policy denial, got {other}"),
+    };
+    let actions = store.list_actions().unwrap();
+    assert_eq!(actions.len(), 1);
+    let row = store.get_action(action_id).unwrap().unwrap();
+    assert_eq!(row.intent, "launch retry fixture");
+    assert_eq!(row.decision, "denied");
+    assert_eq!(row.result, "POLICY_DENIED");
+    store.close().unwrap();
 }
