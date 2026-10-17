@@ -116,3 +116,60 @@ fn scan_tolerates_suspended_sim_then_finds_it_after_resume() {
     assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
     assert!(stdout.contains("127.0.0.1:"), "{stdout}");
 }
+
+#[test]
+fn discovery_uses_selected_transport_and_warns_for_unknown_selector() {
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let targets = dir.path().join("targets.toml");
+    std::fs::write(
+        &targets,
+        format!("[[target]]\nhost = \"127.0.0.1\"\nport = {}\n", sim.port()),
+    )
+    .expect("write targets");
+    let targets = targets.to_str().expect("targets path UTF-8");
+
+    for (selector, warns) in [("std", false), ("bogus", true)] {
+        let before = sim.received_requests().len();
+        let output = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+            .env("ZESTROKU_DB", &db)
+            .env("ZESTROKU_DIRECT", "1")
+            .env("ZESTROKU_TRANSPORT", selector)
+            .env_remove("ZESTROKU_TARGETS")
+            .args(["devices", "--targets", targets, "--mx", "1", "--json"])
+            .output()
+            .expect("run zestroku devices");
+        let stdout = String::from_utf8(output.stdout).expect("stdout UTF-8");
+        let stderr = String::from_utf8(output.stderr).expect("stderr UTF-8");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "selector={selector} stdout={stdout} stderr={stderr}"
+        );
+        let report: serde_json::Value = serde_json::from_str(&stdout).expect("devices JSON");
+        assert!(
+            report["devices"].as_array().is_some_and(|devices| {
+                devices.iter().any(|device| {
+                    device["host"] == "127.0.0.1"
+                        && device["port"].as_u64() == Some(u64::from(sim.port()))
+                })
+            }),
+            "selector={selector}: {report}"
+        );
+        assert_eq!(
+            stderr.contains("unknown ZESTROKU_TRANSPORT"),
+            warns,
+            "selector={selector} stderr={stderr}"
+        );
+        assert!(
+            sim.received_requests()[before..]
+                .iter()
+                .any(|(method, path)| method == "GET" && path == "/query/device-info"),
+            "selector={selector} did not probe the seeded simulator"
+        );
+    }
+}
