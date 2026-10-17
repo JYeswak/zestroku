@@ -249,8 +249,8 @@ impl ToolHandler for MutationTool {
             description: Some(format!(
                 "{} mutation through the per-op confirmation gate (m7e). \
                  Requires a single-use owner token approved for `mcp-stdio`; \
-                 the daemon validates the stored client binding. Unconfirmed \
-                 calls are refused with {CONFIRMATION_REQUIRED} and logged as denied.",
+                 the daemon validates the stored client binding. Missing or blank \
+                 confirmation is rejected before daemon submission, without a daemon audit row.",
                 self.kind
             )),
             input_schema: serde_json::json!({
