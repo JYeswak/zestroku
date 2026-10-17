@@ -1,0 +1,22 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_ecdc13cebc6e006020eb6babcbce197cfed19344575477655b4c6e4861ab7f21",
+ "limitations": [
+  "Original alias leaf acceptance only. Source-bound -j1 immutable proof, not ordinary-j2 whole current-tip CI, later785 test, cl4 save, installed Mac, or physical Roku acceptance.",
+  "Planted ambiguous-input and bad-migration negatives actually ran. No claim that a separately compiled first-match source mutant ran; original nonauthor REWORK237 asks independent current core/info_tier replay, now observed by named cases."
+ ],
+ "operation": "nonauthor-original-alias-acceptance-replay",
+ "parameters": {
+  "base": "f2886cbb93cdfbf73289c0d1c93bca70094c5554",
+  "bead": "zestroku-aliases-li0",
+  "decisive_output": "Independent Jade RCH C4 cargo test -j1 --locked --workspace EXIT0/233passed; observed migration append-only/upgrade+gap/reorder rejection, alias set/list/remove/info living-room, padded-alias removal post-fix, two-TV ambiguity read2/mutation4 with candidates/zeroSimRequests/deniedaudit. StrictClippy0 sameinput; cargo fmt all check0 current18path fingerprintSAME. Current5feature/test fileblobs equal f288; historical c92->f288 migrations diff ONLY appendsv6, preserves1..5. Authors OrangeShore and BeigeLeopard; independent current source review TQ858.",
+  "overlay": "efc2b04da574ceb59c7dc5b6a958e1ff6a745d67c071d1aeda061eb3363e0488",
+  "subject_sha256": "9e9493befe6a65e5df3b1d2cd0e4710128591d5ac88001ca7bd7fd3bc4ec93c3"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 99999,
+  "sha256": "ca5c60633d93198e4c550996f6ac6089f73ea1a951a74b7355ca050d8bc96c70"
+ }
+}

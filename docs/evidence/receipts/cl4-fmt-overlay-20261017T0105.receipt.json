@@ -1,0 +1,23 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_2a7e215f3dd6c12e144a4f2ec2dc9e5ba424032d883abbd35ba66bb2a526a45d",
+ "limitations": [
+  "Noncompiling formatter gate only; no local14% admission recovery, new cargo check/tree, CI, Mac or physical-device proof. Extra785 test remains outside frozen overlay.",
+  "Earlier attempt to compare current files to native receipt tree was invalid: tree is base Git tree. Equal native content/mode overlay fingerprint is the correct current-to-tested binding; no source-drift claim."
+ ],
+ "operation": "native-clean-overlay-noncompiling-fmt-check",
+ "parameters": {
+  "base": "f2886cbb93cdfbf73289c0d1c93bca70094c5554",
+  "base_tree": "e0a186ef4bfff9d70bd1c34a3dde791c591c2614",
+  "decisive_output": "Native C4 cargo fmt --all --check remote EXIT0 at2026-10-17T01:05:13Z/3365ms; no compilation. Receipt overlay fingerprint equals earlier workspace233 and strictClippy fingerprints, binding current18 path bytes/modes. Native tree field equals f288 BASE tree, NOT post-overlay tree.",
+  "overlay": "efc2b04da574ceb59c7dc5b6a958e1ff6a745d67c071d1aeda061eb3363e0488",
+  "subject_kind": "rch-base-overlay-base-tree-identity-json",
+  "subject_sha256": "333c16da627c41962e9bed0b97f8908a168ba181c5a90cb30352cc12788e152b"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 5618,
+  "sha256": "7a0ebbb411afc75f1a0b311dda348b81f7d4cc239e92d1b5d937d01334dc21a1"
+ }
+}
