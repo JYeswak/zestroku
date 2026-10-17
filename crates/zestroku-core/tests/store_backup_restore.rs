@@ -178,3 +178,34 @@ fn restore_checkpoint_consolidates_live_wal_then_rolls_back() {
     assert_eq!(rolled.list_devices().unwrap().len(), 1);
     rolled.close().unwrap();
 }
+
+#[test]
+fn restore_refuses_wal_bytes_no_checkpoint_can_consolidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let live = dir.path().join("actions.db");
+    let store = SqliteStore::open(&live).unwrap();
+    seed(&store);
+    let backup = dir.path().join("actions.backup.db");
+    store.backup_to(&backup).unwrap();
+    store.close().unwrap();
+    // An uncommitted writer holds bytes in the WAL that no checkpoint may
+    // consolidate; the handle stays open so the sidecar persists.
+    let raw = AsyncConnection::open_sync(live.to_string_lossy().into_owned()).unwrap();
+    raw.execute_sync("PRAGMA journal_mode=WAL").unwrap();
+    raw.execute_sync("CREATE TABLE wal_probe(x TEXT)").unwrap();
+    raw.execute_sync("BEGIN IMMEDIATE").unwrap();
+    raw.execute_sync("INSERT INTO wal_probe VALUES ('held')")
+        .unwrap();
+    assert!(dir.path().join("actions.db-wal").exists());
+
+    let err = SqliteStore::restore_from(&backup, &live).unwrap_err();
+    assert!(err.to_string().contains("un-checkpointed"), "{err}");
+
+    // Refused before staging: the held write is untouched, live is intact.
+    assert!(!dir.path().join(".restore.tmp").exists());
+    raw.execute_sync("ROLLBACK").unwrap();
+    drop(raw);
+    let kept = SqliteStore::open(&live).unwrap();
+    assert_eq!(kept.list_devices().unwrap().len(), 1);
+    kept.close().unwrap();
+}

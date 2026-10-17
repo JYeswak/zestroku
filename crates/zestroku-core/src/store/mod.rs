@@ -243,10 +243,12 @@ impl SqliteStore {
     /// never migrated in place and never silently discarded (1r4.7 refusal,
     /// extended to restore). Live WAL sidecars are checkpointed into the
     /// live database before promotion (checkpointing preserves committed
-    /// runtime data; only a sidecar that survives checkpointing is refused,
-    /// never deleted). Promotion is copy-to-temp plus rename, so an
-    /// interrupted restore leaves `live` untouched: recover by retrying the
-    /// restore or keeping the pre-upgrade backup.
+    /// runtime data). A checkpoint leaves the sidecar file in place but
+    /// empty, so only a sidecar that still holds bytes afterwards is
+    /// refused — never deleted; an empty one holds nothing and is removed
+    /// so it cannot shadow the promoted snapshot. Promotion is copy-to-temp
+    /// plus rename, so an interrupted restore leaves `live` untouched:
+    /// recover by retrying the restore or keeping the pre-upgrade backup.
     pub fn restore_from(backup: &Path, live: &Path) -> Result<(), StoreError> {
         let max = applied_schema_max(backup)?;
         let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
@@ -260,16 +262,26 @@ impl SqliteStore {
             .parent()
             .ok_or_else(|| backend("live path has no parent"))?;
         checkpoint_live(live)?;
-        // Only a sidecar that survives checkpointing is refused: it may hold
-        // data no checkpoint could consolidate. Never delete it here.
+        // SQLite checkpointing truncates the WAL but leaves the (now empty)
+        // file behind until last-close, so existence alone proves nothing.
+        // Only a sidecar that still holds bytes after checkpointing is
+        // refused: it may hold data no checkpoint could consolidate. An
+        // empty sidecar holds nothing and is removed so it cannot shadow
+        // the promoted snapshot.
         for suffix in ["-wal", "-shm"] {
             let mut sidecar = live.as_os_str().to_owned();
             sidecar.push(suffix);
-            if Path::new(&sidecar).exists() {
+            let sidecar = Path::new(&sidecar);
+            let bytes = std::fs::metadata(sidecar).map(|m| m.len()).unwrap_or(0);
+            if bytes > 0 {
                 return Err(backend(format!(
-                    "live WAL sidecar {} survives checkpointing; refusing restore",
-                    Path::new(&sidecar).display()
+                    "live WAL sidecar {} holds {bytes} un-checkpointed bytes; refusing restore",
+                    sidecar.display()
                 )));
+            }
+            if sidecar.exists() {
+                std::fs::remove_file(sidecar)
+                    .map_err(|e| backend(format!("remove empty WAL sidecar: {e}")))?;
             }
         }
         let tmp = parent.join(".restore.tmp");
