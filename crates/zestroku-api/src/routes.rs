@@ -793,9 +793,12 @@ async fn resolve_undo_plan<S: Store, T: Transport>(
     let mut matching_apps = apps.iter().filter(|app| {
         app.id.parse::<u32>().ok() == Some(app_id) && app.name.eq_ignore_ascii_case(app_name)
     });
-    let app = matching_apps
-        .next()
-        .ok_or_else(|| error_response(StatusCode::NOT_FOUND, "undo_app_not_installed"))?;
+    if matching_apps.next().is_none() {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            "undo_app_not_installed",
+        ));
+    }
     if matching_apps.next().is_some() {
         return Err(error_response(
             StatusCode::from_u16(409),

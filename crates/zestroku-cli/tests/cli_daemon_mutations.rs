@@ -473,6 +473,10 @@ fn cli_log_reads_action_rows_without_device_requests() {
     assert_eq!(actions[0]["result"], "CONFIRMATION_REQUIRED");
     assert_eq!(actions[1]["surface"], "launch");
     assert_eq!(actions[1]["client"], "http");
+    assert_eq!(
+        actions[1]["intent"],
+        format!("launch 127.0.0.1:{} /launch/1001", sim.port())
+    );
     assert_eq!(actions[1]["before_state"], "tier_source=recorded; Roku");
     let human = Command::new(env!("CARGO_BIN_EXE_zestroku"))
         .env("ZESTROKU_DB", &db)
@@ -489,6 +493,13 @@ fn cli_log_reads_action_rows_without_device_requests() {
     ] {
         assert!(table.contains(field), "{table}");
     }
+    assert!(
+        table.contains(&format!(
+            "intent=\"launch 127.0.0.1:{} /launch/1001\"",
+            sim.port()
+        )),
+        "{table}"
+    );
     assert!(
         sim.received_requests().is_empty(),
         "reading the action log must not contact the device"
