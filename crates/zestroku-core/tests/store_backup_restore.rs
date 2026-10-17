@@ -154,13 +154,15 @@ fn restore_checkpoint_consolidates_live_wal_then_rolls_back() {
     let backup = dir.path().join("actions.backup.db");
     store.backup_to(&backup).unwrap();
     // Upgrade flow order: the store handle is closed first (daemon stopped).
-    // A second connection then leaves un-checkpointed WAL beside live and
-    // stays open, so the sidecar deterministically persists on every
-    // platform (close alone does not remove it on macOS).
+    // A second connection then leaves durable un-checkpointed WAL beside
+    // live and closes WITHOUT checkpointing, so the sidecar persists with
+    // no open connection: no handle is ever open across the promotion
+    // rename (SQLite howtocorrupt §2.5 forbids rename beneath readers).
     store.close().unwrap();
-    let raw = AsyncConnection::open_sync(live.to_string_lossy().into_owned()).unwrap();
+    let mut raw = AsyncConnection::open_sync(live.to_string_lossy().into_owned()).unwrap();
     raw.execute_sync("PRAGMA journal_mode=WAL").unwrap();
     raw.execute_sync("CREATE TABLE wal_probe(x TEXT)").unwrap();
+    raw.close_without_checkpoint_sync().unwrap();
     assert!(
         dir.path().join("actions.db-wal").exists(),
         "probe must leave a WAL sidecar"
@@ -172,14 +174,13 @@ fn restore_checkpoint_consolidates_live_wal_then_rolls_back() {
         .len();
     assert!(wal_bytes > 0, "probe WAL must be nonempty, got {wal_bytes}");
 
-    // Restore checkpoints (preserving committed data) instead of refusing.
+    // Restore checkpoints the durable WAL (preserving committed data).
     SqliteStore::restore_from(&backup, &live).unwrap();
 
     // Promoted snapshot is self-contained: no sidecars, no staging file.
     assert!(!dir.path().join("actions.db-wal").exists());
     assert!(!dir.path().join("actions.db-shm").exists());
     assert!(!dir.path().join(".restore.tmp").exists());
-    drop(raw);
     let rolled = SqliteStore::open(&live).unwrap();
     assert_eq!(rolled.list_devices().unwrap().len(), 1);
     rolled.close().unwrap();

@@ -236,10 +236,13 @@ impl SqliteStore {
     /// Atomically replace the live database at `live` with the backup at
     /// `backup`, for upgrade rollback and recovery (1r4.9).
     ///
-    /// The caller must have closed every writer handle on `live` (back up
-    /// first, stop the daemon through the resident route); idle open readers
-    /// are tolerated, while an active writer's un-checkpointable bytes are
-    /// refused. Validation first: the backup must be a SQLite database
+    /// The caller must have closed every handle on `live` (back up first,
+    /// stop the daemon through the resident route): rename/unlink beneath
+    /// an open connection is SQLite's documented corruption case
+    /// (howtocorrupt §2.5 — old and new inodes can share pathname-based
+    /// journals), so no open reader is supported across promotion.
+    /// Enforcement is by bytes: an active writer's un-checkpointable WAL
+    /// refuses. Validation first: the backup must be a SQLite database
     /// carrying a schema ledger whose max version this binary supports — a
     /// newer-schema backup is refused,
     /// never migrated in place and never silently discarded (1r4.7 refusal,
