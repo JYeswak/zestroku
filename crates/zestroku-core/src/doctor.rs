@@ -6,14 +6,17 @@
 //! injected function. [`run_checked`] snapshots the store before and after
 //! and refuses to return findings when any check mutated it.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use zestroku_proto::{self, Transport};
 
 use crate::discovery;
-use crate::store::Store;
 use crate::store::migrations::MIGRATIONS;
+use crate::store::{
+    AccessTierRow, ActionRow, AliasRow, AppRow, ConfirmationTokenRow, DeviceRow, DiffRow, Store,
+    StoreError,
+};
 use crate::tier;
 
 /// Outcome of one check.
@@ -44,14 +47,139 @@ pub enum ConnectOutcome {
     Timeout,
 }
 
-/// Refusal of [`run_checked`] when a check mutated the store: byte lengths
-/// of the store file and its WAL sidecar before and after the run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReadOnlyViolation {
-    pub before_main: u64,
-    pub before_wal: Option<u64>,
-    pub after_main: u64,
-    pub after_wal: Option<u64>,
+/// Read-only view of a [`Store`]: every read delegates, every write is
+/// refused. Doctor checks only ever observe this view, so a check cannot
+/// mutate authorization posture no matter what it attempts — concurrent
+/// daemon activity is never misattributed to doctor.
+pub struct ReadOnly<'a>(pub &'a dyn Store);
+
+fn denied<T>(op: &str) -> Result<T, StoreError> {
+    Err(StoreError::Backend(format!(
+        "doctor is read-only: {op} refused"
+    )))
+}
+
+impl Store for ReadOnly<'_> {
+    fn schema_versions(&self) -> Result<Vec<i64>, StoreError> {
+        self.0.schema_versions()
+    }
+    fn upsert_device(&self, _d: &DeviceRow) -> Result<(), StoreError> {
+        denied("upsert_device")
+    }
+    fn get_device(&self, id: &str) -> Result<Option<DeviceRow>, StoreError> {
+        self.0.get_device(id)
+    }
+    fn list_devices(&self) -> Result<Vec<DeviceRow>, StoreError> {
+        self.0.list_devices()
+    }
+    fn delete_device(&self, _id: &str) -> Result<(), StoreError> {
+        denied("delete_device")
+    }
+    fn upsert_app(&self, _a: &AppRow) -> Result<(), StoreError> {
+        denied("upsert_app")
+    }
+    fn list_apps(&self, device_id: &str) -> Result<Vec<AppRow>, StoreError> {
+        self.0.list_apps(device_id)
+    }
+    fn delete_app(&self, _device_id: &str, _app_id: &str) -> Result<(), StoreError> {
+        denied("delete_app")
+    }
+    fn add_capability(&self, _device_id: &str, _cap: &str) -> Result<(), StoreError> {
+        denied("add_capability")
+    }
+    fn list_capabilities(&self, device_id: &str) -> Result<Vec<String>, StoreError> {
+        self.0.list_capabilities(device_id)
+    }
+    fn remove_capability(&self, _device_id: &str, _cap: &str) -> Result<(), StoreError> {
+        denied("remove_capability")
+    }
+    fn set_alias(&self, _alias: &AliasRow) -> Result<(), StoreError> {
+        denied("set_alias")
+    }
+    fn list_aliases(&self) -> Result<Vec<AliasRow>, StoreError> {
+        self.0.list_aliases()
+    }
+    fn delete_alias(&self, _alias: &str) -> Result<(), StoreError> {
+        denied("delete_alias")
+    }
+    fn record_device_identity(&self, _device_id: &str, _identity: &str) -> Result<(), StoreError> {
+        denied("record_device_identity")
+    }
+    fn find_device_id_by_identity(&self, identity: &str) -> Result<Option<String>, StoreError> {
+        self.0.find_device_id_by_identity(identity)
+    }
+    fn delete_device_identity(&self, _device_id: &str) -> Result<(), StoreError> {
+        denied("delete_device_identity")
+    }
+    fn rekey_aliases(&self, _old_id: &str, _new_id: &str) -> Result<(), StoreError> {
+        denied("rekey_aliases")
+    }
+    fn move_device_identity(
+        &self,
+        _old_id: &str,
+        _new_device: &DeviceRow,
+        _identity: &str,
+    ) -> Result<(), StoreError> {
+        denied("move_device_identity")
+    }
+    fn insert_confirmation_token(&self, _token: &ConfirmationTokenRow) -> Result<(), StoreError> {
+        denied("insert_confirmation_token")
+    }
+    fn consume_confirmation_token(
+        &self,
+        _token_hash: &str,
+        _device_id: &str,
+        _action: &str,
+        _now: i64,
+    ) -> Result<bool, StoreError> {
+        denied("consume_confirmation_token")
+    }
+    fn upsert_access_tier(&self, _t: &AccessTierRow) -> Result<(), StoreError> {
+        denied("upsert_access_tier")
+    }
+    fn get_access_tier(&self, device_id: &str) -> Result<Option<AccessTierRow>, StoreError> {
+        self.0.get_access_tier(device_id)
+    }
+    fn delete_access_tier(&self, _device_id: &str) -> Result<(), StoreError> {
+        denied("delete_access_tier")
+    }
+    fn insert_action(&self, _a: &ActionRow) -> Result<i64, StoreError> {
+        denied("insert_action")
+    }
+    fn get_action(&self, id: i64) -> Result<Option<ActionRow>, StoreError> {
+        self.0.get_action(id)
+    }
+    fn list_actions(&self) -> Result<Vec<ActionRow>, StoreError> {
+        self.0.list_actions()
+    }
+    fn update_action_result(&self, _id: i64, _result: &str) -> Result<(), StoreError> {
+        denied("update_action_result")
+    }
+    fn delete_action(&self, _id: i64) -> Result<(), StoreError> {
+        denied("delete_action")
+    }
+    fn insert_diff(&self, _d: &DiffRow) -> Result<i64, StoreError> {
+        denied("insert_diff")
+    }
+    fn list_diffs(&self) -> Result<Vec<DiffRow>, StoreError> {
+        self.0.list_diffs()
+    }
+    fn delete_diff(&self, _id: i64) -> Result<(), StoreError> {
+        denied("delete_diff")
+    }
+    fn try_record_policy_hit(
+        &self,
+        _client: &str,
+        _verb: &str,
+        _since: i64,
+        _budget: i64,
+        _now: i64,
+    ) -> Result<bool, StoreError> {
+        denied("try_record_policy_hit")
+    }
+    fn peek_confirmation_token_expiry(&self, token_hash: &str) -> Result<Option<i64>, StoreError> {
+        self.0.peek_confirmation_token_expiry(token_hash)
+    }
 }
 
 /// Everything a doctor run may read. Function pointers (never closures)
@@ -63,8 +191,10 @@ pub struct Ctx<'a, T: Transport> {
     pub transport: &'a T,
     /// One raw SSDP reply datagram to validate (`None` skips the check).
     pub ssdp_reply: Option<&'a [u8]>,
-    /// Device ids (`host:port`) seen by the last sweep (`&[]` skips).
-    pub discovered_ids: &'a [&'a str],
+    /// Device ids (`host:port`) seen by the last sweep. `None` means no
+    /// sweep ran (skip); `Some` — even empty — is a completed sweep whose
+    /// absences are evidence.
+    pub discovered_ids: Option<&'a [&'a str]>,
     /// Direct-connect probe, per host:port.
     pub connect: fn(&str, u16) -> ConnectOutcome,
     /// Platform-tool control: does an OS-native tool reach the host?
@@ -182,8 +312,10 @@ pub fn check_targets(toml: Option<&str>) -> Finding {
     }
 }
 
-/// `tier-posture`: every inventoried device has a recorded tier.
-pub fn check_tier_posture(store: &dyn Store) -> Finding {
+/// `tier-posture`: every inventoried device has a recorded tier that still
+/// matches a live re-probe of the probe map. Recorded-but-unprobed,
+/// untiered, and mismatched devices warn; only full agreement passes.
+pub async fn check_tier_posture<T: Transport>(store: &dyn Store, transport: &T) -> Finding {
     let devices = match store.list_devices() {
         Ok(devices) => devices,
         Err(error) => {
@@ -197,6 +329,8 @@ pub fn check_tier_posture(store: &dyn Store) -> Finding {
         }
     };
     let mut untiered = Vec::new();
+    let mut stale = Vec::new();
+    let mut mismatch = Vec::new();
     for device in &devices {
         let (host, port) = match split_host_port(&device.id) {
             Some(pair) => pair,
@@ -205,9 +339,8 @@ pub fn check_tier_posture(store: &dyn Store) -> Finding {
                 continue;
             }
         };
-        match tier::recorded_tier_for(store, host, port) {
-            Ok(Some(_)) => {}
-            Ok(None) => untiered.push(device.id.clone()),
+        let recorded = match tier::recorded_tier_for(store, host, port) {
+            Ok(recorded) => recorded,
             Err(error) => {
                 return finding(
                     "tier-posture",
@@ -217,13 +350,41 @@ pub fn check_tier_posture(store: &dyn Store) -> Finding {
                     "see store-readable",
                 );
             }
+        };
+        let live = {
+            let cmd = zestroku_proto::query("device-info");
+            match transport.send(host, port, &cmd).await {
+                Ok(response) => Some(tier::classify_tier_from_response(&response)),
+                Err(_) => None,
+            }
+        };
+        match (recorded, live) {
+            (Some(expected), Some(actual)) if expected == actual => {}
+            (Some(expected), Some(actual)) => mismatch.push(format!(
+                "{}: recorded {} but live {}",
+                device.id,
+                expected.as_str(),
+                actual.as_str()
+            )),
+            (Some(_), None) => stale.push(device.id.clone()),
+            (None, _) => untiered.push(device.id.clone()),
         }
     }
-    if untiered.is_empty() {
+    let mut problems = Vec::new();
+    if !untiered.is_empty() {
+        problems.push(format!("{} untiered", untiered.len()));
+    }
+    if !stale.is_empty() {
+        problems.push(format!("{} unprobed", stale.len()));
+    }
+    if !mismatch.is_empty() {
+        problems.push(format!("{} drifted", mismatch.len()));
+    }
+    if problems.is_empty() {
         finding(
             "tier-posture",
             Verdict::Pass,
-            format!("{} device(s) carry a recorded tier", devices.len()),
+            format!("{} device(s) agree with a live probe", devices.len()),
             String::new(),
             "",
         )
@@ -231,9 +392,9 @@ pub fn check_tier_posture(store: &dyn Store) -> Finding {
         finding(
             "tier-posture",
             Verdict::Warn,
-            format!("{} device(s) lack a recorded tier", untiered.len()),
-            format!("untiered={untiered:?}"),
-            "run info once per device so its tier is recorded",
+            format!("tier posture: {}", problems.join(", ")),
+            format!("untiered={untiered:?} stale={stale:?} mismatch={mismatch:?}"),
+            "run info once per untiered device; re-run info where live and recorded disagree",
         )
     }
 }
@@ -371,17 +532,23 @@ pub fn check_policy_file(store_path: &Path) -> Finding {
     }
 }
 
-/// `suspend-vs-absent`: inventoried devices missing from the last sweep warn.
-pub fn check_suspend(store: &dyn Store, discovered: &[&str]) -> Finding {
-    if discovered.is_empty() {
-        return finding(
-            "suspend-vs-absent",
-            Verdict::Skip,
-            "no sweep results supplied".to_string(),
-            String::new(),
-            "",
-        );
-    }
+/// `suspend-vs-absent`: inventoried devices missing from a completed sweep
+/// warn. `None` means no sweep ran (skip); `Some`, even empty, is a
+/// completed sweep whose absences are evidence — so every device
+/// disappearing at once still warns instead of vanishing into a skip.
+pub fn check_suspend(store: &dyn Store, discovered: Option<&[&str]>) -> Finding {
+    let discovered = match discovered {
+        Some(ids) => ids,
+        None => {
+            return finding(
+                "suspend-vs-absent",
+                Verdict::Skip,
+                "no sweep ran".to_string(),
+                String::new(),
+                "",
+            );
+        }
+    };
     let devices = match store.list_devices() {
         Ok(devices) => devices,
         Err(error) => {
@@ -463,38 +630,37 @@ pub fn check_lan_policy(
     }
 }
 
-/// Byte snapshot of the store file plus its WAL sidecar, if present. Any
-/// write — to any table, including ones without a list method — changes
-/// these bytes, so the read-only gate needs no per-table sampling.
-fn store_bytes(path: &Path) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
-    let main = std::fs::read(path).ok()?;
-    let wal_path = PathBuf::from(format!("{}-wal", path.display()));
-    Some((main, std::fs::read(wal_path).ok()))
-}
-
-/// Run every built-in check plus extras, refusing to return when the store
-/// moved. When the store itself is unreadable, the root finding carries the
-/// failure and store-dependent checks Skip (prerequisites skip, not fail);
-/// only an established byte baseline that later differs is a violation.
-pub async fn run_checked<T: Transport>(
-    ctx: &Ctx<T>,
-    extra: &[ExtraCheck<T>],
-) -> std::result::Result<Vec<Finding>, ReadOnlyViolation> {
-    let before = store_bytes(ctx.store_path);
-    let store_finding = check_store(ctx.store, ctx.store_path);
+/// Run every built-in check plus extras through the [`ReadOnly`] view: no
+/// check can mutate, so concurrent daemon activity is never misattributed
+/// to doctor. When the store itself is unreadable, the root finding carries
+/// the failure and store-dependent checks Skip (prerequisites skip, not fail).
+pub async fn run_checked<T: Transport>(ctx: &Ctx<T>, extra: &[ExtraCheck<T>]) -> Vec<Finding> {
+    let view = ReadOnly(ctx.store);
+    let store = &view as &dyn Store;
+    let inner = Ctx {
+        store,
+        store_path: ctx.store_path,
+        targets_toml: ctx.targets_toml,
+        transport: ctx.transport,
+        ssdp_reply: ctx.ssdp_reply,
+        discovered_ids: ctx.discovered_ids,
+        connect: ctx.connect,
+        platform_ok: ctx.platform_ok,
+    };
+    let store_finding = check_store(inner.store, inner.store_path);
     let store_ok = store_finding.verdict != Verdict::Fail;
     let mut findings = vec![
         store_finding,
-        check_targets(ctx.targets_toml),
-        check_ssdp_reply(ctx.ssdp_reply),
-        check_policy_file(ctx.store_path),
+        check_targets(inner.targets_toml),
+        check_ssdp_reply(inner.ssdp_reply),
+        check_policy_file(inner.store_path),
     ];
     if store_ok {
-        findings.push(check_migrations(ctx.store));
-        findings.push(check_tier_posture(ctx.store));
-        findings.push(check_device_info(ctx.store, ctx.transport).await);
-        findings.push(check_suspend(ctx.store, ctx.discovered_ids));
-        for device in ctx
+        findings.push(check_migrations(inner.store));
+        findings.push(check_tier_posture(inner.store, inner.transport).await);
+        findings.push(check_device_info(inner.store, inner.transport).await);
+        findings.push(check_suspend(inner.store, inner.discovered_ids));
+        for device in inner
             .store
             .list_devices()
             .unwrap_or_default()
@@ -504,8 +670,8 @@ pub async fn run_checked<T: Transport>(
             findings.push(check_lan_policy(
                 device.0,
                 device.1,
-                ctx.connect,
-                ctx.platform_ok,
+                inner.connect,
+                inner.platform_ok,
             ));
         }
     } else {
@@ -526,20 +692,9 @@ pub async fn run_checked<T: Transport>(
         }
     }
     for check in extra {
-        findings.push(check(ctx));
+        findings.push(check(&inner));
     }
-    if let Some((before_main, before_wal)) = before {
-        let after = store_bytes(ctx.store_path).unwrap_or_default();
-        if after.0 != before_main || after.1 != before_wal {
-            return Err(ReadOnlyViolation {
-                before_main: before_main.len() as u64,
-                before_wal: before_wal.map(|bytes| bytes.len() as u64),
-                after_main: after.0.len() as u64,
-                after_wal: after.1.map(|bytes| bytes.len() as u64),
-            });
-        }
-    }
-    Ok(findings)
+    findings
 }
 
 #[cfg(test)]
@@ -644,7 +799,7 @@ mod tests {
             ssdp_reply: Some(
                 b"HTTP/1.1 200 OK\r\nLOCATION: http://192.0.2.10:8060/\r\nST: roku:ecp\r\nUSN: uuid:roku:ecp:fx\r\n\r\n",
             ),
-            discovered_ids: &["192.0.2.10:8060"],
+            discovered_ids: Some(&["192.0.2.10:8060"]),
             connect: refuse_connect,
             platform_ok: platform_down,
         }
@@ -665,9 +820,7 @@ mod tests {
             )]),
         };
         let ctx = ctx_for(&store, &db, &transport);
-        let findings = runtime()
-            .block_on(run_checked(&ctx, &[]))
-            .expect("read-only run");
+        let findings = runtime().block_on(run_checked(&ctx, &[]));
         assert!(
             findings.iter().all(|f| f.verdict != Verdict::Fail),
             "{findings:?}"
@@ -681,20 +834,26 @@ mod tests {
     }
 
     #[test]
-    fn mutating_check_is_refused_by_the_read_only_gate() {
+    fn mutating_check_is_denied_by_the_read_only_view() {
+        // Enforcement by construction: the write never reaches the store,
+        // so no byte comparison is needed and concurrent daemon activity
+        // can never be misattributed to doctor.
         fn writer(ctx: &Ctx<FixtureTransport>) -> Finding {
-            ctx.store
-                .insert_action(&crate::store::ActionRow {
-                    id: 0,
-                    at: 1_700_000_000,
-                    client: "doctor-probe".to_string(),
-                    surface: "test".to_string(),
-                    intent: "mutate".to_string(),
-                    decision: "allowed".to_string(),
-                    result: "done".to_string(),
-                    before_state: "{}".to_string(),
-                })
-                .expect("write succeeds; the gate must catch it");
+            assert!(
+                ctx.store
+                    .insert_action(&crate::store::ActionRow {
+                        id: 0,
+                        at: 1_700_000_000,
+                        client: "doctor-probe".to_string(),
+                        surface: "test".to_string(),
+                        intent: "mutate".to_string(),
+                        decision: "allowed".to_string(),
+                        result: "done".to_string(),
+                        before_state: "{}".to_string(),
+                    })
+                    .is_err(),
+                "doctor view must refuse writes"
+            );
             finding(
                 "mutating-probe",
                 Verdict::Pass,
@@ -710,46 +869,61 @@ mod tests {
             bodies: std::collections::BTreeMap::new(),
         };
         let ctx = ctx_for(&store, &db, &transport);
-        let err = runtime()
-            .block_on(run_checked(&ctx, &[writer]))
-            .expect_err("mutating check must be refused");
+        let findings = runtime().block_on(run_checked(&ctx, &[writer]));
         assert!(
-            err.after_main != err.before_main || err.after_wal != err.before_wal,
-            "{err:?}"
+            findings.iter().any(|f| f.id == "mutating-probe"),
+            "{findings:?}"
         );
     }
 
     #[test]
-    fn tier_write_is_refused_by_the_read_only_gate() {
-        // The concrete write class the old per-table sampling missed:
-        // mutating recorded authorization posture must trip the gate.
-        fn tier_writer(ctx: &Ctx<FixtureTransport>) -> Finding {
-            ctx.store
-                .upsert_access_tier(&crate::store::AccessTierRow {
-                    device_id: "192.0.2.10:8060".to_string(),
-                    tier: "limited".to_string(),
-                    probe_at: 1_700_000_200,
-                    probe_map: "{}".to_string(),
-                })
-                .expect("write succeeds; the gate must catch it");
-            finding(
-                "tier-probe",
-                Verdict::Pass,
-                String::new(),
-                String::new(),
-                "",
-            )
-        }
+    fn every_write_method_is_denied() {
+        // Planted-negative suite: if any write below starts delegating
+        // instead of refusing, this test goes red.
         let dir = tempfile::tempdir().expect("tempdir");
         let db = dir.path().join("doctor.db");
         let store = seeded(&db);
-        let transport = FixtureTransport {
-            bodies: std::collections::BTreeMap::new(),
-        };
-        let ctx = ctx_for(&store, &db, &transport);
-        runtime()
-            .block_on(run_checked(&ctx, &[tier_writer]))
-            .expect_err("tier write must be refused");
+        let view = ReadOnly(&store);
+        let denied = [
+            view.upsert_device(&device_row("192.0.2.99:8060")).is_err(),
+            view.delete_device("192.0.2.10:8060").is_err(),
+            view.upsert_app(&crate::store::AppRow {
+                device_id: "192.0.2.10:8060".to_string(),
+                app_id: "9".to_string(),
+                name: "X".to_string(),
+                version: "1".to_string(),
+                fetched_at: 1,
+            })
+            .is_err(),
+            view.set_alias(&crate::store::AliasRow {
+                alias: "x".to_string(),
+                device_id: "192.0.2.10:8060".to_string(),
+            })
+            .is_err(),
+            view.upsert_access_tier(&crate::store::AccessTierRow {
+                device_id: "192.0.2.10:8060".to_string(),
+                tier: "limited".to_string(),
+                probe_at: 1,
+                probe_map: "{}".to_string(),
+            })
+            .is_err(),
+            view.insert_action(&crate::store::ActionRow {
+                id: 0,
+                at: 1,
+                client: "c".to_string(),
+                surface: "s".to_string(),
+                intent: "i".to_string(),
+                decision: "d".to_string(),
+                result: "r".to_string(),
+                before_state: "{}".to_string(),
+            })
+            .is_err(),
+            view.try_record_policy_hit("c", "v", 1, 1, 2).is_err(),
+            view.consume_confirmation_token("h", "d", "a", 1).is_err(),
+        ];
+        assert!(denied.iter().all(|&d| d), "{denied:?}");
+        // Reads still delegate.
+        assert_eq!(view.list_devices().expect("read").len(), 1);
     }
 
     #[test]
@@ -783,9 +957,31 @@ mod tests {
         store
             .upsert_device(&device_row("192.0.2.10:8060"))
             .expect("seed device");
-        let finding = check_tier_posture(&store);
+        let transport = FixtureTransport {
+            bodies: std::collections::BTreeMap::new(),
+        };
+        let finding = runtime().block_on(check_tier_posture(&store, &transport));
         assert_eq!(finding.verdict, Verdict::Warn);
         assert!(finding.evidence.contains("192.0.2.10:8060"), "{finding:?}");
+    }
+
+    #[test]
+    fn drifted_tier_warns_with_recorded_and_live() {
+        // Recorded permissive but live Limited-403: mismatch must name both.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("doctor.db");
+        let store = seeded(&db);
+        let transport = FixtureTransport {
+            bodies: std::collections::BTreeMap::from([(
+                ("192.0.2.10".to_string(), ECP_DEFAULT_PORT),
+                (403, "wrong-body".to_string()),
+            )]),
+        };
+        let finding = runtime().block_on(check_tier_posture(&store, &transport));
+        assert_eq!(finding.verdict, Verdict::Warn);
+        assert!(finding.detail.contains("drifted"), "{finding:?}");
+        assert!(finding.evidence.contains("permissive"), "{finding:?}");
+        assert!(finding.evidence.contains("unknown"), "{finding:?}");
     }
 
     #[test]
@@ -793,9 +989,23 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = dir.path().join("doctor.db");
         let store = seeded(&db);
-        let finding = check_suspend(&store, &["192.0.2.99:8060"]);
+        let finding = check_suspend(&store, Some(&["192.0.2.99:8060"]));
         assert_eq!(finding.verdict, Verdict::Warn);
         assert!(finding.remedy.contains("suspended"), "{finding:?}");
+    }
+
+    #[test]
+    fn completed_empty_sweep_warns_unrun_sweep_skips() {
+        // A completed sweep with zero responders still reports every
+        // inventoried device missing; only an unrun sweep skips.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("doctor.db");
+        let store = seeded(&db);
+        let empty = check_suspend(&store, Some(&[]));
+        assert_eq!(empty.verdict, Verdict::Warn);
+        assert!(empty.evidence.contains("192.0.2.10:8060"), "{empty:?}");
+        let unrun = check_suspend(&store, None);
+        assert_eq!(unrun.verdict, Verdict::Skip);
     }
 
     #[test]
@@ -964,13 +1174,11 @@ mod tests {
             targets_toml: None,
             transport: &transport,
             ssdp_reply: None,
-            discovered_ids: &[],
+            discovered_ids: None,
             connect: refuse_connect,
             platform_ok: platform_down,
         };
-        let findings = runtime()
-            .block_on(run_checked(&ctx, &[]))
-            .expect("broken store still reports findings");
+        let findings = runtime().block_on(run_checked(&ctx, &[]));
         let verdict_of = |id: &str| {
             findings
                 .iter()
