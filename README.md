@@ -120,6 +120,11 @@ zestroku-aarch64-apple-darwin`) and runs the offline tests natively. Clear the
 download quarantine with `xattr -d com.apple.quarantine zestroku`. The Contabo
 cross-build below is the fallback.
 
+Bun 1.4.3 is the developer runtime for mission checks. `portable-macos.yml`
+pins it and runs `bun scripts/mission-check.ts --pillar safe-control` after
+the stock build. This does not grant a local Rust build; use the executor
+approved for the host.
+
 `zestroku` is a Mach-O arm64 binary cross-built on the Contabo workers (plain
 `--target` trips rch's os gate; `--config build.target` produces the identical
 binary). `ring` compiles C, so the cross build links through

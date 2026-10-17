@@ -84,7 +84,7 @@ const RCH_B_FILTERS = [
   "tier_refusal_precedes_http_token_consumption_and_snapshot_is_audited",
   "http_approval_requires_nonblank_single_use_device_and_command_binding",
   "open_and_unknown_http_tiers_deny_before_mutation_post",
-  "key_and_launch_mutation_routes_document_closed_request_bodies",
+  "mutation_routes_document_closed_request_bodies",
   "approved_http_dispatch_failures_finish_as_failures",
 ];
 const RCH_C_TARGET = ["-p", "zestroku-cli", "--test", "mutation_api"];
@@ -209,6 +209,9 @@ async function denialZeroPost(ctx: CheckContext, versionOk: boolean): Promise<Ch
     }
     const { code, stdout, stderr, timedOut } = attempted.value;
     const output = `${stdout}\n${stderr}`;
+    if (!timedOut && code === 5 && postCount === 0 && output.includes("[DAEMON_UNAVAILABLE]")) {
+      return result(id, "UNKNOWN", "DAEMON_UNAVAILABLE: local daemon unavailable; the CLI denial behavior was not exercised", "invariant", "simulated");
+    }
     const denied = !timedOut && code === 4 && output.includes("CONFIRMATION_REQUIRED");
     const completed = isCompletedDispatchText(output);
     if (denied && !completed && postCount === 0) {
@@ -438,7 +441,7 @@ export async function run(ctx: CheckContext): Promise<CheckCase[]> {
   cases.push(suiteCase(
     "safe-control.body-smuggling-refused-closed-schema",
     rchB,
-    ["key_and_launch_mutation_routes_document_closed_request_bodies"],
+    ["mutation_routes_document_closed_request_bodies"],
     `mutation request bodies stay closed: host/port/tier/principal/backend_url cannot ride the body (${execution} mutation_schema_contract @${rev}); unknown-principal owner mapping is a tailnet surface outside this pillar and remains unproven here`,
     ["cap.policy.negative"],
   ));

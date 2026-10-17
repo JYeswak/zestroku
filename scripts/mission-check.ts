@@ -29,7 +29,7 @@ const PILLARS: readonly PillarId[] = ["installed-resident", "surface-parity", "s
 const IMPLEMENTATIONS: Record<PillarId, { path: string; sha256: string }> = {
   "installed-resident": { path: "scripts/mission/installed-resident.ts", sha256: "4d785cc0036c52259c1437888c58c8a18ca3be56af5c8d090dcad7b78b0ebf49" },
   "surface-parity": { path: "scripts/mission/surface-parity.ts", sha256: "214d59ed1148ccda064edd64b1a61c964bc408cf47d7284acdf5476f1fc9d59e" },
-  "safe-control": { path: "scripts/mission/safe-control.ts", sha256: "05d826b4f5ee1edb4a22c95313a5f7b56bf9f35d33e30d638f8b9147cf880e53" },
+  "safe-control": { path: "scripts/mission/safe-control.ts", sha256: "0f9dd3ecca3a88e63367ad11e1e34f55f5285d5b8cb6709c1e3987f6adad0e4f" },
   "recovery-live": { path: "scripts/mission/recovery-live.ts", sha256: "f7a470179ddcb4a87560877f62a8bf84442babbb77a12e4adb8548f506f42340" },
 };
 

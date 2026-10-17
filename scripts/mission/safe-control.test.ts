@@ -317,6 +317,9 @@ describe("run() against executable fixtures", () => {
       "running 1 test",
       "test tier_refusal_precedes_http_token_consumption_and_snapshot_is_audited ... ok",
       "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;",
+      "running 1 test",
+      "test mutation_routes_document_closed_request_bodies ... ok",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;",
       "running 0 tests",
       "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;",
     ].join("\n");
@@ -334,6 +337,25 @@ describe("run() against executable fixtures", () => {
       mixedTargets,
     ));
     expect(byId(cases, "safe-control.snapshot-before-state-audited").outcome).toBe("PASS");
+    expect(byId(cases, "safe-control.body-smuggling-refused-closed-schema").outcome).toBe("PASS");
+  }, LOCAL_TIMEOUT);
+
+  test("daemon-unavailable local denial remains UNKNOWN", async () => {
+    const unavailable: ExecFn = async (argv, options) => {
+      if (argv[0] === binOk && argv[1] === "key") {
+        return {
+          code: 5,
+          stdout: "",
+          stderr: "zestroku: [DAEMON_UNAVAILABLE] daemon unavailable: Connection refused (os error 61)",
+          timedOut: false,
+        };
+      }
+      return realExec(argv, options);
+    };
+    const cases = await run(ctxFor(binOk, {}, join(SCRATCH, "daemon-unavailable"), unavailable));
+    const denial = byId(cases, "safe-control.unconfirmed-denial-zero-post");
+    expect(denial.outcome).toBe("UNKNOWN");
+    expect(denial.detail).toContain("DAEMON_UNAVAILABLE");
   }, LOCAL_TIMEOUT);
 
   test("missing binary is UNKNOWN everywhere, never green", async () => {
