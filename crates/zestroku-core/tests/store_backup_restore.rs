@@ -311,3 +311,32 @@ fn restore_fails_closed_when_the_live_path_cannot_be_statted() {
     );
     assert_eq!(std::fs::read(&blocker).unwrap(), b"file");
 }
+
+#[test]
+fn backup_file_snapshots_without_migrating_and_never_overwrites() {
+    let dir = tempfile::tempdir().unwrap();
+    let live = dir.path().join("actions.db");
+    // Old-version data: only the first two migrations applied.
+    let old = SqliteStore::open_with(&live, &MIGRATIONS[..2]).unwrap();
+    old.upsert_device(&device("dev-1")).unwrap();
+    old.close().unwrap();
+
+    let dest = dir.path().join("pre-upgrade.db");
+    SqliteStore::backup_file(&live, &dest).unwrap();
+    let snap = SqliteStore::open_with(&dest, &MIGRATIONS[..2]).unwrap();
+    assert_eq!(snap.schema_versions().unwrap(), [1, 2], "not migrated");
+    assert_eq!(ids(&snap), ["dev-1"]);
+    snap.close().unwrap();
+
+    // A second backup to the same destination is refused, bytes intact.
+    let before = std::fs::read(&dest).unwrap();
+    assert!(SqliteStore::backup_file(&live, &dest).is_err());
+    assert_eq!(std::fs::read(&dest).unwrap(), before);
+
+    // A missing store is refused and neither file is created.
+    let missing = dir.path().join("missing.db");
+    let other = dir.path().join("other.db");
+    assert!(SqliteStore::backup_file(&missing, &other).is_err());
+    assert!(!missing.exists());
+    assert!(!other.exists());
+}

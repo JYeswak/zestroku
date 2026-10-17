@@ -16,6 +16,7 @@ mod aliases;
 mod apps;
 mod complete;
 mod daemon_client;
+mod db_admin;
 mod devices;
 mod doctor;
 mod install;
@@ -52,6 +53,8 @@ USAGE:
     zestroku undo <host> [--confirm <token>]  relaunch the previous app
     zestroku mcp                         MCP server on stdio (agent tools)
     zestroku doctor [--json]           read-only health checks (exit 0/6/7)
+    zestroku db backup <dest>          snapshot the store at its current schema (never migrates)
+    zestroku db restore <backup>       replace the store with a validated backup (daemon stopped)
     zestroku serve [--bind <ip:port>]    HTTP API daemon (loopback default)
     zestroku sim --scenario two-devices [--json]
         read-only scenario walk over loopback simulators
@@ -538,6 +541,7 @@ fn main() -> ExitCode {
         Some("log") => run_action_log(&args[1..]),
         Some("undo") => mutate::undo_last(&args[1..]),
         Some("doctor") => doctor::run(&args[1..]),
+        Some("db") => db_admin::run(&args[1..]),
         Some("serve") => serve::run(&args[1..]),
         Some("sim") => sim_scenario::run(&args[1..]),
         Some("mcp") => match zestroku_mcp::run_stdio() {

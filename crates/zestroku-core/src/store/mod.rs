@@ -203,34 +203,78 @@ impl SqliteStore {
     }
 
     /// Open with an explicit migration list (used to prove append-only upgrades).
+    ///
+    /// A refused open (newer schema, failed migration) JOINS its handle
+    /// without a checkpoint before returning the error: a bare drop only
+    /// detaches the worker, which would leave the refused database open
+    /// beneath whatever the caller does next (restore, replace, unlink).
     pub fn open_with(path: &Path, migrations: &[Migration]) -> Result<Self, StoreError> {
         if !is_contiguous(migrations) {
             return Err(backend("migration versions must be 1..=N, contiguous"));
         }
-        let store = Self {
+        let mut store = Self {
             conn: AsyncConnection::open_sync(path.to_string_lossy().into_owned())
                 .map_err(backend)?,
         };
-        store.migrate(migrations)?;
-        Ok(store)
+        match store.migrate(migrations) {
+            Ok(()) => Ok(store),
+            Err(StoreError::Backend(primary)) => {
+                Err(match store.conn.close_without_checkpoint_sync() {
+                    Ok(()) => backend(primary),
+                    Err(close) => backend(format!("{primary}; close failed: {close}")),
+                })
+            }
+        }
     }
 
     /// Close, checkpointing the WAL.
     pub fn close(mut self) -> Result<(), StoreError> {
         self.conn.close_sync().map_err(backend)
     }
-    /// Write a consistent snapshot of the live database to `dest`.
+    /// Write a consistent snapshot of this open store to `dest`.
     ///
     /// Uses `VACUUM INTO`: driver-supported, runs on the live connection,
-    /// and produces a de-fragmented consistent copy (no stock copy client,
-    /// no WAL fragments). `dest` is overwritten when present; its parent
-    /// directory must exist.
+    /// and produces a de-fragmented single-file copy (no stock copy client,
+    /// no WAL sidecars). `dest` must not already exist and its parent
+    /// directory must exist. An opened store has already been migrated: to
+    /// snapshot data at the schema it is CURRENTLY at, before any open
+    /// migrates it, use [`SqliteStore::backup_file`].
     pub fn backup_to(&self, dest: &Path) -> Result<(), StoreError> {
-        let escaped = dest.to_string_lossy().replace('\'', "''");
-        self.conn
-            .execute_sync(&format!("VACUUM INTO '{escaped}'"))
-            .map(|_| ())
-            .map_err(backend)
+        vacuum_into(&self.conn, dest)
+    }
+
+    /// Snapshot the database file at `live` into `dest` WITHOUT opening it
+    /// as a store: no migration runs, so the snapshot keeps the schema the
+    /// data is at. This is the pre-upgrade backup (1r4.9): a newer binary
+    /// must capture old-schema data before its first `open` migrates it.
+    /// `dest` is never overwritten. The temporary source handle is joined
+    /// without a close-time checkpoint before returning.
+    pub fn backup_file(live: &Path, dest: &Path) -> Result<(), StoreError> {
+        if let Err(e) = std::fs::metadata(live) {
+            return Err(backend(format!(
+                "cannot stat store {}: {e}",
+                live.display()
+            )));
+        }
+        match std::fs::symlink_metadata(dest) {
+            Ok(_) => {
+                return Err(backend(format!(
+                    "backup destination {} already exists; refusing to overwrite",
+                    dest.display()
+                )));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(backend(format!(
+                    "cannot stat backup destination {}: {e}",
+                    dest.display()
+                )));
+            }
+        }
+        let conn = AsyncConnection::open_sync(live.to_string_lossy().into_owned())
+            .map_err(|e| backend(format!("cannot open store for backup: {e}")))?;
+        let copied = vacuum_into(&conn, dest);
+        join_temporary(conn, copied, "backup source handle")
     }
 
     /// Atomically replace the live database at `live` with the backup at
@@ -397,6 +441,15 @@ fn int(row: &Row, i: usize) -> Result<i64, StoreError> {
     row.get(i)
         .and_then(SqliteValue::as_integer)
         .ok_or_else(|| backend(format!("column {i} is not INTEGER")))
+}
+
+/// Run `VACUUM INTO` on `conn`, writing a consistent single-file snapshot
+/// to `dest` (SQLite refuses a non-empty existing destination).
+fn vacuum_into(conn: &AsyncConnection, dest: &Path) -> Result<(), StoreError> {
+    let escaped = dest.to_string_lossy().replace('\'', "''");
+    conn.execute_sync(&format!("VACUUM INTO '{escaped}'"))
+        .map(|_| ())
+        .map_err(backend)
 }
 
 /// Size of the WAL file header. A completed checkpoint leaves at most this
