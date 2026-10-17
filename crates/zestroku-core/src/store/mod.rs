@@ -236,13 +236,17 @@ impl SqliteStore {
     /// `backup`, for upgrade rollback and recovery (1r4.9).
     ///
     /// The caller must have closed every handle on `live` (back up first,
-    /// stop the daemon through the resident route). Validation first: the
-    /// backup must carry a schema ledger whose max version this binary
-    /// supports — a newer-schema backup is refused, never migrated in
-    /// place and never silently discarded (1r4.7 refusal, extended to
-    /// restore). Promotion is copy-to-temp plus rename, so an interrupted
-    /// restore leaves `live` untouched: recover by retrying the restore or
-    /// keeping the pre-upgrade backup.
+    /// stop the daemon through the resident route) AND checkpointed it:
+    /// live `-wal`/`-shm` sidecars present at restore time are refused, not
+    /// deleted — a sidecar may hold committed runtime data, and 1r4.9
+    /// forbids silently discarding WAL (`close` checkpoints; a stopped
+    /// daemon leaves no sidecars). Validation first: the backup must carry
+    /// a schema ledger whose max version this binary supports — a
+    /// newer-schema backup is refused, never migrated in place and never
+    /// silently discarded (1r4.7 refusal, extended to restore). Promotion
+    /// is copy-to-temp plus rename, so an interrupted restore leaves `live`
+    /// untouched: recover by retrying the restore or keeping the
+    /// pre-upgrade backup.
     pub fn restore_from(backup: &Path, live: &Path) -> Result<(), StoreError> {
         let max = applied_schema_max(backup)?;
         let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
@@ -255,6 +259,19 @@ impl SqliteStore {
         let parent = live
             .parent()
             .ok_or_else(|| backend("live path has no parent"))?;
+        // Fail closed on live WAL sidecars: they may hold committed runtime
+        // data. Checkpoint (close every handle) before restoring; never
+        // delete them here.
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = live.as_os_str().to_owned();
+            sidecar.push(suffix);
+            if Path::new(&sidecar).exists() {
+                return Err(backend(format!(
+                    "live WAL sidecar {} exists; checkpoint (close the store) before restore",
+                    Path::new(&sidecar).display()
+                )));
+            }
+        }
         let tmp = parent.join(".restore.tmp");
         std::fs::copy(backup, &tmp).map_err(|e| backend(format!("copy backup to staging: {e}")))?;
         std::fs::rename(&tmp, live).map_err(|e| backend(format!("promote staged restore: {e}")))?;

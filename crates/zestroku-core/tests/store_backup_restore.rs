@@ -144,3 +144,31 @@ fn restore_refuses_a_file_with_no_schema_ledger() {
     assert!(!dir.path().join(".restore.tmp").exists());
     SqliteStore::open(&live).unwrap().close().unwrap();
 }
+
+#[test]
+fn restore_refuses_live_wal_sidecars_without_touching_live() {
+    let dir = tempfile::tempdir().unwrap();
+    let live = dir.path().join("actions.db");
+    let store = SqliteStore::open(&live).unwrap();
+    seed(&store);
+    let backup = dir.path().join("actions.backup.db");
+    store.backup_to(&backup).unwrap();
+    // Leave un-checkpointed WAL activity beside live through a second
+    // connection (the store handle stays open, so the sidecar persists).
+    let raw = AsyncConnection::open_sync(live.to_string_lossy().into_owned()).unwrap();
+    raw.execute_sync("PRAGMA journal_mode=WAL").unwrap();
+    raw.execute_sync("CREATE TABLE wal_probe(x TEXT)").unwrap();
+    drop(raw);
+    assert!(
+        dir.path().join("actions.db-wal").exists(),
+        "probe must leave a WAL sidecar"
+    );
+
+    let err = SqliteStore::restore_from(&backup, &live).unwrap_err();
+    assert!(err.to_string().contains("checkpoint"), "{err}");
+
+    // Refused before staging: no temp file, live data intact via the handle.
+    assert!(!dir.path().join(".restore.tmp").exists());
+    assert_eq!(store.list_devices().unwrap().len(), 1);
+    store.close().unwrap();
+}
