@@ -138,7 +138,7 @@ fn restore_refuses_a_file_with_no_schema_ledger() {
     std::fs::write(&junk, b"not a database").unwrap();
 
     let err = SqliteStore::restore_from(&junk, &live).unwrap_err();
-    assert!(err.to_string().contains("ledger"), "{err}");
+    assert!(err.to_string().contains("not a SQLite database"), "{err}");
 
     // Live still opens: the failed validation staged nothing.
     assert!(!dir.path().join(".restore.tmp").exists());
@@ -146,29 +146,35 @@ fn restore_refuses_a_file_with_no_schema_ledger() {
 }
 
 #[test]
-fn restore_refuses_live_wal_sidecars_without_touching_live() {
+fn restore_checkpoint_consolidates_live_wal_then_rolls_back() {
     let dir = tempfile::tempdir().unwrap();
     let live = dir.path().join("actions.db");
     let store = SqliteStore::open(&live).unwrap();
     seed(&store);
     let backup = dir.path().join("actions.backup.db");
     store.backup_to(&backup).unwrap();
-    // Leave un-checkpointed WAL activity beside live through a second
-    // connection (the store handle stays open, so the sidecar persists).
+    // Upgrade flow order: the store handle is closed first (daemon stopped).
+    // A second connection then leaves un-checkpointed WAL beside live and
+    // stays open, so the sidecar deterministically persists on every
+    // platform (close alone does not remove it on macOS).
+    store.close().unwrap();
     let raw = AsyncConnection::open_sync(live.to_string_lossy().into_owned()).unwrap();
     raw.execute_sync("PRAGMA journal_mode=WAL").unwrap();
     raw.execute_sync("CREATE TABLE wal_probe(x TEXT)").unwrap();
-    drop(raw);
     assert!(
         dir.path().join("actions.db-wal").exists(),
         "probe must leave a WAL sidecar"
     );
 
-    let err = SqliteStore::restore_from(&backup, &live).unwrap_err();
-    assert!(err.to_string().contains("checkpoint"), "{err}");
+    // Restore checkpoints (preserving committed data) instead of refusing.
+    SqliteStore::restore_from(&backup, &live).unwrap();
 
-    // Refused before staging: no temp file, live data intact via the handle.
+    // Promoted snapshot is self-contained: no sidecars, no staging file.
+    assert!(!dir.path().join("actions.db-wal").exists());
+    assert!(!dir.path().join("actions.db-shm").exists());
     assert!(!dir.path().join(".restore.tmp").exists());
-    assert_eq!(store.list_devices().unwrap().len(), 1);
-    store.close().unwrap();
+    drop(raw);
+    let rolled = SqliteStore::open(&live).unwrap();
+    assert_eq!(rolled.list_devices().unwrap().len(), 1);
+    rolled.close().unwrap();
 }

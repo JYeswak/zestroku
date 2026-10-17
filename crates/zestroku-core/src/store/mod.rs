@@ -237,17 +237,16 @@ impl SqliteStore {
     /// `backup`, for upgrade rollback and recovery (1r4.9).
     ///
     /// The caller must have closed every handle on `live` (back up first,
-    /// stop the daemon through the resident route) AND checkpointed it:
-    /// live `-wal`/`-shm` sidecars present at restore time are refused, not
-    /// deleted — a sidecar may hold committed runtime data, and 1r4.9
-    /// forbids silently discarding WAL (`close` checkpoints; a stopped
-    /// daemon leaves no sidecars). Validation first: the backup must carry
-    /// a schema ledger whose max version this binary supports — a
-    /// newer-schema backup is refused, never migrated in place and never
-    /// silently discarded (1r4.7 refusal, extended to restore). Promotion
-    /// is copy-to-temp plus rename, so an interrupted restore leaves `live`
-    /// untouched: recover by retrying the restore or keeping the
-    /// pre-upgrade backup.
+    /// stop the daemon through the resident route). Validation first: the
+    /// backup must be a SQLite database carrying a schema ledger whose max
+    /// version this binary supports — a newer-schema backup is refused,
+    /// never migrated in place and never silently discarded (1r4.7 refusal,
+    /// extended to restore). Live WAL sidecars are checkpointed into the
+    /// live database before promotion (checkpointing preserves committed
+    /// runtime data; only a sidecar that survives checkpointing is refused,
+    /// never deleted). Promotion is copy-to-temp plus rename, so an
+    /// interrupted restore leaves `live` untouched: recover by retrying the
+    /// restore or keeping the pre-upgrade backup.
     pub fn restore_from(backup: &Path, live: &Path) -> Result<(), StoreError> {
         let max = applied_schema_max(backup)?;
         let supported = MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0);
@@ -260,15 +259,15 @@ impl SqliteStore {
         let parent = live
             .parent()
             .ok_or_else(|| backend("live path has no parent"))?;
-        // Fail closed on live WAL sidecars: they may hold committed runtime
-        // data. Checkpoint (close every handle) before restoring; never
-        // delete them here.
+        checkpoint_live(live)?;
+        // Only a sidecar that survives checkpointing is refused: it may hold
+        // data no checkpoint could consolidate. Never delete it here.
         for suffix in ["-wal", "-shm"] {
             let mut sidecar = live.as_os_str().to_owned();
             sidecar.push(suffix);
             if Path::new(&sidecar).exists() {
                 return Err(backend(format!(
-                    "live WAL sidecar {} exists; checkpoint (close the store) before restore",
+                    "live WAL sidecar {} survives checkpointing; refusing restore",
                     Path::new(&sidecar).display()
                 )));
             }
@@ -403,7 +402,26 @@ fn int(row: &Row, i: usize) -> Result<i64, StoreError> {
 /// Max applied schema version in the database at `path`, read without
 /// migrating (restore validation must never mutate the backup). A missing
 /// ledger means the file is not a zestroku store: refuse, do not assume.
+/// A file without the SQLite header is refused before any SQL runs, so the
+/// error names the cause instead of leaking driver diagnostics.
 fn applied_schema_max(path: &Path) -> Result<i64, StoreError> {
+    use std::io::Read as _;
+    let mut header = [0u8; 16];
+    std::fs::File::open(path)
+        .map_err(|e| backend(format!("backup is not readable: {e}")))?
+        .read_exact(&mut header)
+        .map_err(|e| {
+            backend(format!(
+                "backup {} is not a SQLite database: {e}",
+                path.display()
+            ))
+        })?;
+    if header != *b"SQLite format 3\0" {
+        return Err(backend(format!(
+            "backup {} is not a SQLite database",
+            path.display()
+        )));
+    }
     let conn = AsyncConnection::open_sync(path.to_string_lossy().into_owned()).map_err(backend)?;
     let rows = conn
         .query_with_params_sync("SELECT version FROM schema_migrations", &[])
@@ -415,6 +433,20 @@ fn applied_schema_max(path: &Path) -> Result<i64, StoreError> {
                 .ok_or_else(|| backend("schema ledger version is not INTEGER"))
         })
         .try_fold(0i64, |max, v| v.map(|v| max.max(v)))
+}
+
+/// Consolidate live WAL sidecars into the live database (preserving every
+/// committed byte) so promotion replaces one self-contained file. A missing
+/// live file needs no checkpoint. Checkpoint errors are tolerated: the
+/// post-checkpoint sidecar recheck refuses what survives.
+fn checkpoint_live(live: &Path) -> Result<(), StoreError> {
+    if !live.exists() {
+        return Ok(());
+    }
+    let conn = AsyncConnection::open_sync(live.to_string_lossy().into_owned())
+        .map_err(|e| backend(format!("cannot open live database for checkpoint: {e}")))?;
+    let _ = conn.execute_sync("PRAGMA wal_checkpoint(TRUNCATE)");
+    Ok(())
 }
 
 fn s(v: &str) -> SqliteValue {
