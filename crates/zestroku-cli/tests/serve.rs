@@ -199,7 +199,7 @@ fn fake_tailscale_dir() -> tempfile::TempDir {
     let bin = dir.path().join("tailscale");
     std::fs::write(
         &bin,
-        "#!/bin/sh\nif [ -n \"$TAILSCALE_FIXTURE\" ]; then printf '%s' \"$TAILSCALE_FIXTURE\"; fi\nexit \"$TAILSCALE_EXIT\"\n",
+        "#!/bin/sh\nif [ \"$TAILSCALE_HANG\" = \"1\" ]; then exec /bin/sleep 10; fi\nif [ -n \"$TAILSCALE_FIXTURE\" ]; then printf '%s' \"$TAILSCALE_FIXTURE\"; fi\nexit \"$TAILSCALE_EXIT\"\n",
     )
     .expect("write fake tailscale");
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
@@ -217,6 +217,7 @@ fn serve_tailnet_bind_requires_own_node_membership() {
     let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
         .env("ZESTROKU_DB", &db)
         .env("PATH", tail.path())
+        .env("TAILSCALE_HANG", "0")
         .env(
             "TAILSCALE_FIXTURE",
             r#"{"TailscaleIPs": ["100.93.84.11", "fd7a:115c:a1e0::8d3b:540c"]}"#,
@@ -249,6 +250,7 @@ fn serve_tailnet_bind_refuses_unavailable_and_malformed_source() {
         let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
             .env("ZESTROKU_DB", &db)
             .env("PATH", tail.path())
+            .env("TAILSCALE_HANG", "0")
             .env("TAILSCALE_FIXTURE", fixture)
             .env("TAILSCALE_EXIT", exit)
             .args(["serve", "--bind", "100.93.84.11:8070"])
@@ -259,6 +261,33 @@ fn serve_tailnet_bind_refuses_unavailable_and_malformed_source() {
         assert!(err.contains(want), "{fixture}/{exit}: {err}");
         assert!(!db.exists(), "store opened before source check");
     }
+}
+
+#[test]
+fn serve_tailnet_bind_refuses_hung_source_before_store() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let tail = fake_tailscale_dir();
+    let started = Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &db)
+        .env("PATH", tail.path())
+        .env("TAILSCALE_HANG", "1")
+        .env("TAILSCALE_EXIT", "0")
+        .args(["serve", "--bind", "100.93.84.11:8070"])
+        .output()
+        .expect("run serve");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(8),
+        "hung tailscale status exceeded its bound: {elapsed:?}"
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("tailnet bind refused"), "{stderr}");
+    assert!(stderr.contains("timed out"), "{stderr}");
+    assert!(!db.exists(), "store opened before the source timeout");
 }
 
 #[test]
@@ -273,6 +302,7 @@ fn serve_tailnet_bind_passes_membership_then_fails_listen() {
     let out = Command::new(env!("CARGO_BIN_EXE_zestroku"))
         .env("ZESTROKU_DB", &db)
         .env("PATH", tail.path())
+        .env("TAILSCALE_HANG", "0")
         .env("TAILSCALE_FIXTURE", r#"{"TailscaleIPs": ["100.93.84.11"]}"#)
         .env("TAILSCALE_EXIT", "0")
         .args(["serve", "--bind", "100.93.84.11:8070"])
