@@ -640,9 +640,20 @@ fn c3_partial_info_body_completes_after_term_and_admission_stop() {
         "C3 response did not request connection close: {response_head:?}"
     );
     assert_eq!(
+        rebinder.bind(),
+        "BOUND",
+        "C3 separate-process bind failed after daemon exit"
+    );
+    assert_eq!(
+        rebinder.probe(),
+        PortProbe::AddressInUse,
+        "C3 shared release probe did not detect the held listener"
+    );
+    rebinder.release();
+    assert_eq!(
         rebinder.probe(),
         PortProbe::Bound,
-        "C3 separate-process release probe could not rebind the original serve address after daemon exit"
+        "C3 shared release probe did not detect the released listener"
     );
     rebinder.finish();
 }
