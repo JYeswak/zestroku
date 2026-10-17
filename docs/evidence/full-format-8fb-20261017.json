@@ -1,0 +1,39 @@
+{
+  "scope": "Actual full cargo fmt completion on published8fb, supplements prior refusal without overwriting it",
+  "source": "8fb71052fc869f80120e71f538ee25f1f95cdb46",
+  "nativeOverlay": "fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195",
+  "tree": "100888567666fc9d36b003c3328d24894e11ca2c",
+  "operation": "cargo fmt --all --check",
+  "workloadRequest": {
+    "RCH_BUILD_SLOTS": "2",
+    "scope": "env for this one noncompiling formatter invocation only",
+    "sharedConfigEditRequested": false,
+    "pressureThresholdChangeRequested": false
+  },
+  "completion": {
+    "timestamp": "2026-10-17T04:37:54.718Z",
+    "content": "<system-notice>\nBackground job bg_139 has completed. Resume your work using the result below.\n  2026-10-17T04:36:32.048561Z  INFO rch::hook: Selected worker: contabo-1 at root@89.117.22.43 (0 slots remaining after reservation, speed 47.5)\n    at rch/src/hook.rs:4222 on ThreadId(1)\n\n[RCH] project path normalized: received_input=/Users/josh/Developer/zestroku\n[RCH] project path normalized: verified_absolute_input=/Users/josh/Developer/zestroku\n[RCH] project path normalized: canonical_root_resolved=/Users/josh/Developer\n[RCH] project path normalized: canonical_input_resolved=/Users/josh/Developer/zestroku\n[RCH] project path normalized: verified_within_root=/Users/josh/Developer/zestroku root=/Users/josh/Developer\n  2026-10-17T04:36:32.122423Z  INFO rch::hook::transfer_orchestration: Starting remote compilation pipeline for zestroku (hash: d98c4b18d85d0572)\n    at rch/src/hook/transfer_orchestration.rs:1114 on ThreadId(1)\n\n[RCH] dependency sync roots planned: 1\n[RCH] dependency sync root 1/1: /Users/josh/Developer/zestroku\n[RCH] dependency sync manifest: {\"schema_version\":\"rch.sync_closure_manifest.v2\",\"generated_at_unix_ms\":1792211792072,\"project_root\":\"/Users/josh/Developer/zestroku\",\"entries\":[{\"order\":1,\"local_root\":\"/Users/josh/Developer/zestroku\",\"remote_root\":\"/Users/josh/rch-build/rch-remote/zestroku/d98c4b18d85d0572\",\"project_id\":\"zestroku\",\"root_hash\":\"d98c4b18d85d0572\",\"is_primary\":true,\"mode\":\"full\"}]}\n  2026-10-17T04:36:32.122465Z  INFO rch::hook::transfer_orchestration: Prepared dependency sync manifest for 1 roots\n    at rch/src/hook/transfer_orchestration.rs:1136 on ThreadId(1)\n\n[RCH] sync start (project zestroku on contabo-1)\n[RCH] waiting for 2 remote source-authority lock(s) on contabo-1\n[RCH] acquired remote source-authority locks on contabo-1\n[RCH] topology preflight ok on contabo-1 (/Users/josh/rch-build/rch-remote -> /Users/josh/rch-build/rch-remote enforced)\n[RCH] ownership preflight skipped for root-login worker\n[RCH] isolated sources selected; canonical repository convergence skipped\n  2026-10-17T04:36:43.206466Z  INFO rch::hook::transfer_orchestration: Syncing project to worker contabo-1...\n    at rch/src/hook/transfer_orchestration.rs:1431 on ThreadId(1)\n\n[RCH] clean-overlay transfer estimator bypassed for immutable base 8fb71052fc869f80120e71f538ee25f1f95cdb46\n[RCH] syncing dependency root /Users/josh/Developer/zestroku to remote /Users/josh/rch-build/rch-remote/zestroku/d98c4b18d85d0572\n[RCH] clean-overlay base transfer attempt 1/1 succeeded before remote Cargo execution: clean_overlay_base_sync completed\n  2026-10-17T04:36:49.393952Z  INFO rch::hook::transfer_orchestration: Sync complete: 0 files, 3655680 bytes in 6000ms\n    at rch/src/hook/transfer_orchestration.rs:1889 on ThreadId(1)\n\n[RCH] sync done: 0 files, 3655680 bytes in 6000ms\n  2026-10-17T04:36:49.418085Z  INFO rch::hook::transfer_orchestration: Executing command remotely: cargo fmt --all --check\n    at rch/src/hook/transfer_orchestration.rs:2046 on ThreadId(1)\n\n[RCH] exec start: cargo fmt --all --check\n  2026-10-17T04:36:49.431510Z  INFO rch::transfer: Wrapping command with external timeout protection, kind: unknown, timeout_secs: 3600\n    at rch/src/transfer.rs:4479 on ThreadId(1)\n\n  2026-10-17T04:36:52.607111Z  INFO rch::hook::transfer_orchestration: Remote command finished: exit=0 in 2271ms\n    at rch/src/hook/transfer_orchestration.rs:2278 on ThreadId(1)\n\n[RCH] exec done: exit=0 in 2271ms\n  2026-10-17T04:36:52.630564Z  INFO rch::hook::transfer_orchestration: Retrieving build artifacts...\n    at rch/src/hook/transfer_orchestration.rs:2480 on ThreadId(1)\n\n[RCH] artifacts: retrieving...\n  2026-10-17T04:36:52.630620Z  INFO rch::transfer: Retrieving artifacts from /Users/josh/rch-build/rch-remote/zestroku/d98c4b18d85d0572 on contabo-1\n    at rch/src/transfer.rs:6569 on ThreadId(1)\n\n  2026-10-17T04:36:53.954068Z  INFO rch::transfer: Artifact retrieval budget from selected remote files, selected_bytes: 0, total_timeout_ms: 600000\n    at rch/src/transfer.rs:3297 on ThreadId(1)\n\n  2026-10-17T04:36:55.001656Z  INFO rch::transfer: Artifacts retrieved in 2371ms (0 files, 44 bytes)\n    at rch/src/transfer.rs:6630 on ThreadId(1)\n\n  2026-10-17T04:36:55.032248Z  INFO rch::hook::transfer_orchestration: Artifacts retrieved: 0 files, 44 bytes in 2371ms\n    at rch/src/hook/transfer_orchestration.rs:2530 on ThreadId(1)\n\n[RCH] artifacts done: 0 files, 44 bytes in 2371ms\n[RCH] clean-overlay remote root /Users/josh/rch-build/rch-remote/zestroku/d98c4b18d85d0572 reaped\n[RCH] remote contabo-1 (26.5s)\n[RCH] clean-overlay receipt: base=8fb71052fc869f80120e71f538ee25f1f95cdb46 overlay-fingerprint=fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195 tree=100888567666fc9d36b003c3328d24894e11ca2c\nWall time: 27.38 seconds\n</system-notice>",
+    "details": {
+      "meta": {
+        "source": {
+          "type": "report",
+          "value": "background job delivery"
+        }
+      },
+      "jobs": [
+        {
+          "jobId": "bg_139",
+          "type": "bash",
+          "status": "completed",
+          "label": "nice -n 10 env RCH_WORKER=contabo-1 RCH_REQUIRE_REMOTE=1 RCH_BUILD_SLOTS=2 RCH_VISIBILITY=verbose TMPDIR=/Users/josh/...",
+          "durationMs": 27378
+        }
+      ]
+    }
+  },
+  "limits": [
+    "Earlier slots4 refusal remains actual and preserved in ev_569410...; documented scoped request route was found later.",
+    "Successful formatter is not compiler/runtime/CI/hardware acceptance. Publicfe44 fullworkspace actual hung-Tailscale failure remains.",
+    "Not a measured performance win or evidence of a changed default scheduler; no claim unscoped invocation would still fail at this later instant."
+  ]
+}

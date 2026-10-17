@@ -1,0 +1,19 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_b819df30433d0c21c9dc7ba0a6c2af1eb5f27ff4df71f042b87681f1b422efe7",
+ "limitations": [
+  "Actual full cargo fmt remote0, exact8fb nooverlay. Supported per-invocation request2 for noncompiling formatter; prior4slot refusal retained. Not currentruntime/CI/Mac/release qualification or default-scheduler performance claim."
+ ],
+ "operation": "exact-published-source-full-format",
+ "parameters": {
+  "base": "8fb71052fc869f80120e71f538ee25f1f95cdb46",
+  "result_path": "docs/evidence/full-format-8fb-20261017.json",
+  "workload_request_slots": "2"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 6447,
+  "sha256": "a56f2f722293906a601e74a83708a0e7b831a17a85a37de27a768965d251f9a2"
+ }
+}
