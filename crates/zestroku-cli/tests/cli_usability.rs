@@ -405,3 +405,58 @@ fn direct_json_renders_typed_document_from_loopback_device() {
     assert!(document["model_number"].is_string());
     assert!(document["access_tier"].is_string());
 }
+
+#[test]
+fn ambiguous_mutation_audit_never_persists_the_confirmation_secret() {
+    // Two TV-class devices make `tv` ambiguous; a mutation carrying a
+    // confirmation token must deny with AMBIGUOUS_NAME while the raw
+    // token appears nowhere persisted or printed.
+    const TOKEN: &str = "confirm-token-abcdef123456";
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let store = SqliteStore::open(&db).expect("open store");
+    for (id, ip, num) in [
+        ("192.0.2.20:8060", "192.0.2.20", "L100"),
+        ("192.0.2.21:8060", "192.0.2.21", "L101"),
+    ] {
+        store
+            .upsert_device(&DeviceRow {
+                id: id.into(),
+                name: "Fixture Roku TV".into(),
+                ip: ip.into(),
+                model: "Roku TV".into(),
+                model_num: num.into(),
+                firmware: "15.2.4".into(),
+                wifi_driver: "fixture".into(),
+                access_tier: "permissive".into(),
+                last_seen: 1_700_000_000,
+            })
+            .expect("seed tv device");
+    }
+    let output = run(&db, &["key", "tv", "Home", "--confirm", TOKEN]);
+    assert_eq!(output.status.code(), Some(4));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stdout.contains(TOKEN), "token leaked to stdout");
+    assert!(stderr.contains("AMBIGUOUS_NAME"), "{stderr}");
+    assert!(!stderr.contains(TOKEN), "token leaked to stderr");
+    let actions = SqliteStore::open(&db)
+        .expect("reopen store")
+        .list_actions()
+        .expect("list actions");
+    let denied: Vec<_> = actions
+        .iter()
+        .filter(|action| action.result == "AMBIGUOUS_NAME" && action.decision == "denied")
+        .collect();
+    assert_eq!(denied.len(), 1, "{actions:?}");
+    assert!(
+        !denied[0].intent.contains(TOKEN),
+        "token persisted: {}",
+        denied[0].intent
+    );
+    assert!(
+        denied[0].intent.contains("candidates=["),
+        "{}",
+        denied[0].intent
+    );
+}
