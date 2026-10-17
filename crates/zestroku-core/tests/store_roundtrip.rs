@@ -54,7 +54,6 @@ fn every_table_insert_query_update_delete_and_survives_reopen() {
     let path = dir.path().join("zestroku.db");
 
     let st = SqliteStore::open(&path).unwrap();
-    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4, 5, 6]);
 
     // devices: insert, query, update (upsert), delete
     st.upsert_device(&device("dev-a", "open")).unwrap();
@@ -132,7 +131,6 @@ fn every_table_insert_query_update_delete_and_survives_reopen() {
 
     // reopen: rows survive, migrations are not re-applied
     let st = SqliteStore::open(&path).unwrap();
-    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4, 5, 6]);
     assert_eq!(st.list_devices().unwrap().len(), 2);
     assert_eq!(st.list_apps("dev-a").unwrap(), vec![app("2.0")]);
     assert_eq!(st.list_capabilities("dev-a").unwrap(), vec!["launch"]);
@@ -186,10 +184,47 @@ fn migrations_are_append_only_and_upgrade_in_place() {
 
     // The newer binary appends the remaining migrations and keeps existing data.
     let st = SqliteStore::open(&path).unwrap();
-    assert_eq!(st.schema_versions().unwrap(), vec![1, 2, 3, 4, 5, 6]);
+    // Preserve the released prefix while permitting appended migrations.
+    assert!(
+        st.schema_versions()
+            .unwrap()
+            .starts_with(&[1, 2, 3, 4, 5, 6])
+    );
     assert!(st.get_device("dev-a").unwrap().is_some());
     st.insert_action(&action("x")).unwrap();
     st.close().unwrap();
+}
+
+#[test]
+fn older_binary_refuses_newer_schema_without_changing_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("newer-schema.db");
+    let (newest, older_catalog) = MIGRATIONS.split_last().unwrap();
+    let supported_version = older_catalog.last().unwrap().version;
+    let sentinel = device("upgrade-sentinel", "permissive");
+
+    let store = SqliteStore::open(&path).unwrap();
+    store.upsert_device(&sentinel).unwrap();
+    let before_versions = store.schema_versions().unwrap();
+    store.close().unwrap();
+
+    let error = SqliteStore::open_with(&path, older_catalog)
+        .expect_err("older binary must refuse a database with a newer applied migration");
+    let message = error.to_string();
+    assert!(
+        message.contains("schema")
+            && message.contains(&newest.version.to_string())
+            && message.contains(&supported_version.to_string()),
+        "schema incompatibility must name the applied and supported versions: {message}"
+    );
+
+    let store = SqliteStore::open(&path).unwrap();
+    assert_eq!(store.schema_versions().unwrap(), before_versions);
+    assert_eq!(
+        store.get_device("upgrade-sentinel").unwrap(),
+        Some(sentinel)
+    );
+    store.close().unwrap();
 }
 
 #[test]
