@@ -17,11 +17,18 @@
 #                        the store at the schema it is at (`zestroku db
 #                        backup`, which never migrates). A failed backup
 #                        refuses the install; nothing is replaced.
-#   --restore-data FILE  on rollback, the CURRENT binary first restores the
-#                        store from FILE (`zestroku db restore`, validated:
-#                        SQLite header, schema ledger it supports, no live
-#                        writer); only then is the prior binary promoted. A
-#                        refused restore leaves binary and data untouched.
+#   --restore-data FILE  on rollback, the CURRENT binary restores the store
+#                        from FILE (`zestroku db restore`, validated: SQLite
+#                        header, schema ledger it supports, no live writer);
+#                        only then is the prior binary promoted. A refused
+#                        restore leaves binary and data untouched.
+#
+# Destination-version gate (rollback): the data the prior binary will
+# inherit (FILE, or a snapshot of the live store for a binary-only rollback)
+# is opened by the PRIOR binary itself, on a scratch copy, BEFORE anything is
+# restored or promoted. A backup the current binary supports can still be too
+# new for the prior one; promoting it would leave an unusable install. The
+# probe uses the prior binary's `log` verb, which opens the store.
 #
 # Services: this script never stops, starts or signals the resident daemon.
 # Stop it through the approved operator route before --restore-data (the
@@ -35,6 +42,7 @@ PREFIX="${HOME}/.local"
 MODE=install
 ARTIFACT=""; EXPECT_SHA=""; EXPECT_VERSION=""; EXPECT_SHA7=""
 DATA_BACKUP=""; RESTORE_DATA=""
+PROBE_DIR=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -53,14 +61,38 @@ done
 BIN="$PREFIX/bin/zestroku"
 PREV="$PREFIX/bin/zestroku.prev"
 
+# Remove only what this script created in its own scratch directory.
+cleanup_probe() {
+  [ -n "$PROBE_DIR" ] || return 0
+  rm -f "$PROBE_DIR/probe.db" "$PROBE_DIR/probe.db-wal" "$PROBE_DIR/probe.db-shm" "$PROBE_DIR/err"
+  rmdir "$PROBE_DIR" 2>/dev/null || true
+}
+trap cleanup_probe EXIT
+
 refuse() { echo "install-macos: REFUSED: $1" >&2; exit 2; }
 
 if [ "$MODE" = rollback ]; then
   [ -z "$DATA_BACKUP" ] || refuse "--data-backup applies to install, not rollback"
   [ -f "$PREV" ] || refuse "no preserved prior version at $PREV"
+  [ -x "$PREV" ] || refuse "preserved prior version is not executable: $PREV"
+  PROBE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zestroku-probe.XXXXXX")"
+  PROBE="$PROBE_DIR/probe.db"
   if [ -n "$RESTORE_DATA" ]; then
     [ -f "$RESTORE_DATA" ] || refuse "restore source is not a file: $RESTORE_DATA"
     [ -x "$BIN" ] || refuse "no current binary at $BIN to validate the restore"
+    cp "$RESTORE_DATA" "$PROBE" || refuse "cannot stage the backup for the compatibility probe"
+  elif [ -x "$BIN" ] && [ -e "${ZESTROKU_DB:-$HOME/.local/state/zestroku/actions.db}" ]; then
+    # Binary-only rollback: the live store must be data the prior binary can
+    # open. The current binary snapshots it without migrating.
+    "$BIN" db backup "$PROBE" || refuse "cannot snapshot the live store for the compatibility probe"
+  fi
+  if [ -f "$PROBE" ]; then
+    ZESTROKU_DB="$PROBE" "$PREV" log >/dev/null 2>"$PROBE_DIR/err" || {
+      cat "$PROBE_DIR/err" >&2
+      refuse "the prior binary cannot open this data (schema newer than it supports?); binary and data untouched"
+    }
+  fi
+  if [ -n "$RESTORE_DATA" ]; then
     # The current (newer) binary restores first: it knows every schema the
     # prior one could have written, and a refusal here leaves everything as
     # it was. The prior binary may predate the `db` verb entirely.

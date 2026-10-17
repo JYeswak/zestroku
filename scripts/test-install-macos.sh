@@ -16,9 +16,12 @@
 # Scenarios: S1 fresh install; S2 refusals (wrong digest, wrong platform,
 # stale/provenance input, failed data backup) each leaving the working binary
 # byte-identical; S3 upgrade with a pre-upgrade backup; S4 an unsafe restore
-# (non-database) refused with binary AND data untouched; S5 failed-candidate
-# rollback restoring the pre-upgrade data. stock sqlite3 only seeds and reads
-# a marker row; it is never the backup or restore client.
+# (non-database) refused with binary AND data untouched; S4b/S4c the
+# destination-version gate (a backup, or the live store, too new for the
+# PRIOR binary is refused by that binary before anything is restored or
+# promoted); S5 failed-candidate rollback restoring the pre-upgrade data.
+# stock sqlite3 only seeds, forges a future ledger row and reads a marker
+# row; it is never the backup or restore client.
 set -eu
 
 [ $# -eq 2 ] || { echo "usage: $0 <old-binary> <new-binary>" >&2; exit 2; }
@@ -123,6 +126,28 @@ run "$INSTALL" --prefix "$PREFIX" --rollback --restore-data "$WORK/garbage.bak"
 [ "$(sha "$BIN")" = "$NEW_SHA" ] || fail "S4 binary changed by a refused restore"
 [ "$(sha "$PREV")" = "$OLD_SHA" ] || fail "S4 prior slot changed by a refused restore"
 [ "$(marker)" = "pre-upgrade,post-upgrade" ] || fail "S4 data changed by a refused restore"
+
+# S4b: destination-version gate. A backup too new for the PRIOR binary is
+# refused by the prior binary itself, before any restore or promotion.
+cp "$WORK/pre-upgrade.db" "$WORK/future.bak"
+sqlite3 "$WORK/future.bak" "INSERT INTO schema_migrations (version, name, applied_at) VALUES (99, 'forged-future', 0);"
+run "$INSTALL" --prefix "$PREFIX" --rollback --restore-data "$WORK/future.bak"
+[ "$RC" -eq 2 ] || fail "S4b newer-schema backup not refused (rc=$RC)"
+grep -q "prior binary cannot open" "$WORK/err" || fail "S4b refusal must come from the prior-binary probe: $(cat "$WORK/err")"
+[ "$(sha "$BIN")" = "$NEW_SHA" ] || fail "S4b binary changed"
+[ "$(sha "$PREV")" = "$OLD_SHA" ] || fail "S4b prior slot changed"
+[ "$(marker)" = "pre-upgrade,post-upgrade" ] || fail "S4b data changed"
+
+# S4c: the same gate guards a binary-only rollback when the live store is
+# newer than the prior binary supports.
+sqlite3 "$ZESTROKU_DB" "INSERT INTO schema_migrations (version, name, applied_at) VALUES (99, 'forged-future', 0);"
+run "$INSTALL" --prefix "$PREFIX" --rollback
+[ "$RC" -eq 2 ] || fail "S4c binary-only rollback over newer data not refused (rc=$RC)"
+grep -q "prior binary cannot open" "$WORK/err" || fail "S4c refusal must come from the prior-binary probe: $(cat "$WORK/err")"
+[ "$(sha "$BIN")" = "$NEW_SHA" ] || fail "S4c binary changed"
+[ "$(sha "$PREV")" = "$OLD_SHA" ] || fail "S4c prior slot changed"
+sqlite3 "$ZESTROKU_DB" "DELETE FROM schema_migrations WHERE version = 99;"
+[ "$(marker)" = "pre-upgrade,post-upgrade" ] || fail "S4c data changed"
 
 # S5: failed-candidate rollback restores the pre-upgrade data, then the binary.
 run "$INSTALL" --prefix "$PREFIX" --rollback --restore-data "$WORK/pre-upgrade.db"
