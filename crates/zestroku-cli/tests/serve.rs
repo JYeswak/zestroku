@@ -653,3 +653,164 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
         exit.code()
     );
 }
+
+fn start_with_targets(db: &std::path::Path, port: u16, targets: &std::path::Path) -> Daemon {
+    let child = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", db)
+        .args([
+            "serve".to_string(),
+            "--bind".to_string(),
+            format!("127.0.0.1:{port}"),
+            "--targets".to_string(),
+            targets.to_string_lossy().into_owned(),
+            "--no-ssdp".to_string(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn zestroku serve");
+    let daemon = Daemon(child);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return daemon;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("serve did not listen on 127.0.0.1:{port} within 30s");
+}
+
+fn write_targets(dir: &std::path::Path, sport: u16) -> std::path::PathBuf {
+    // Duplicate seeds: discovery must still yield one inventory row.
+    let path = dir.join("targets.toml");
+    let entry = format!("[[target]]\nhost = \"127.0.0.1\"\nport = {sport}\n");
+    std::fs::write(&path, format!("{entry}{entry}")).expect("write targets");
+    path
+}
+
+fn sim_device_info(sport: u16) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", sport)).expect("sim connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        stream,
+        "GET /query/device-info HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    )
+    .expect("sim request");
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw).expect("sim response");
+    raw.split("\r\n\r\n").nth(1).unwrap_or_default().to_string()
+}
+
+#[test]
+fn serve_startup_discovers_duplicate_seeds_with_recorded_tier() {
+    let sim = zestroku_sim::SimDevice::start_with_serial(
+        zestroku_sim::SimConfig {
+            kind: zestroku_sim::DeviceKind::Express,
+            tier: zestroku_sim::SimTier::Permissive,
+        },
+        "TESTSERVERSERIAL01",
+    );
+    let sport = sim.port();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let targets = write_targets(dir.path(), sport);
+    let port = free_port();
+    let _daemon = start_with_targets(&db, port, &targets);
+    let host = format!("127.0.0.1:{port}");
+
+    let (status, _) = get(port, "/health", &host);
+    assert_eq!(status, 200);
+    let (status, body) = get(port, "/v1/devices", &host);
+    assert_eq!(status, 200, "{body}");
+    let documents: serde_json::Value = serde_json::from_str(&body).expect("devices JSON");
+    let rows = documents.as_array().expect("devices array");
+    assert_eq!(rows.len(), 1, "{body}");
+    assert_eq!(rows[0]["access_tier"], "permissive", "{body}");
+
+    // Reopened store: canonical row, recorded tier BEFORE any info call,
+    // and the sim identity key resolves to the canonical id.
+    let id = format!("127.0.0.1:{sport}");
+    let store = SqliteStore::open(&db).expect("reopen store");
+    let row = store
+        .get_device(&id)
+        .expect("read device")
+        .expect("discovered row");
+    assert_eq!(row.access_tier, "permissive", "{row:?}");
+    let recorded =
+        zestroku_core::tier::recorded_tier_for(&store, "127.0.0.1", sport).expect("read tier");
+    assert_eq!(
+        recorded.map(|tier| tier.as_str()),
+        Some("permissive"),
+        "tier recorded before any info call"
+    );
+    let info =
+        zestroku_proto::parse_device_info(&sim_device_info(sport)).expect("parse sim device-info");
+    let key = zestroku_core::discovery::identity_key(&info);
+    assert!(!key.is_empty());
+    assert_eq!(
+        store
+            .find_device_id_by_identity(&key)
+            .expect("identity lookup"),
+        Some(id)
+    );
+}
+
+#[test]
+fn serve_restart_dedups_and_suspend_retains_rows() {
+    let mut sim = zestroku_sim::SimDevice::start(zestroku_sim::SimConfig {
+        kind: zestroku_sim::DeviceKind::Express,
+        tier: zestroku_sim::SimTier::Permissive,
+    });
+    let sport = sim.port();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("actions.db");
+    let targets = write_targets(dir.path(), sport);
+    let id = format!("127.0.0.1:{sport}");
+
+    let port = free_port();
+    {
+        let _daemon = start_with_targets(&db, port, &targets);
+        let host = format!("127.0.0.1:{port}");
+        let (status, body) = get(port, "/v1/devices", &host);
+        assert_eq!(status, 200, "{body}");
+    }
+    // Second pass over the same simulator: still exactly one row.
+    let port = free_port();
+    {
+        let _daemon = start_with_targets(&db, port, &targets);
+        let host = format!("127.0.0.1:{port}");
+        let (status, body) = get(port, "/v1/devices", &host);
+        assert_eq!(status, 200, "{body}");
+        let rows = serde_json::from_str::<serde_json::Value>(&body)
+            .expect("devices JSON")
+            .as_array()
+            .expect("devices array")
+            .len();
+        assert_eq!(rows, 1, "{body}");
+    }
+    let before = SqliteStore::open(&db)
+        .expect("reopen store")
+        .get_device(&id)
+        .expect("read device")
+        .expect("row present")
+        .last_seen;
+    // Suspended simulator: restart keeps the prior row with its tier and
+    // last_seen instead of pruning to an empty inventory.
+    sim.suspend();
+    let port = free_port();
+    {
+        let _daemon = start_with_targets(&db, port, &targets);
+        let host = format!("127.0.0.1:{port}");
+        let (status, body) = get(port, "/v1/devices", &host);
+        assert_eq!(status, 200, "{body}");
+    }
+    let row = SqliteStore::open(&db)
+        .expect("reopen store")
+        .get_device(&id)
+        .expect("read device")
+        .expect("suspended row retained");
+    assert_eq!(row.access_tier, "permissive", "{row:?}");
+    assert_eq!(row.last_seen, before, "{row:?}");
+}
