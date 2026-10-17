@@ -6,10 +6,9 @@
 
 use std::process::ExitCode;
 
-use zestroku_proto::query;
+use zestroku_proto::{Transport, query};
 
 use crate::transport::SelectedTransport;
-use zestroku_core::Transport;
 
 struct Step {
     device: &'static str,
