@@ -302,11 +302,15 @@ listener. One five-second deadline covers both command completion and stdout
 EOF, including an inherited writer; refusal closes the pipe and kills/reaps
 the owned command without leaving a reader thread. Loopback startup does
 not require Tailscale.
-The info response includes live `access_tier` and `tv_active_channel`; the
+The info response includes the observed `access_tier` and `tv_active_channel`;
+a fresh inventory snapshot may satisfy it without another ECP query. The
 channel field is `null` when the optional ECP probe fails.
 The daemon prints its listening address only after binding succeeds; an
 occupied port exits unsuccessfully without claiming readiness. SIGINT
 (Ctrl-C) and SIGTERM both stop admission and drain the running HTTP server.
+The offline shutdown regression keeps its target known in inventory before
+admission and checks an uncached ECP read, complete response framing and EOF,
+and listener release—not merely that the process stopped.
 `zestroku --version` prints `zestroku <semver> <git-sha7>[-dirty]`.
 
 The store refuses a database whose applied schema version is newer than the

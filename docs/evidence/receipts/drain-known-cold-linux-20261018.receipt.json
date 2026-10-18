@@ -1,0 +1,18 @@
+{
+ "authority": "pending",
+ "confidence": "observed",
+ "evidence_id": "ev_1e11e609661187997936857c33ba1971118dc964b336e3cbdccc51938515d19f",
+ "limitations": [
+  "Actual source1da Linux real-process/realSim known-before-admission positive passed. Wholeworkspace101 at startupcaller; remaining3gates skipped. Original7negative/allgates/independent runtime and raw passing-test frame output unqualified. Rejected700prototype doesNOT count."
+ ],
+ "operation": "Original known-target cold-cache partial-body SIGTERM positive only",
+ "parameters": {
+  "bead": "zestroku-m7c-serve-inq.1.1",
+  "source": "1da6ab936966d7361331744bca5fbbc4ea5ca8d3"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 111387,
+  "sha256": "b9e4f7e48d9ed2e84a7e798a2dfcfeedb95864622b3c553c901fcf6fe949bbea"
+ }
+}
