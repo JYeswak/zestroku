@@ -272,20 +272,23 @@ async fn poll_inventory_once(
             continue;
         }
         let now = unix_seconds();
-        let due = match inventory.lock() {
-            Ok(inventory) => inventory.poll_due(&device_id, now),
+        let generation = match inventory.lock() {
+            Ok(inventory) => inventory.poll_generation_if_due(&device_id, now),
             Err(_) => {
                 eprintln!("zestroku serve: inventory state lock poisoned");
                 return;
             }
         };
-        if !due {
+        let Some(generation) = generation else {
             continue;
-        }
-
+        };
         match poll_device_state(store, transport, &row.ip, port, &device_id).await {
             Ok(snapshot) => match inventory.lock() {
-                Ok(mut inventory) => inventory.record_state(snapshot),
+                Ok(mut inventory) => {
+                    if !inventory.record_state_for_poll(snapshot, generation) {
+                        continue;
+                    }
+                }
                 Err(_) => {
                     eprintln!("zestroku serve: inventory state lock poisoned");
                     return;
@@ -294,7 +297,12 @@ async fn poll_inventory_once(
             Err(error) => {
                 match inventory.lock() {
                     Ok(mut inventory) => {
-                        inventory.record_poll_failure(&device_id, unix_seconds());
+                        if inventory
+                            .record_poll_failure_for_poll(&device_id, unix_seconds(), generation)
+                            .is_none()
+                        {
+                            continue;
+                        }
                     }
                     Err(_) => {
                         eprintln!("zestroku serve: inventory state lock poisoned");

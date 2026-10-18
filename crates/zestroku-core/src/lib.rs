@@ -79,8 +79,11 @@ struct DevicePollSchedule {
     snapshot: Option<Arc<DeviceStateSnapshot>>,
     consecutive_failures: u8,
     next_poll_at: i64,
+    /// A poll must keep this generation to publish its snapshot.
+    generation: u64,
+    /// Mutations invalidate the cached view until a later poll completes.
+    invalidated: bool,
 }
-
 /// Daemon inventory: discovered devices plus typed, bounded-freshness state.
 #[derive(Debug, Default)]
 pub struct Inventory {
@@ -110,9 +113,23 @@ impl Inventory {
     }
 
     pub fn poll_due(&self, device_id: &str, now: i64) -> bool {
-        self.poll_state
-            .get(device_id)
-            .is_none_or(|schedule| now >= schedule.next_poll_at)
+        self.poll_generation_if_due(device_id, now).is_some()
+    }
+
+    /// Returns the generation a due poll must present when recording state.
+    pub fn poll_generation_if_due(&self, device_id: &str, now: i64) -> Option<u64> {
+        match self.poll_state.get(device_id) {
+            Some(schedule) if now < schedule.next_poll_at => None,
+            Some(schedule) => Some(schedule.generation),
+            None => Some(0),
+        }
+    }
+
+    /// Marks cached state stale while retaining its scheduled refresh time.
+    pub fn invalidate_state(&mut self, device_id: &str) {
+        let schedule = self.poll_state.entry(device_id.to_owned()).or_default();
+        schedule.generation = schedule.generation.wrapping_add(1);
+        schedule.invalidated = true;
     }
 
     pub fn record_state(&mut self, snapshot: DeviceStateSnapshot) {
@@ -125,7 +142,27 @@ impl Inventory {
         let schedule = self.poll_state.entry(id).or_default();
         schedule.next_poll_at = next_poll_at;
         schedule.consecutive_failures = 0;
+        schedule.invalidated = false;
         schedule.snapshot = Some(Arc::new(snapshot));
+    }
+
+    /// Rejects a poll result if a mutation invalidated it while it was in flight.
+    pub fn record_state_for_poll(
+        &mut self,
+        snapshot: DeviceStateSnapshot,
+        generation: u64,
+    ) -> bool {
+        let id = tier::device_id(&snapshot.device.host, snapshot.device.port);
+        if self
+            .poll_state
+            .get(&id)
+            .map_or(0, |schedule| schedule.generation)
+            != generation
+        {
+            return false;
+        }
+        self.record_state(snapshot);
+        true
     }
 
     pub fn record_poll_failure(&mut self, device_id: &str, now: i64) -> i64 {
@@ -140,13 +177,31 @@ impl Inventory {
         schedule.next_poll_at
     }
 
+    /// Ignores failures from polls made obsolete by a mutation.
+    pub fn record_poll_failure_for_poll(
+        &mut self,
+        device_id: &str,
+        now: i64,
+        generation: u64,
+    ) -> Option<i64> {
+        if self
+            .poll_state
+            .get(device_id)
+            .map_or(0, |schedule| schedule.generation)
+            != generation
+        {
+            return None;
+        }
+        Some(self.record_poll_failure(device_id, now))
+    }
+
     pub fn state_at(&self, device_id: &str, now: i64) -> Option<InventoryStateView> {
         let schedule = self.poll_state.get(device_id)?;
         let snapshot = Arc::clone(schedule.snapshot.as_ref()?);
         let age = now.saturating_sub(snapshot.observed_at);
         Some(InventoryStateView {
             snapshot,
-            is_fresh: (0..=DEVICE_STATE_FRESHNESS_SECS).contains(&age),
+            is_fresh: !schedule.invalidated && (0..=DEVICE_STATE_FRESHNESS_SECS).contains(&age),
             consecutive_failures: schedule.consecutive_failures,
             next_poll_at: schedule.next_poll_at,
         })
@@ -224,6 +279,48 @@ mod tests {
         assert!(inventory.poll_due(&id, 130));
         assert!(inventory.state_at(&id, 160).unwrap().is_fresh);
         assert!(!inventory.state_at(&id, 161).unwrap().is_fresh);
+    }
+
+    #[test]
+    fn invalidation_stales_snapshot_and_discards_an_inflight_poll() {
+        let mut inventory = Inventory::new();
+        let id = tier::device_id("192.0.2.1", 8060);
+        let first_generation = inventory
+            .poll_generation_if_due(&id, 100)
+            .expect("initial poll is due");
+        assert!(inventory.record_state_for_poll(
+            state_snapshot(device(AccessTier::Open), 100),
+            first_generation,
+        ));
+        assert!(inventory.state_at(&id, 100).unwrap().is_fresh);
+        assert!(!inventory.poll_due(&id, 101));
+
+        inventory.invalidate_state(&id);
+        assert!(!inventory.state_at(&id, 101).unwrap().is_fresh);
+        assert!(!inventory.poll_due(&id, 101));
+        assert!(
+            !inventory.record_state_for_poll(
+                state_snapshot(device(AccessTier::Open), 101),
+                first_generation,
+            ),
+            "a poll started before mutation cannot republish stale state"
+        );
+        assert_eq!(
+            inventory.record_poll_failure_for_poll(&id, 101, first_generation),
+            None
+        );
+        assert!(!inventory.poll_due(&id, 129));
+        assert!(inventory.poll_due(&id, 130));
+
+        let next_generation = inventory
+            .poll_generation_if_due(&id, 130)
+            .expect("the next scheduled poll is due");
+        assert_ne!(next_generation, first_generation);
+        assert!(inventory.record_state_for_poll(
+            state_snapshot(device(AccessTier::Open), 131),
+            next_generation,
+        ));
+        assert!(inventory.state_at(&id, 131).unwrap().is_fresh);
     }
 
     #[test]

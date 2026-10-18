@@ -1201,11 +1201,19 @@ async fn execute_mutation<S: Store, T: Transport>(
         }
     };
 
-    let (outcome, failure) = match state
+    let response = state
         .transport
         .send(&device.host, device.port, &command)
-        .await
-    {
+        .await;
+    // The device may have changed, even when dispatch fails ambiguously.
+    // Generation-checking prevents an in-flight older poll from restoring
+    // a pre-mutation snapshot as fresh.
+    if let Ok(mut inventory) = state.inventory.lock() {
+        inventory.invalidate_state(&target.id);
+    } else {
+        eprintln!("zestroku api: inventory state lock poisoned after mutation");
+    }
+    let (outcome, failure) = match response {
         Err(_) => (
             "dispatch_failed",
             Some((StatusCode::from_u16(502), "transport_error")),

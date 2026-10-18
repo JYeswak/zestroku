@@ -5,7 +5,7 @@
 //! `key` is refused with CONFIRMATION_REQUIRED and audited.
 
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -693,9 +693,7 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
     );
     let new_requests = &after_whitespace[before_whitespace.len()..];
     assert!(
-        new_requests
-            .iter()
-            .all(|(method, _)| method == "GET"),
+        new_requests.iter().all(|(method, _)| method == "GET"),
         "a refused whitespace token must not dispatch an ECP mutation: {new_requests:?}"
     );
     assert!(
@@ -742,6 +740,133 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
         );
     }
     assert_eq!(sim.received_requests().len(), before_shutdown);
+}
+
+#[test]
+fn unknown_device_error_metadata_matches_http_mcp_and_cli() {
+    let directory = tempfile::tempdir().expect("empty-daemon tempdir");
+    let daemon_db = directory.path().join("daemon.db");
+    let client_db = directory.path().join("client.db");
+    let targets = directory.path().join("targets.toml");
+    std::fs::write(&targets, "").expect("write empty targets file");
+    let port = free_port();
+    let daemon_host = format!("127.0.0.1:{port}");
+    let mut daemon = Daemon(
+        Command::new(env!("CARGO_BIN_EXE_zestroku"))
+            .env("ZESTROKU_DB", &daemon_db)
+            .args(["serve", "--bind", &daemon_host, "--no-ssdp", "--targets"])
+            .arg(&targets)
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn empty-inventory daemon"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(status) = daemon.0.try_wait().expect("poll daemon process") {
+            panic!("serve exited before readiness: {status}");
+        }
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "empty-inventory daemon did not listen"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    let daemon_url = format!("http://{daemon_host}");
+    let unknown_target = "192.0.2.99:8060";
+
+    let mut session = Session::start(&client_db, &daemon_url);
+    session.send(&json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "zestroku-test", "version": "0"}
+        }
+    }));
+    let initialized = session.response(1);
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "zestroku");
+    session.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+
+    let devices = session.call(2, "list_devices", json!({}));
+    assert!(!is_error(&devices), "{devices}");
+    assert_eq!(
+        result_json(&devices),
+        json!([]),
+        "daemon inventory must be empty"
+    );
+
+    let path = format!("/v1/devices/{unknown_target}/info");
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect HTTP client");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set HTTP read timeout");
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {daemon_host}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("write HTTP read");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read HTTP response");
+    let (headers, body) = response
+        .split_once("\r\n\r\n")
+        .expect("HTTP response has a header/body separator");
+    let status = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .expect("HTTP status");
+    assert_eq!(status, 404, "{response}");
+    let http_error: Value = serde_json::from_str(body).expect("HTTP semantic error JSON");
+
+    let mcp_response = session.call(3, "info", json!({"host": unknown_target}));
+    let mcp_error: Value =
+        serde_json::from_str(tool_error_text(&mcp_response)).expect("MCP semantic error JSON");
+    for field in ["error", "code", "detail", "hint", "suggestions"] {
+        assert_eq!(http_error[field], mcp_error[field], "{field}");
+    }
+    assert_eq!(http_error["error"], "device_not_found");
+    assert_eq!(http_error["code"], "UNKNOWN_DEVICE");
+
+    let cli = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+        .env("ZESTROKU_DB", &client_db)
+        .env("ZESTROKU_DAEMON_URL", &daemon_url)
+        .env_remove("ZESTROKU_DIRECT")
+        .env_remove("ZESTROKU_TIER")
+        .env_remove("ZESTROKU_TRANSPORT")
+        .args(["info", unknown_target, "--json"])
+        .output()
+        .expect("run real daemon-backed CLI read");
+    assert_eq!(cli.status.code(), Some(1), "{cli:?}");
+    assert!(cli.stdout.is_empty(), "{cli:?}");
+    let cli_stderr = String::from_utf8_lossy(&cli.stderr);
+    let code = http_error["code"].as_str().expect("semantic code");
+    let error = http_error["error"].as_str().expect("operation error");
+    let detail = http_error["detail"].as_str().expect("semantic detail");
+    let hint = http_error["hint"].as_str().expect("semantic hint");
+    let suggestions: Vec<String> = http_error["suggestions"]
+        .as_array()
+        .expect("suggestions array")
+        .iter()
+        .map(|suggestion| suggestion.as_str().expect("suggestion string").to_owned())
+        .collect();
+    assert!(cli_stderr.contains(code), "{cli_stderr}");
+    assert!(cli_stderr.contains(error), "{cli_stderr}");
+    assert!(cli_stderr.contains(detail), "{cli_stderr}");
+    assert!(
+        cli_stderr.contains(&format!("hint: {hint}")),
+        "{cli_stderr}"
+    );
+    assert!(
+        cli_stderr.contains(&format!("suggestions: {suggestions:?}")),
+        "{cli_stderr}"
+    );
 }
 
 #[test]
@@ -1255,9 +1380,7 @@ fn mcp_limited_tier_refusal_is_audited_without_device_post() {
     assert!(requests_after.len() >= requests_before.len());
     let new_requests = &requests_after[requests_before.len()..];
     assert!(
-        new_requests
-            .iter()
-            .all(|(method, _)| method == "GET"),
+        new_requests.iter().all(|(method, _)| method == "GET"),
         "Limited-tier refusal must not dispatch a device mutation: {new_requests:?}"
     );
     assert!(

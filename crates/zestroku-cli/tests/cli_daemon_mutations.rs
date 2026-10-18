@@ -26,6 +26,34 @@ fn run_cli(client_db: &Path, daemon_url: &str, args: &[&str]) -> Output {
         .expect("run real CLI mutation client")
 }
 
+// Let the daemon's initial inventory poll finish before attributing ECP reads
+// to the CLI operation under test.
+fn wait_for_initial_state_poll(sim: &SimDevice) {
+    let expected = [
+        "/query/device-info",
+        "/query/apps",
+        "/query/active-app",
+        "/query/media-player",
+        "/query/tv-active-channel",
+    ];
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let requests = sim.received_requests();
+        if expected.iter().all(|path| {
+            requests
+                .iter()
+                .any(|(method, uri)| method == "GET" && uri.as_str() == *path)
+        }) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon initial state poll did not complete: {requests:?}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn cli_mutations_use_daemon_authority_and_completed_audit() {
     let mut sim = SimDevice::start(SimConfig {
@@ -232,6 +260,8 @@ fn cli_devices_reads_daemon_cache_without_discovery_or_fallback() {
     let api_port = http_free_port();
     let daemon_url = format!("http://127.0.0.1:{api_port}");
     let daemon = start_http_daemon(&daemon_db, api_port);
+    wait_for_initial_state_poll(&sim);
+    let before_devices = sim.received_requests();
     let output = run_cli(&client_db, &daemon_url, &["devices", "--json"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let view: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -239,20 +269,23 @@ fn cli_devices_reads_daemon_cache_without_discovery_or_fallback() {
     assert_eq!(view["devices"][0]["host"], "127.0.0.1");
     assert_eq!(view["devices"][0]["model_number"], "CACHED_MODEL_ONLY");
     assert_eq!(view["devices"][0]["access_tier"], "permissive");
-    assert!(
-        sim.received_requests().is_empty(),
-        "listing cached inventory must not probe ECP"
+    assert_eq!(
+        sim.received_requests(),
+        before_devices,
+        "listing cached inventory must not add ECP requests"
     );
     daemon.stop();
+    let before_daemon_down = sim.received_requests();
     let started = Instant::now();
     let down = run_cli(&client_db, &daemon_url, &["devices", "--json"]);
     assert!(started.elapsed() < Duration::from_secs(2));
     assert_eq!(down.status.code(), Some(1));
     assert!(down.stdout.is_empty());
     assert!(String::from_utf8_lossy(&down.stderr).contains("DAEMON_UNAVAILABLE"));
-    assert!(
-        sim.received_requests().is_empty(),
-        "a down daemon must not trigger direct discovery"
+    assert_eq!(
+        sim.received_requests(),
+        before_daemon_down,
+        "a down daemon must not add direct discovery requests"
     );
 }
 
@@ -407,7 +440,9 @@ fn cli_daemon_down_preserves_approval_for_restart() {
         zestroku_core::mutation::ClientPrincipal::Cli,
     );
     let daemon = start_http_daemon(&daemon_db, api_port);
+    wait_for_initial_state_poll(&sim);
     daemon.stop();
+    let before_daemon_down = sim.received_requests();
 
     let started = Instant::now();
     let unavailable = run_cli(
@@ -419,9 +454,10 @@ fn cli_daemon_down_preserves_approval_for_restart() {
     assert_eq!(unavailable.status.code(), Some(5), "{unavailable:?}");
     assert!(String::from_utf8_lossy(&unavailable.stderr).contains("DAEMON_UNAVAILABLE"));
     assert!(unavailable.stdout.is_empty());
-    assert!(
-        sim.received_requests().is_empty(),
-        "daemon-down must not fall back to LAN"
+    assert_eq!(
+        sim.received_requests(),
+        before_daemon_down,
+        "daemon-down CLI mutation must not fall back to LAN"
     );
     assert!(
         SqliteStore::open(&daemon_db)
