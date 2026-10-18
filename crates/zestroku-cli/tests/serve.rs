@@ -538,7 +538,7 @@ fn probe_health_status(port: u16, host: &str) -> Option<u16> {
 #[cfg(unix)]
 #[test]
 fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
-    let sim = zestroku_sim::SimDevice::start(zestroku_sim::SimConfig {
+    let mut sim = zestroku_sim::SimDevice::start(zestroku_sim::SimConfig {
         kind: zestroku_sim::DeviceKind::Express,
         tier: zestroku_sim::SimTier::Permissive,
     });
@@ -546,20 +546,27 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
     let db = dir.path().join("actions.db");
     let target = format!("127.0.0.1:{}", sim.port());
     seed_sim_device(&db, &target);
+    // Keep the inventory target known before admission, but prevent startup
+    // polling from caching its info before the partial-body drain is tested.
+    sim.suspend();
 
     let port = free_port();
-    let targets = write_targets(dir.path(), sim.port());
-    let mut daemon = start_with_targets(&db, port, &targets);
+    let mut daemon = start(&db, port);
     let startup_requests = sim.received_requests();
     let startup_device_info_reads = startup_requests
         .iter()
         .filter(|(method, path)| method == "GET" && path == "/query/device-info")
         .count();
     assert!(
-        startup_device_info_reads > 0,
-        "startup discovery probes missing: {startup_requests:?}"
+        startup_requests.is_empty(),
+        "the suspended simulator must not receive startup requests: {startup_requests:?}"
     );
     let host = format!("127.0.0.1:{port}");
+    let (state_status, state_body) = get(port, &format!("/v1/devices/{target}/state"), &host);
+    assert_eq!(state_status, 503, "{state_body}");
+    let state_error: serde_json::Value =
+        serde_json::from_str(&state_body).expect("known-target cold-state response");
+    assert_eq!(state_error["error"], "DEVICE_UNREACHABLE", "{state_body}");
     let stream = TcpStream::connect(("127.0.0.1", port)).expect("connect daemon");
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -623,6 +630,10 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    // Shutdown has dropped the polling future. Restoring the same real
+    // backend now cannot prewarm the cache; completing the admitted body
+    // must still perform the unchanged real ECP read below.
+    sim.resume();
 
     // Complete the already-admitted request after admission has stopped. The
     // app-aware drain must finish its real ECP read before the child exits.
