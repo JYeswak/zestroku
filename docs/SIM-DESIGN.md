@@ -93,7 +93,9 @@ Wrapper-not-filter invariant (finding 1) is a property test: for every route R,
 ## 4. Faults (target design; current implemented subset in §9)
 - `Suspend(device)`: stop accepting (drop listener) => client sees connect refused.
   `Resume`: rebind SAME port if free (else new port = the IP-change scenario).
-- `Latency(d)`: sleep in handler using asupersync time (no tokio sleep).
+- `Latency(milliseconds)`: implemented by `SimDevice::set_latency`; the handler
+  snapshots the delay under the state lock, then awaits the asupersync timer
+  outside that lock. Zero disables the fault; the scenario CLI does not expose it.
 - `IpChange`: rebind on a different 127.0.0.x loopback alias (macOS needs `lo0 alias`;
   Linux rch workers accept all of 127/8) — on macOS fall back to port change, documented.
 - `Garbage`/`Truncate` response: exercises Malformed paths in proto parsers.
@@ -169,7 +171,7 @@ route negatives do not establish causal coverage for every target scenario.
 |---|---|---|
 | Loopback ECP simulator | Implemented as a library `SimDevice` with a real `Http1Listener`, allow-listed Host, ephemeral port, and request log. | `crates/zestroku-sim/src/lib.rs`, including `SimDevice::start`, `received_requests`, `suspend`, and `resume`. |
 | Tier and basic state | Limited/Permissive, app list, active app, key focus, launch, TV-only endpoint, malformed apps and identity placeholders are modeled. | `crates/zestroku-sim/src/lib.rs`; route and planted-negative coverage is in `crates/zestroku-sim/tests/sim_routes.rs`. |
-| Fault injection | Suspend/resume, tier flip, malformed apps and unknown identity are implemented. | No latency, arbitrary truncation/garbage mode, or IP-change API is present in `SimDevice`. |
+| Fault injection | Suspend/resume, tier flip, per-request latency, malformed apps and unknown identity are implemented. | `set_latency(milliseconds)` uses a reactor timer outside the state lock. Arbitrary truncation/garbage and an IP-change API remain unimplemented. |
 | End-to-end tests | `e2e_sim.rs` is a consolidated real-binary discovery/info/apps/key/launch walk with a temporary redacted JSONL trace; other integration files provide additional coverage. | Simulator branches and opt-in live branch have different scopes; no generic execution of the full §8 matrix is claimed. |
 | Scenario CLI | `sim --scenario two-devices [--json]` is implemented. | `main.rs` routes to `sim_scenario.rs`; eight direct-transport read observations, not CLI discovery or every planned scenario. |
 | Live lane | `e2e_sim.rs` implements the explicit-target live switch for three read commands only. | No live grants or mutations; implementation alone does not prove a successful physical-device execution of that branch. |
@@ -179,6 +181,10 @@ completion of the reopened original. Current published source `3168e55` passed
 CI run `39120804853`; the full immutable workspace run RCH650 also passed, with
 its exact source overlay recorded in
 `docs/evidence/receipts/frontend-policy-consumers-20261018.receipt.json`.
+The same CI run executed `latency_fault_delays_but_preserves_exact_responses`:
+the real-socket test delays device-info and Limited apps responses, preserves
+their contents/status, then clears the fault. This library coverage is not an
+executable `slow-device` CLI scenario or proof of every target fault.
 Separately, the retrieved macOS binary from `343e325` executed
 `sim --scenario two-devices --json` with eight expected observations; that older
 artifact is not a native macOS build of `3168e55`. None of these results establishes
