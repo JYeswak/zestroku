@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! `zestroku mcp` speaks MCP over stdio: spawns the real binary, initializes,
 //! lists tools, round-trips `echo`, and reads `list_devices`, `info`,
 //! `active_app`, and `apps` through the real daemon and simulator. It checks
@@ -12,7 +14,11 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
+use zestroku_core::mutation::ClientPrincipal;
 use zestroku_core::store::{DeviceRow, SqliteStore, Store};
+
+#[path = "mcp_stdio/principal_policy.rs"]
+mod principal_policy;
 
 struct Session {
     child: Child,
@@ -172,11 +178,12 @@ fn seed_mutation_device(db: &Path, target: &str, model_number: &str) {
         .expect("seed sim access tier");
 }
 
-fn mint_mcp_approval(
+fn mint_approval(
     db: &Path,
     target: &str,
     command: &zestroku_proto::Command,
     issued_at: i64,
+    client: ClientPrincipal,
 ) -> String {
     use zestroku_core::mutation::issue_approval;
     use zestroku_types::{AccessTier, Device};
@@ -198,10 +205,10 @@ fn mint_mcp_approval(
             access_tier: AccessTier::Permissive,
         },
         command,
-        zestroku_core::mutation::ClientPrincipal::McpStdio,
+        client,
         issued_at,
     )
-    .expect("mint one-use MCP approval")
+    .expect("mint one-use client-bound test approval")
 }
 /// Mint a real CLI approval through `script` so the terminal-only CLI gate
 /// stays active in this process-level regression.
@@ -892,7 +899,7 @@ fn mcp_launch_and_key_dispatch_once_through_daemon_and_audit_state() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock")
         .as_secs() as i64;
-    let launch_token = mint_mcp_approval(&db, &target, &launch(1001), now);
+    let launch_token = mint_approval(&db, &target, &launch(1001), now, ClientPrincipal::McpStdio);
     let wrong_case_token = mint_cli_approval(
         &db,
         &target,
@@ -1052,7 +1059,7 @@ fn mcp_replay_is_refused_without_a_second_device_mutation() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock")
         .as_secs() as i64;
-    let token = mint_mcp_approval(&db, &target, &launch(1001), now);
+    let token = mint_approval(&db, &target, &launch(1001), now, ClientPrincipal::McpStdio);
 
     let daemon_port = free_port();
     let _daemon = Daemon::start(&db, daemon_port);
@@ -1106,8 +1113,14 @@ fn mcp_key_and_launch_daemon_down_preserves_tokens_for_restart() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock")
         .as_secs() as i64;
-    let key_token = mint_mcp_approval(&db, &target, &keypress_raw("Home"), now);
-    let launch_token = mint_mcp_approval(&db, &target, &launch(1001), now);
+    let key_token = mint_approval(
+        &db,
+        &target,
+        &keypress_raw("Home"),
+        now,
+        ClientPrincipal::McpStdio,
+    );
+    let launch_token = mint_approval(&db, &target, &launch(1001), now, ClientPrincipal::McpStdio);
 
     let daemon_port = free_port();
     let mut daemon = Daemon::start(&db, daemon_port);
@@ -1213,9 +1226,9 @@ fn mcp_undo_last_uses_launch_confirmation_and_records_the_restore() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock")
         .as_secs() as i64;
-    let first_token = mint_mcp_approval(&db, &target, &launch(1001), now);
-    let second_token = mint_mcp_approval(&db, &target, &launch(1002), now);
-    let undo_token = mint_mcp_approval(&db, &target, &launch(1001), now);
+    let first_token = mint_approval(&db, &target, &launch(1001), now, ClientPrincipal::McpStdio);
+    let second_token = mint_approval(&db, &target, &launch(1002), now, ClientPrincipal::McpStdio);
+    let undo_token = mint_approval(&db, &target, &launch(1001), now, ClientPrincipal::McpStdio);
 
     let daemon_port = free_port();
     let _daemon = Daemon::start(&db, daemon_port);
