@@ -7,6 +7,7 @@
 use std::process::ExitCode;
 
 use zestroku_proto::{Transport, query};
+use zestroku_types::ErrorCode;
 
 use crate::transport::SelectedTransport;
 
@@ -83,19 +84,31 @@ pub fn run(args: &[String]) -> ExitCode {
             }
             "--json" => json = true,
             other => {
-                eprintln!("zestroku sim: unknown option {other}");
+                crate::report_cli_error(
+                    ErrorCode::InvalidArgument,
+                    format_args!("sim: unknown option {other}"),
+                    &[],
+                );
                 return ExitCode::from(2);
             }
         }
     }
     let Some("two-devices") = scenario else {
-        eprintln!("zestroku sim: usage: sim --scenario two-devices [--json]");
+        crate::report_cli_error(
+            ErrorCode::InvalidArgument,
+            "sim: usage: sim --scenario two-devices [--json]",
+            &[],
+        );
         return ExitCode::from(2);
     };
     let runtime = match runtime() {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("zestroku sim: could not start runtime: {error}");
+            crate::report_cli_error(
+                ErrorCode::RuntimeUnavailable,
+                format_args!("sim: could not start runtime: {error}"),
+                &[],
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -137,7 +150,11 @@ pub fn run(args: &[String]) -> ExitCode {
         if ok {
             ExitCode::SUCCESS
         } else {
-            eprintln!("zestroku sim: two-devices scenario failed");
+            crate::report_cli_error(
+                ErrorCode::ProtocolError,
+                "sim: two-devices scenario failed",
+                &[],
+            );
             ExitCode::FAILURE
         }
     })

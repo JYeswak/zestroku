@@ -29,7 +29,7 @@ use zestroku_proto::{
     Command, Transport, parse_active_app, parse_apps, parse_device_info, parse_ecp_response,
     parse_media_player, parse_tv_active_channel, query, query_apps,
 };
-use zestroku_types::Device;
+use zestroku_types::{Device, ErrorCode};
 
 const DEFAULT_BIND: &str = "127.0.0.1:8070";
 
@@ -431,14 +431,22 @@ pub fn run(args: &[String]) -> ExitCode {
     let opts = match parse_opts(args) {
         Ok(opts) => opts,
         Err(error) => {
-            eprintln!("zestroku serve: {error}");
+            crate::report_cli_error(
+                ErrorCode::InvalidArgument,
+                format_args!("serve: {error}"),
+                &[],
+            );
             return ExitCode::from(2);
         }
     };
     let addr = match zestroku_api::check_bind(&opts.bind) {
         Ok(addr) => addr,
         Err(error) => {
-            eprintln!("zestroku serve: {error}");
+            crate::report_cli_error(
+                ErrorCode::ConfigurationError,
+                format_args!("serve: {error}"),
+                &[],
+            );
             return ExitCode::from(2);
         }
     };
@@ -452,7 +460,11 @@ pub fn run(args: &[String]) -> ExitCode {
         }) {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("zestroku serve: could not start asupersync runtime: {error}");
+            crate::report_cli_error(
+                ErrorCode::RuntimeUnavailable,
+                format_args!("serve: could not start asupersync runtime: {error}"),
+                &[],
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -460,14 +472,22 @@ pub fn run(args: &[String]) -> ExitCode {
         let owned = match runtime.block_on(zestroku_api::tailscale_self_ips()) {
             Ok(ips) => zestroku_api::node_owns_address(&addr.ip(), &ips),
             Err(error) => {
-                eprintln!("zestroku serve: tailnet bind refused ({error})");
+                crate::report_cli_error(
+                    ErrorCode::ConfigurationError,
+                    format_args!("serve: tailnet bind refused ({error})"),
+                    &[],
+                );
                 return ExitCode::from(2);
             }
         };
         if !owned {
-            eprintln!(
-                "zestroku serve: tailnet bind refused ({} is not this node address)",
-                addr.ip()
+            crate::report_cli_error(
+                ErrorCode::ConfigurationError,
+                format_args!(
+                    "serve: tailnet bind refused ({} is not this node address)",
+                    addr.ip()
+                ),
+                &[],
             );
             return ExitCode::from(2);
         }
@@ -475,7 +495,11 @@ pub fn run(args: &[String]) -> ExitCode {
     let store = match store_db::open() {
         Ok(store) => Arc::new(Mutex::new(store)),
         Err(error) => {
-            eprintln!("zestroku serve: store unavailable: {error}");
+            crate::report_cli_error(
+                ErrorCode::StoreUnavailable,
+                format_args!("serve: store unavailable: {error}"),
+                &[],
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -495,13 +519,21 @@ pub fn run(args: &[String]) -> ExitCode {
         app, bind_addr, config, store, transport, inventory, opts,
     ));
     if !runtime.shutdown_timeout(Duration::from_secs(30)) {
-        eprintln!("zestroku serve: asupersync runtime did not drain within 30s");
+        crate::report_cli_error(
+            ErrorCode::RuntimeUnavailable,
+            "serve: asupersync runtime did not drain within 30s",
+            &[],
+        );
         return ExitCode::FAILURE;
     }
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("zestroku serve: {error}");
+            crate::report_cli_error(
+                ErrorCode::RuntimeUnavailable,
+                format_args!("serve: {error}"),
+                &[],
+            );
             ExitCode::FAILURE
         }
     }

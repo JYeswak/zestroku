@@ -39,8 +39,8 @@ Missing, malformed or unregistered daemon semantic metadata is `PROTOCOL_ERROR`,
 | `INVALID_DEVICE_TARGET` | A target contains an invalid authority/path character | 2 | Read-client failure: 1 |
 | `PROTOCOL_ERROR` | A response or command violates its protocol contract | 1 | Mutation wire failures: 5; existing HTTP-status-specific refusals retain their operation exit |
 | `INVALID_ARGUMENT` | Command arguments or owner-provided input are invalid | 2 | Credential-input failure after installer authorization remains 5 |
-| `CONFIGURATION_ERROR` | A target/policy configuration cannot be loaded | 1 | Direct mutation policy loading: 5 |
-| `RUNTIME_UNAVAILABLE` | A required local runtime or approval-entropy resource is unavailable | 1 | — |
+| `CONFIGURATION_ERROR` | A target/policy or listener configuration is invalid or unavailable | 1 | Server bind validation: 2; direct mutation policy loading: 5 |
+| `RUNTIME_UNAVAILABLE` | A local runtime, service lifecycle or approval-entropy resource could not complete | 1 | — |
 | `OUTPUT_ERROR` | A command cannot write its result | 1 | — |
 | `INSTALL_FAILED` | The authorized developer-installer operation failed | 5 | — |
 
