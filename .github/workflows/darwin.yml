@@ -14,6 +14,14 @@ on:
           scenario runs old -> new (scripts/test-install-macos.sh, 1r4.9).
         required: false
         default: ""
+      diag_test:
+        description: >-
+          Optional zestroku-cli integration-test binary name (letters, digits,
+          underscores). When set, ONLY a diagnostic job runs: that one binary
+          with --nocapture so failure messages and captured request traces
+          are not truncated by any checker (.11.3 regression evidence).
+        required: false
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,6 +32,7 @@ env:
 jobs:
   build:
     runs-on: macos-14
+    if: ${{ inputs.diag_test == '' }}
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
@@ -124,3 +133,32 @@ jobs:
 
       - name: test (offline, native macOS)
         run: cargo test --workspace
+
+  diag:
+    runs-on: macos-14
+    if: ${{ inputs.diag_test != '' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned nightly (matches rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-08-31
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+          cache-on-failure: true
+
+      - name: one test binary with captured output
+        env:
+          DIAG_TEST: ${{ inputs.diag_test }}
+        run: |
+          case "$DIAG_TEST" in
+            ''|*[!A-Za-z0-9_]*) echo "diag_test must be a test binary name" >&2; exit 2 ;;
+          esac
+          cargo test --locked -p zestroku-cli --test "$DIAG_TEST" -- --nocapture --test-threads=1
