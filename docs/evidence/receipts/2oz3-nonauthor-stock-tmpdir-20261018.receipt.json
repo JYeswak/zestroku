@@ -1,0 +1,20 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_c937ae7456daf988d13a21ac3436b9a438efeea422ea3e4e5461be20733d1426",
+ "limitations": [
+  "Original TS portability acceptance only, independent same-source job attempt2: stock defaultTMPDIR77/0 and actual restoredpathguard negative1. Source diff preserves assertions. Old failed Rust gate is carry-forward and remainsFAILED; no duplicate Rust build or fullCI/release/live proof. Local substring-filter counts142/532 are not unique canonical-case counts; clean stock77/5files is the scoped denominator."
+ ],
+ "operation": "zestroku-2oz.3 original stock defaultTMPDIR nonauthor acceptance",
+ "parameters": {
+  "bead": "zestroku-2oz.3",
+  "implementer": "QuietStream",
+  "source": "9b960193592aae7ce311d13bd33355328d2debb2",
+  "verifier": "JadeDuck"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 84496,
+  "sha256": "daa86b92f648a91f47ac8bd3dd260249552344c922b0c1c71a8d5987f8dddd06"
+ }
+}
