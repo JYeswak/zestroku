@@ -13,11 +13,16 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use zestroku_core::store::SqliteStore;
+use zestroku_types::ErrorCode;
 
 use crate::store_db;
 
 fn usage_error() -> ExitCode {
-    eprintln!("usage: zestroku db backup <dest> | zestroku db restore <backup>");
+    crate::report_cli_error(
+        ErrorCode::InvalidArgument,
+        "usage: zestroku db backup <dest> | zestroku db restore <backup>",
+        &[],
+    );
     ExitCode::from(2)
 }
 
@@ -37,7 +42,11 @@ fn backup(dest: &Path) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("zestroku db backup: {error}");
+            crate::report_cli_error(
+                ErrorCode::StoreUnavailable,
+                format_args!("db backup: {error}"),
+                &[],
+            );
             ExitCode::FAILURE
         }
     }
@@ -51,7 +60,11 @@ fn restore(source: &Path) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("zestroku db restore: {error}");
+            crate::report_cli_error(
+                ErrorCode::StoreUnavailable,
+                format_args!("db restore: {error}"),
+                &[],
+            );
             ExitCode::FAILURE
         }
     }

@@ -29,7 +29,7 @@ Missing, malformed or unregistered daemon semantic metadata is `PROTOCOL_ERROR`,
 | `CONFIRMATION_REQUIRED` | Owner approval is absent or unusable | 4 | `approve` TTY/phrase refusal: 2 |
 | `POLICY_DENIED` | The owner policy denied the operation | 5 | — |
 | `APP_NOT_INSTALLED` | The requested or previously active app is unavailable | 2 | Undo's missing-before-app refusal: 5 |
-| `STORE_UNAVAILABLE` | The local store cannot be read or updated | 1 | Discovery found devices but could not persist them: 5 |
+| `STORE_UNAVAILABLE` | The local store or an offline backup/restore operation is unavailable | 1 | Discovery found devices but could not persist them: 5 |
 | `LAN_BLOCKED_BY_OS_POLICY` | The OS denied the explicit diagnostic LAN connection | 5 | Diagnostic reads: 1 |
 | `DAEMON_UNAVAILABLE` | The configured resident daemon did not answer | 1 | Mutations: 5 |
 | `DOCTOR_WARN` | Health checks completed with warnings | 6 | — |
