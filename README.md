@@ -133,25 +133,29 @@ Bun 1.4.3 remains the runtime for checker tests and the four owner-mission
 commands; their strict UNKNOWN handling and live acceptance bars are unchanged.
 This does not grant local Rust compilation; use the executor approved for the host.
 
-`zestroku` is a Mach-O arm64 binary cross-built on the Contabo workers (plain
-`--target` trips rch's os gate; `--config build.target` produces the identical
-binary). `ring` compiles C, so the cross build links through
-`bin/zigcc-darwin-adapter.sh` onto the fleet's zig shim; a plain `cc` fails
-with `unrecognized command-line option '-arch'`. The cross wiring is opt-in
-per invocation (2oz.1) — `.cargo/config.toml` carries no target overrides,
-so a stock checkout also builds natively on Apple Silicon with system clang.
-From a clean checkout at commit C:
+For the optional Contabo cross-build, select Darwin through Cargo's
+`build.target` configuration; do not use RCH's `--target` OS selector.
+`ring` compiles C, so this route uses `bin/zigcc-darwin-adapter.sh` and the
+fleet's Zig/SDK shim. The wiring is opt-in per invocation (2oz.1), never a
+committed target default: a stock Apple-Silicon checkout uses system clang.
+The cross-build is a separate producer from native macOS; verify its own
+artifact identity rather than assuming byte-identical binaries.
+From a saved commit C:
 
 ```
-export ZESTROKU_BUILD_SHA=$(git rev-parse HEAD)
-export ZESTROKU_BUILD_DIRTY=$([ -n "$(git status --porcelain)" ] && echo true || echo false)
-RCH_WORKER=<your lane worker> RCH_REQUIRE_REMOTE=1 rch exec -- \
+C="$(git rev-parse HEAD)"
+env -u RCH_WORKER RCH_REQUIRE_REMOTE=1 rch exec \
+  --base "$C" --clean-overlay --no-overlay -- \
   cargo build --release -j 2 --locked \
   --config 'build.target="aarch64-apple-darwin"' \
-  --config "env.ZESTROKU_BUILD_SHA=\"$ZESTROKU_BUILD_SHA\"" \
-  --config "env.ZESTROKU_BUILD_DIRTY=\"$ZESTROKU_BUILD_DIRTY\"" \
-  --config 'env.CC_aarch64_apple_darwin={ value = "bin/zigcc-darwin-adapter.sh", relative = true }' \
-  --config 'env.CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER={ value = "bin/zigcc-darwin-adapter.sh", relative = true }' \
+  --config "env.ZESTROKU_BUILD_SHA.value=\"$C\"" \
+  --config 'env.ZESTROKU_BUILD_SHA.force=true' \
+  --config 'env.ZESTROKU_BUILD_DIRTY.value="false"' \
+  --config 'env.ZESTROKU_BUILD_DIRTY.force=true' \
+  --config 'env.CC_aarch64_apple_darwin.value="bin/zigcc-darwin-adapter.sh"' \
+  --config 'env.CC_aarch64_apple_darwin.relative=true' \
+  --config 'env.CC_aarch64_apple_darwin.force=true' \
+  --config 'target.aarch64-apple-darwin.linker="bin/zigcc-darwin-adapter.sh"' \
   -p zestroku-cli
 ```
 
@@ -159,9 +163,9 @@ Local Cargo output (`target/`, `target-local2/`, `t-local/`) and native tracker/
 runtime caches are ignored, not source or publishable evidence. WAL recovery
 journals remain on disk; durable acceptance receipts belong in `docs/evidence/receipts/`.
 
-A cold build takes about 22 minutes; run it unbounded. The result is
-`target/aarch64-apple-darwin/release/zestroku`; `file` must report `Mach-O
-64-bit executable arm64`. An untargeted artifact is a Linux ELF and is not
+Use a bounded job and require RCH's remote completion plus the retrieved
+`target/aarch64-apple-darwin/release/zestroku` artifact. `file` must report
+`Mach-O 64-bit executable arm64`. An untargeted artifact is a Linux ELF and is not
 valid macOS evidence.
 `zestroku mcp` serves stdio tools: `echo`, `list_devices`, `info`,
 `active_app`, `apps`, `recent_actions`, and confirmation-gated `key`/`launch`.
