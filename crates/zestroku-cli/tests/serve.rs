@@ -545,17 +545,19 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = dir.path().join("actions.db");
     let target = format!("127.0.0.1:{}", sim.port());
+    seed_sim_device(&db, &target);
 
     let port = free_port();
-    let mut daemon = start(&db, port);
+    let targets = write_targets(dir.path(), sim.port());
+    let mut daemon = start_with_targets(&db, port, &targets);
     let startup_requests = sim.received_requests();
     let startup_device_info_reads = startup_requests
         .iter()
         .filter(|(method, path)| method == "GET" && path == "/query/device-info")
         .count();
     assert!(
-        startup_requests.is_empty(),
-        "empty isolated inventory must not probe the simulator: {startup_requests:?}"
+        startup_device_info_reads > 0,
+        "startup discovery probes missing: {startup_requests:?}"
     );
     let host = format!("127.0.0.1:{port}");
     let stream = TcpStream::connect(("127.0.0.1", port)).expect("connect daemon");
@@ -621,11 +623,6 @@ fn sigterm_stops_admission_and_drains_an_admitted_info_read() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    // The polling future is dropped before shutdown stops admission. Publish
-    // the real device only now, so no startup snapshot can satisfy this read
-    // from cache. The record exists when the completed request reaches the
-    // handler, and the unchanged ECP assertion must witness its live read.
-    seed_sim_device(&db, &target);
 
     // Complete the already-admitted request after admission has stopped. The
     // app-aware drain must finish its real ECP read before the child exits.
