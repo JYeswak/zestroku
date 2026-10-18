@@ -144,7 +144,9 @@ impl ErrorCode {
             Self::ConfirmationRequired => "re-run with --confirm using an owner-minted token",
             Self::PolicyDenied => "the owner policy refuses this client/verb",
             Self::AppNotInstalled => "use an installed app id from `apps`",
-            Self::StoreUnavailable => "the inventory store cannot be read; check the data dir",
+            Self::StoreUnavailable => {
+                "check store/backup paths and schema compatibility; use a new backup destination and close handles before offline restore"
+            }
             Self::LanBlockedByOsPolicy => "run through the resident daemon, not direct LAN",
             Self::DaemonUnavailable => "start the daemon or pass --direct for diagnosis",
             Self::DoctorWarn => "review the WARN findings and their remedies",
