@@ -72,31 +72,14 @@ fn post_http_request_to_daemon(
     (status, headers.to_owned(), body.to_owned())
 }
 
-/// The daemon's own read cycle (bh1 inventory poller), in request order. Causal
-/// evidence (stock macOS diag run 39082712432, `diag_test=mutation_api`): with
-/// ZERO API requests sent, the loopback device had already received exactly
-/// these five GETs and no POST, and the first guarded request added nothing.
-const POLLER_CYCLE: [&str; 5] = [
-    "/query/device-info",
-    "/query/apps",
-    "/query/active-app",
-    "/query/media-player",
-    "/query/tv-active-channel",
-];
-
-/// True when `delta` (the requests that arrived after `start` earlier ones) is
-/// only the daemon's own read cycle continuing in phase: nothing, or its next
-/// reads. A mutation POST, an out-of-phase read or a lone snapshot read caused
-/// by the guarded request is NOT poller traffic.
-fn is_poller_continuation(start: usize, delta: &[(String, String)]) -> bool {
-    delta.iter().enumerate().all(|(index, (method, uri))| {
-        method == "GET" && uri == POLLER_CYCLE[(start + index) % POLLER_CYCLE.len()]
-    })
-}
-
-/// What the loopback device saw before any API request, so guard checks
-/// measure what the guarded request ADDED (the original contract) instead of
-/// conflating it with the daemon's startup reads.
+/// What the loopback device saw before any API request. The daemon's inventory
+/// poller (bh1) reads every store device at startup: with ZERO API requests
+/// sent, the device had already received five GETs and no POST (stock macOS
+/// diag run 39082712432, `diag_test=mutation_api`). Guard checks therefore
+/// measure what the guarded request ADDED to this settled baseline, which is
+/// the original contract: a guard adds ZERO ECP requests. Nothing here guesses
+/// which URI or phase "belongs" to the poller, so an unsanctioned read cannot
+/// hide behind the poller's own request shapes.
 struct RequestTrace {
     up: std::time::Instant,
     baseline: Vec<(String, String)>,
@@ -108,29 +91,27 @@ impl RequestTrace {
         use std::time::{Duration, Instant};
         let up = Instant::now();
         let pause = || std::thread::sleep(Duration::from_millis(20));
-        // The poller reads every store device at startup. If any request shows
-        // up, wait for a whole stable number of cycles before the first API
-        // request; with no poller the baseline simply stays empty.
+        // If any request shows up, wait until the count has been stable for
+        // 300 ms before the first API request; with no background reader the
+        // baseline simply stays empty.
         while sim.received_requests().is_empty() && up.elapsed() < Duration::from_secs(2) {
             pause();
         }
-        if !sim.received_requests().is_empty() {
-            let mut seen = (usize::MAX, Instant::now());
-            while up.elapsed() < Duration::from_secs(8) {
-                let len = sim.received_requests().len();
-                if len != seen.0 {
-                    seen = (len, Instant::now());
-                }
-                if len % POLLER_CYCLE.len() == 0 && seen.1.elapsed() >= Duration::from_millis(200) {
-                    break;
-                }
-                pause();
+        let mut seen = (usize::MAX, Instant::now());
+        while !sim.received_requests().is_empty() && up.elapsed() < Duration::from_secs(8) {
+            let len = sim.received_requests().len();
+            if len != seen.0 {
+                seen = (len, Instant::now());
             }
+            if seen.1.elapsed() >= Duration::from_millis(300) {
+                break;
+            }
+            pause();
         }
         let baseline = sim.received_requests();
         assert!(
-            is_poller_continuation(0, &baseline),
-            "requests before any API call must be the poller's reads only: {baseline:?}"
+            baseline.iter().all(|(method, _)| method == "GET"),
+            "requests before any API call must be reads only: {baseline:?}"
         );
         Self {
             up,
@@ -170,9 +151,10 @@ fn assert_no_http_mutation_side_effects(
 ) {
     use zestroku_core::store::{SqliteStore, Store};
 
+    let added = trace.added_since_baseline(sim);
     assert!(
-        is_poller_continuation(trace.baseline.len(), &trace.added_since_baseline(sim)),
-        "guard reached ECP: {}",
+        added.is_empty(),
+        "guard reached ECP: added {added:?}; {}",
         trace.describe(sim)
     );
     assert!(
@@ -185,26 +167,107 @@ fn assert_no_http_mutation_side_effects(
     );
 }
 
+/// Run the guard oracle and return its panic message; the oracle MUST reject.
+fn oracle_rejection(
+    db: &std::path::Path,
+    sim: &zestroku_sim::SimDevice,
+    trace: &RequestTrace,
+) -> String {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_no_http_mutation_side_effects(db, sim, trace);
+    }));
+    let payload = outcome.expect_err("the guard oracle must reject extra ECP traffic");
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| {
+            payload
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_owned())
+        })
+        .unwrap_or_default()
+}
+
+/// A real GET sent straight to the loopback device (not through the daemon).
+fn raw_get_to_device(port: u16, path: &str) {
+    use std::io::{Read, Write};
+    let mut stream =
+        std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect to loopback device");
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    )
+    .expect("write device request");
+    let mut sink = Vec::new();
+    stream.read_to_end(&mut sink).expect("read device response");
+}
+
 #[test]
-fn poller_attribution_rejects_guard_caused_traffic() {
-    let get = |path: &str| ("GET".to_owned(), path.to_owned());
-    // The poller's own in-phase continuation is attributed to the poller.
-    assert!(is_poller_continuation(5, &[]));
-    assert!(is_poller_continuation(5, &POLLER_CYCLE.map(get)));
-    // Planted negatives: a mutation POST, a lone snapshot read where the
-    // poller would read device-info, and a POST after in-phase reads.
-    assert!(!is_poller_continuation(
-        5,
-        &[("POST".to_owned(), "/launch/1001".to_owned())]
-    ));
-    assert!(!is_poller_continuation(5, &[get("/query/active-app")]));
-    assert!(!is_poller_continuation(
-        0,
-        &[
-            get("/query/device-info"),
-            ("POST".to_owned(), "/keypress/Home".to_owned())
-        ]
-    ));
+fn guard_oracle_rejects_an_unsanctioned_get_that_repeats_the_pollers_first_read() {
+    use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
+
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let directory = tempfile::tempdir().expect("temporary mutation database");
+    let db = directory.path().join("actions.db");
+    seed_http_device(&db, sim.port());
+    let api_port = http_free_port();
+    let _daemon = start_http_daemon(&db, api_port);
+    let trace = RequestTrace::begin(&sim);
+
+    // Quiescent daemon: the oracle accepts the settled baseline.
+    assert_no_http_mutation_side_effects(&db, &sim, &trace);
+    // One real, unsanctioned GET shaped like the poller's own first read (the
+    // in-phase counterexample): a poller-shape allowance would let it through,
+    // the baseline-delta oracle must not, whatever the poller does or sends.
+    raw_get_to_device(sim.port(), "/query/device-info");
+    let message = oracle_rejection(&db, &sim, &trace);
+    assert!(message.contains("guard reached ECP"), "{message}");
+    assert!(message.contains("/query/device-info"), "{message}");
+}
+
+#[test]
+fn guard_oracle_rejects_the_real_daemons_own_snapshot_and_mutation() {
+    use zestroku_proto::keypress_raw;
+    use zestroku_sim::{DeviceKind, SimConfig, SimDevice, SimTier};
+
+    let sim = SimDevice::start(SimConfig {
+        kind: DeviceKind::Express,
+        tier: SimTier::Permissive,
+    });
+    let directory = tempfile::tempdir().expect("temporary mutation database");
+    let db = directory.path().join("actions.db");
+    seed_http_device(&db, sim.port());
+    let token = mint_http_approval(
+        &db,
+        sim.port(),
+        &keypress_raw("Home"),
+        zestroku_core::mutation::ClientPrincipal::LoopbackHttp,
+    );
+    let api_port = http_free_port();
+    let _daemon = start_http_daemon(&db, api_port);
+    let trace = RequestTrace::begin(&sim);
+    assert_no_http_mutation_side_effects(&db, &sim, &trace);
+
+    // A genuinely approved key press makes the real daemon read the device
+    // (snapshot) and mutate it: request-caused traffic the oracle must see.
+    let api_host = format!("127.0.0.1:{api_port}");
+    let (status, _, body) = post_json_to_daemon(
+        api_port,
+        &format!("/v1/devices/127.0.0.1:{}/key", sim.port()),
+        &api_host,
+        &serde_json::json!({
+            "client": "loopback-http",
+            "key": "Home",
+            "confirm": &token
+        }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let message = oracle_rejection(&db, &sim, &trace);
+    assert!(message.contains("guard reached ECP"), "{message}");
+    assert!(message.contains("POST"), "{message}");
 }
 
 fn assert_no_cors_header(headers: &str) {
