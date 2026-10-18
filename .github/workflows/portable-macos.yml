@@ -8,6 +8,12 @@ name: portable-macos
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      plant_fleet_linker:
+        description: Restore the original default-linker defect in this checkout; the stock build must fail.
+        type: boolean
+        required: false
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -39,6 +45,13 @@ jobs:
           workspaces: |
             .
           cache-on-failure: true
+
+      - name: Plant original fleet-linker defect (manual negative only)
+        if: ${{ inputs.plant_fleet_linker }}
+        shell: bash
+        run: |
+          printf '\n[target.aarch64-apple-darwin]\nlinker = "bin/zigcc-darwin-adapter.sh"\n' >> .cargo/config.toml
+          printf 'ZESTROKU_BUILD_DIRTY=true\n' >> "$GITHUB_ENV"
 
       - name: build (stock, no --config overrides)
         run: cargo build --locked -p zestroku-cli

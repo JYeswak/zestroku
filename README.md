@@ -133,6 +133,13 @@ Bun 1.4.3 remains the runtime for checker tests and the four owner-mission
 commands; their strict UNKNOWN handling and live acceptance bars are unchanged.
 This does not grant local Rust compilation; use the executor approved for the host.
 
+For the original linker-negative control, run
+`gh workflow run portable-macos.yml --ref main -f plant_fleet_linker=true`.
+This restores the default target linker only in the isolated runner checkout
+and marks that input dirty; the unchanged stock build must fail because the
+fleet shim is absent. Normal PR and manual runs leave this control disabled.
+A manual control run is not proof of a PR-triggered positive.
+
 For the optional Contabo cross-build, select Darwin through Cargo's
 `build.target` configuration; do not use RCH's `--target` OS selector.
 `ring` compiles C, so this route uses `bin/zigcc-darwin-adapter.sh` and the
