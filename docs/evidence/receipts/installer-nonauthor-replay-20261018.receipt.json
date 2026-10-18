@@ -1,0 +1,30 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_61b7c76a615b39fe422bcc733f3436897f4d98382badcef850a1e734d4a313fa",
+ "limitations": [
+  "Fresh local arm64 isolated-prefix replay only; no global PATH install, resident service activation, physical-device or tailnet effects.",
+  "Both saved source revisions use migration ledger 1..8; schema99 and failed migration are controlled test data, not naturally distinct production schemas.",
+  "No full workspace/Clippy CI or release qualification is asserted."
+ ],
+ "operation": "installer-two-macho-s1-s5-replay",
+ "parameters": {
+  "artifact_run": "39077173711",
+  "backup_sha256": "fbd8c195ccc072ee7a33230aec3d7fd4d14953df43274b5739fa05acc9dbc8a3",
+  "consumer_sha256": "c96f59a3f3791c68d6112bfb8a21d01621b2a37273387f5098fcca180ce93d33",
+  "decisive_output": "SCENARIO PASS: S1-S5; all 19 command stdout/stderr/exit files archived in result_ref; current 95a8 script hashes match saved consumer and installer",
+  "installer_sha256": "e1c5d20fd55ecd22ac3021fbfc1dfe2a2da2937f761a3b0096ed2e52b665b0c9",
+  "main_sha": "95a8dbd5631bb4cb714c8c7a17e396ecd730a4b1",
+  "new_sha256": "e83eac349fada95a8e8169779d5d92ca6f5ecc215c5dd28ec7324f7a670da23a",
+  "new_source": "2da85d98d70540740f1de0f8b8a95cfde1d0c772",
+  "old_sha256": "ed8e0b37fe95e6a3454495cb3c78af3fdb851a5a6dd580f4f78534ad1190101e",
+  "old_source": "0cb1fd6e31e847ff0e19d467483be491476c88a8",
+  "scenario_command": "/bin/sh -x scripts/test-install-macos.sh <old> <new>",
+  "step_exit_codes": "S1=0;S2a=2;S2b=2;S2c=2;S2d=2;S3=0;S3b=1;S4=2;S4b=2;S4c=2;S4d=2;S4e=2;S5=0;post-readback=0"
+ },
+ "producer": "BeigeLeopard",
+ "result_ref": {
+  "bytes": 4847,
+  "sha256": "82ed3f0d999f3c59f3dfb40b30beee56148a34f3ec88cf71e5e757e286308ec0"
+ }
+}
