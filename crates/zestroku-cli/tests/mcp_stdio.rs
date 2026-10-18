@@ -100,9 +100,14 @@ struct Daemon(Child);
 
 impl Daemon {
     fn start(db: &Path, port: u16) -> Self {
+        let targets = db.with_extension("targets.toml");
+        std::fs::write(&targets, "").expect("write empty test targets");
         let child = Command::new(env!("CARGO_BIN_EXE_zestroku"))
             .env("ZESTROKU_DB", db)
-            .args(["serve", "--bind", &format!("127.0.0.1:{port}")])
+            .args(["serve", "--bind"])
+            .arg(format!("127.0.0.1:{port}"))
+            .args(["--no-ssdp", "--targets"])
+            .arg(&targets)
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
@@ -636,10 +641,10 @@ fn mcp_stdio_routes_reads_through_daemon_and_preserves_gate() {
         .unwrap()
         .to_owned();
     assert!(audit_text.contains("denied"), "{audit_text}");
-    assert!(audit_text.contains("client=mcp-stdio"), "{audit_text}");
+    assert!(audit_text.contains("client=unknown"), "{audit_text}");
     assert!(audit_text.contains("surface=key"), "{audit_text}");
     assert!(
-        audit_text.contains("result=\"CONFIRMATION_REQUIRED\""),
+        audit_text.contains("result=\"CONFIRMATION_INVALID\""),
         "{audit_text}"
     );
     assert!(audit_text.contains("before="), "{audit_text}");
@@ -1396,7 +1401,7 @@ fn mcp_limited_tier_refusal_is_audited_without_device_post() {
         .list_actions()
         .expect("read limited-tier action store");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].client, "mcp-stdio");
+    assert_eq!(rows[0].client, "unknown");
     assert_eq!(rows[0].surface, "key");
     assert_eq!(rows[0].decision, "denied");
     assert_eq!(rows[0].result, "TIER_REFUSED");

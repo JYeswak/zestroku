@@ -54,10 +54,43 @@ fn http_get(
     Ok((status, body))
 }
 
+/// Wait for the daemon poller to publish a fresh apps status, not a guessed delay.
+/// One inventory poll interval plus one five-second loop tick bounds the wait.
+fn wait_for_fresh_apps_status(port: u16, target: &str, host: &str, expected: &str) -> Value {
+    let path = format!("/v1/devices/{target}/state");
+    let deadline = Instant::now()
+        + Duration::from_secs(zestroku_core::DEVICE_STATE_POLL_INTERVAL_SECS as u64 + 5);
+    loop {
+        let (status, body) =
+            http_get(port, &path, host, Duration::from_secs(5)).expect("GET cached device state");
+        let last_observation = match status {
+            200 => {
+                let state: Value = serde_json::from_str(&body).expect("device state JSON");
+                if state["fresh"] == true && state["apps_status"] == expected {
+                    return state;
+                }
+                state.to_string()
+            }
+            503 => body,
+            other => panic!("GET cached device state returned {other}: {body}"),
+        };
+        assert!(
+            Instant::now() < deadline,
+            "daemon poller did not publish fresh apps_status={expected}; last={last_observation}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn start_daemon(db: &Path, port: u16) -> Daemon {
+    let targets = db.with_extension("targets.toml");
+    std::fs::write(&targets, "").expect("write empty test targets");
     let child = Command::new(env!("CARGO_BIN_EXE_zestroku"))
         .env("ZESTROKU_DB", db)
-        .args(["serve", "--bind", &format!("127.0.0.1:{port}")])
+        .args(["serve", "--bind"])
+        .arg(format!("127.0.0.1:{port}"))
+        .args(["--no-ssdp", "--targets"])
+        .arg(&targets)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
@@ -230,7 +263,29 @@ fn real_serve_reads_and_documents_simulator_installed_apps() {
         assert!(app_rows.iter().all(|app| app[field].is_string()), "{field}");
     }
 
+    let initial_state = wait_for_fresh_apps_status(serve_port, &target, &service_host, "available");
+    assert_eq!(initial_state["access_tier"], "permissive");
+    let app_queries_before_tier_change = sim
+        .received_requests()
+        .iter()
+        .filter(|(_, uri)| uri.as_str() == "/query/apps")
+        .count();
+
     sim.set_tier(SimTier::Limited);
+    let limited_state =
+        wait_for_fresh_apps_status(serve_port, &target, &service_host, "tier_refused");
+    assert_eq!(limited_state["access_tier"], "limited");
+    let app_queries_after_tier_change = sim
+        .received_requests()
+        .iter()
+        .filter(|(_, uri)| uri.as_str() == "/query/apps")
+        .count();
+    assert!(
+        app_queries_after_tier_change > app_queries_before_tier_change,
+        "poller did not query apps after the tier changed"
+    );
+
+    // Once the poller publishes the refusal, the fresh API response must not probe again.
     let previous_requests = sim.received_requests().len();
     let (status, limited_body) = http_get(
         serve_port,
@@ -238,13 +293,13 @@ fn real_serve_reads_and_documents_simulator_installed_apps() {
         &service_host,
         Duration::from_secs(5),
     )
-    .expect("GET apps in Limited tier");
+    .expect("GET apps after Limited tier was observed");
     assert_eq!(status, 403, "{limited_body}");
     assert_eq!(error_code(&limited_body), "tier_refused");
-    assert_eq!(sim.received_requests().len(), previous_requests + 1);
     assert_eq!(
-        sim.received_requests().last().map(|(_, uri)| uri.as_str()),
-        Some("/query/apps")
+        sim.received_requests().len(),
+        previous_requests,
+        "fresh cached tier refusal must not make another ECP request"
     );
 
     let previous_requests = sim.received_requests().len();
