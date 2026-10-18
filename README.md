@@ -120,10 +120,18 @@ zestroku-aarch64-apple-darwin`) and runs the offline tests natively. Clear the
 download quarantine with `xattr -d com.apple.quarantine zestroku`. The Contabo
 cross-build below is the fallback.
 
-Bun 1.4.3 is the developer runtime for mission checks. `portable-macos.yml`
-pins it and runs `bun scripts/mission-check.ts --pillar safe-control` after
-the stock build. This does not grant a local Rust build; use the executor
-approved for the host.
+`portable-macos.yml` runs a stock Rust build, the freshly built binary's
+`sim --scenario two-devices --json` read smoke, and full locked workspace tests.
+The smoke uses a Cargo-only PATH without RCH or omp-kit and is explicitly
+simulated, not a mission verdict.
+
+The public job no longer runs the private owner-mission invocation: its
+registration, artifact declarations, standalone approval/denial/inverse probes,
+local-Cargo mission-executor integration and live-device coverage are not
+replaced by this smoke. Rust safety regressions remain in the workspace suite.
+Bun 1.4.3 remains the runtime for checker tests and the four owner-mission
+commands; their strict UNKNOWN handling and live acceptance bars are unchanged.
+This does not grant local Rust compilation; use the executor approved for the host.
 
 `zestroku` is a Mach-O arm64 binary cross-built on the Contabo workers (plain
 `--target` trips rch's os gate; `--config build.target` produces the identical
