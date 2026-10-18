@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
 import {
   classifyFetchError,
   isDaemonDownOutput,
@@ -341,8 +342,8 @@ describe("redact", () => {
 
 
 function httpFixtureContext(url: string) {
-  const scratch = process.env.TMPDIR;
-  if (!scratch || !scratch.includes("/var/agent-tmp/")) throw new Error("Owned TMPDIR required");
+  // Platform temp dir (os.tmpdir() honors TMPDIR); stock runners use the default.
+  const scratch = tmpdir();
   return {
     repo: process.cwd(), binary: "/nonexistent/zestroku", source: "0".repeat(40), scratch,
     env: { ZESTROKU_DAEMON_URL: url, ZESTROKU_MISSION_RUN_RCH: "0" },

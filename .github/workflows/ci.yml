@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      plant_owned_tmpdir_guard:
+        description: >-
+          Manual negative control for 2oz.3: reinstate the old
+          /var/agent-tmp/ guard in the checked-out mission test (never
+          committed) and run ONLY the mission-tests job, which must fail.
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,6 +27,7 @@ env:
 
 jobs:
   gates:
+    if: ${{ !inputs.plant_owned_tmpdir_guard }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -72,3 +81,36 @@ jobs:
       # ── Identifier scrub gate: serial/UDN/MAC/ad-id shapes never land ──
       - name: identifier scrub (plan ZP:58-59)
         run: bash scripts/check-identifiers.sh
+
+  # Mission checker TypeScript tests on a stock runner (2oz.3). A separate job
+  # so a Rust gate failure cannot hide it (and vice versa): default TMPDIR, no
+  # owned-scratch guard, so the suite must not depend on the fleet's
+  # var/agent-tmp layout. Same pinned Bun as portable-macos.
+  mission-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pinned Bun for mission tests
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: "1.4.3"
+
+      - name: plant the old owned-TMPDIR guard (manual negative control only)
+        if: ${{ inputs.plant_owned_tmpdir_guard }}
+        run: |
+          printf '%s\n' \
+            'const scratchRoot = process.env.TMPDIR;' \
+            'if (!scratchRoot || !scratchRoot.includes("/var/agent-tmp/")) {' \
+            '  throw new Error("Tests require owned repo var/agent-tmp TMPDIR");' \
+            '}' > planted-guard.ts
+          cat planted-guard.ts scripts/mission-check.test.ts > planted.test.ts
+          mv planted.test.ts scripts/mission-check.test.ts
+          head -n 6 scripts/mission-check.test.ts
+
+      - name: mission tests (bun test scripts/, default TMPDIR)
+        run: |
+          echo "TMPDIR=${TMPDIR:-<unset: platform default>}"
+          bun test scripts/
+        timeout-minutes: 15

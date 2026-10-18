@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   captureVerifiedImplementation,
@@ -12,13 +13,13 @@ import {
 } from "./mission-check";
 import type { CheckCase } from "./mission-check";
 
-const scratchRoot = process.env.TMPDIR;
-if (!scratchRoot || !scratchRoot.includes("/var/agent-tmp/")) {
-  throw new Error("Tests require owned repo var/agent-tmp TMPDIR");
-}
-const scratch = await mkdtemp(join(scratchRoot, "dispatcher-contract-"));
+// Scratch lives under the platform temp dir (os.tmpdir() honors TMPDIR), so
+// the suite runs on a stock runner with the default TMPDIR. Fleet agents
+// export TMPDIR to their owned repo var/agent-tmp dir before running; this
+// test no longer polices that path shape. Specimens carry an .owner file and
+// are left for the scratch reaper; never recursively reap scratch here.
+const scratch = await mkdtemp(join(tmpdir(), "dispatcher-contract-"));
 await writeFile(join(scratch, ".owner"), `pid=${process.pid}\nlabel=dispatcher-contract\nrepo=${process.cwd()}\ncreated=${new Date().toISOString()}\n`);
-// Owned generated specimens remain for the scratch reaper; never recursively reap scratch here.
 
 const passed = (id: string, covers: readonly string[] = []): CheckCase => ({
   id, outcome: "PASS", detail: "Fixture evaluator input, not product proof", claim: "invariant", tier: "fixture", covers,

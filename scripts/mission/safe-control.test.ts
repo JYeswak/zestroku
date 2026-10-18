@@ -21,6 +21,7 @@
 import { describe, test, expect, beforeAll } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync, chmodSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
@@ -28,7 +29,9 @@ import { run, isCompletedDispatchText, sanitizeDetail } from "./safe-control";
 import type { CheckCase, CheckContext } from "../mission-check";
 
 const REPO = resolve(import.meta.dir, "..", "..");
-const SCRATCH = join(REPO, "var", "agent-tmp", `safe-control-test.${process.pid}`);
+// Platform temp dir (os.tmpdir() honors TMPDIR): runs on a stock runner with
+// the default TMPDIR; fleet agents export their owned var/agent-tmp TMPDIR.
+const SCRATCH = join(tmpdir(), `safe-control-test.${process.pid}`);
 const LOCAL_TIMEOUT = 30_000;
 // Full-revision-shaped test input (not a real commit).
 const TEST_REV = "f".repeat(40);
