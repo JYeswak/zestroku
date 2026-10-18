@@ -72,11 +72,31 @@ fn post_http_request_to_daemon(
     (status, headers.to_owned(), body.to_owned())
 }
 
-/// Diagnostic trace for the helper regression (.11.3 vs bh1): the full ECP
-/// request log with arrival order and elapsed time since the daemon was up,
-/// plus the log observed BEFORE any API request was sent, so background reads
-/// and request-caused reads are distinguishable in a failure message. It only
-/// observes: every assertion below keeps its original strength.
+/// The daemon's own read cycle (bh1 inventory poller), in request order. Causal
+/// evidence (stock macOS diag run 39082712432, `diag_test=mutation_api`): with
+/// ZERO API requests sent, the loopback device had already received exactly
+/// these five GETs and no POST, and the first guarded request added nothing.
+const POLLER_CYCLE: [&str; 5] = [
+    "/query/device-info",
+    "/query/apps",
+    "/query/active-app",
+    "/query/media-player",
+    "/query/tv-active-channel",
+];
+
+/// True when `delta` (the requests that arrived after `start` earlier ones) is
+/// only the daemon's own read cycle continuing in phase: nothing, or its next
+/// reads. A mutation POST, an out-of-phase read or a lone snapshot read caused
+/// by the guarded request is NOT poller traffic.
+fn is_poller_continuation(start: usize, delta: &[(String, String)]) -> bool {
+    delta.iter().enumerate().all(|(index, (method, uri))| {
+        method == "GET" && uri == POLLER_CYCLE[(start + index) % POLLER_CYCLE.len()]
+    })
+}
+
+/// What the loopback device saw before any API request, so guard checks
+/// measure what the guarded request ADDED (the original contract) instead of
+/// conflating it with the daemon's startup reads.
 struct RequestTrace {
     up: std::time::Instant,
     baseline: Vec<(String, String)>,
@@ -85,17 +105,37 @@ struct RequestTrace {
 
 impl RequestTrace {
     fn begin(sim: &zestroku_sim::SimDevice) -> Self {
-        // Bounded observation window: give any background reader a chance to
-        // show itself before the first API request. Nothing is asserted here.
-        let up = std::time::Instant::now();
-        let deadline = up + std::time::Duration::from_secs(3);
-        while sim.received_requests().is_empty() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(50));
+        use std::time::{Duration, Instant};
+        let up = Instant::now();
+        let pause = || std::thread::sleep(Duration::from_millis(20));
+        // The poller reads every store device at startup. If any request shows
+        // up, wait for a whole stable number of cycles before the first API
+        // request; with no poller the baseline simply stays empty.
+        while sim.received_requests().is_empty() && up.elapsed() < Duration::from_secs(2) {
+            pause();
         }
+        if !sim.received_requests().is_empty() {
+            let mut seen = (usize::MAX, Instant::now());
+            while up.elapsed() < Duration::from_secs(8) {
+                let len = sim.received_requests().len();
+                if len != seen.0 {
+                    seen = (len, Instant::now());
+                }
+                if len % POLLER_CYCLE.len() == 0 && seen.1.elapsed() >= Duration::from_millis(200) {
+                    break;
+                }
+                pause();
+            }
+        }
+        let baseline = sim.received_requests();
+        assert!(
+            is_poller_continuation(0, &baseline),
+            "requests before any API call must be the poller's reads only: {baseline:?}"
+        );
         Self {
             up,
-            baseline: sim.received_requests(),
             baseline_at_ms: up.elapsed().as_millis(),
+            baseline,
         }
     }
 
@@ -108,6 +148,19 @@ impl RequestTrace {
             self.baseline_at_ms
         )
     }
+
+    /// Requests that arrived after the baseline; the baseline itself must be
+    /// an unchanged prefix of the log.
+    fn added_since_baseline(&self, sim: &zestroku_sim::SimDevice) -> Vec<(String, String)> {
+        let log = sim.received_requests();
+        let start = self.baseline.len();
+        assert!(
+            log.len() >= start && log[..start] == self.baseline[..],
+            "request log lost its baseline prefix: {}",
+            self.describe(sim)
+        );
+        log[start..].to_vec()
+    }
 }
 
 fn assert_no_http_mutation_side_effects(
@@ -118,7 +171,7 @@ fn assert_no_http_mutation_side_effects(
     use zestroku_core::store::{SqliteStore, Store};
 
     assert!(
-        sim.received_requests().is_empty(),
+        is_poller_continuation(trace.baseline.len(), &trace.added_since_baseline(sim)),
         "guard reached ECP: {}",
         trace.describe(sim)
     );
@@ -130,6 +183,28 @@ fn assert_no_http_mutation_side_effects(
             .is_empty(),
         "guard wrote an audit action"
     );
+}
+
+#[test]
+fn poller_attribution_rejects_guard_caused_traffic() {
+    let get = |path: &str| ("GET".to_owned(), path.to_owned());
+    // The poller's own in-phase continuation is attributed to the poller.
+    assert!(is_poller_continuation(5, &[]));
+    assert!(is_poller_continuation(5, &POLLER_CYCLE.map(get)));
+    // Planted negatives: a mutation POST, a lone snapshot read where the
+    // poller would read device-info, and a POST after in-phase reads.
+    assert!(!is_poller_continuation(
+        5,
+        &[("POST".to_owned(), "/launch/1001".to_owned())]
+    ));
+    assert!(!is_poller_continuation(5, &[get("/query/active-app")]));
+    assert!(!is_poller_continuation(
+        0,
+        &[
+            get("/query/device-info"),
+            ("POST".to_owned(), "/keypress/Home".to_owned())
+        ]
+    ));
 }
 
 fn assert_no_cors_header(headers: &str) {
@@ -358,14 +433,16 @@ fn real_http_mutations_use_inventory_bound_approval_snapshot_and_audit() {
     );
 
     assert_eq!(
-        sim.received_requests(),
+        trace.added_since_baseline(&sim),
         vec![
             ("GET".into(), "/query/active-app".into()),
             ("POST".into(), "/launch/1001".into()),
             ("GET".into(), "/query/active-app".into()),
             ("POST".into(), "/keypress/Home".into()),
         ],
-        "each approval dispatches exactly one matching ECP mutation after its snapshot"
+        "each approval dispatches exactly one matching ECP mutation after its snapshot \
+         (measured after the daemon's startup reads: {})",
+        trace.describe(&sim)
     );
     assert_eq!(sim.launch_count(), 1);
 
