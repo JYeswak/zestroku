@@ -1,0 +1,18 @@
+{
+ "authority": "pending",
+ "confidence": "observed",
+ "evidence_id": "ev_10761099951b5827ac2fe8327a7fb51a5310fa9ca13533157dfa01878f1b3afb",
+ "limitations": [
+  "Positive source1da realMac process/Sim only. Literal source-enforced ab/cd/known-row inputs retained; actual rawHTTP200/SIMX1/165bytes/closeEOF/ECP1/exit0/listener released. Stdout source_sha unavailable; exact workflowhead binds source. Original mutants/full seven gates/non-author runtime/full release remain unqualified."
+ ],
+ "operation": "Original known-target SIGTERM real Mac frame positive",
+ "parameters": {
+  "bead": "zestroku-m7c-serve-inq.1.1",
+  "source": "1da6ab936966d7361331744bca5fbbc4ea5ca8d3"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 71393,
+  "sha256": "e8fe27a71ade5dd1a85125ff3a96af435960ce83fe2c5c5c211eb922d852a4e8"
+ }
+}
