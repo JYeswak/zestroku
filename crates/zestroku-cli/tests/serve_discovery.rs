@@ -94,13 +94,14 @@ fn read_inventory(port: u16) -> Vec<serde_json::Value> {
         .clone()
 }
 
-fn start_daemon(
+fn daemon_command(
     db: &std::path::Path,
     home: &std::path::Path,
     targets: &std::path::Path,
     port: u16,
-) -> Daemon {
-    let child = Command::new(env!("CARGO_BIN_EXE_zestroku"))
+) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_zestroku"));
+    command
         .env("ZESTROKU_DB", db)
         .env("HOME", home)
         .env_remove("ZESTROKU_TARGETS")
@@ -114,7 +115,17 @@ fn start_daemon(
         .arg(targets)
         .args(["--mx", "1"])
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+fn start_daemon(
+    db: &std::path::Path,
+    home: &std::path::Path,
+    targets: &std::path::Path,
+    port: u16,
+) -> Daemon {
+    let child = daemon_command(db, home, targets, port)
         .spawn()
         .expect("spawn real zestroku serve binary");
     let mut daemon = Daemon(child);
@@ -137,6 +148,31 @@ fn start_daemon(
             "serve did not become ready on {port}"
         );
         std::thread::sleep(Duration::from_millis(10));
+    }
+}
+fn wait_for_fresh_limited_state(port: u16, target: &str) {
+    let path = format!("/v1/devices/{target}/state");
+    let deadline = Instant::now()
+        + Duration::from_secs(zestroku_core::DEVICE_STATE_POLL_INTERVAL_SECS as u64 + 5);
+    loop {
+        let (status, body) = http_get(port, &path).expect("fetch daemon-poller state");
+        let last_observation = match status {
+            200 => {
+                let state: serde_json::Value =
+                    serde_json::from_str(&body).expect("device-state JSON");
+                if state["fresh"] == true && state["apps_status"] == "tier_refused" {
+                    return;
+                }
+                state.to_string()
+            }
+            503 => body,
+            other => panic!("GET cached device state returned {other}: {body}"),
+        };
+        assert!(
+            Instant::now() < deadline,
+            "daemon poller did not publish fresh Limited state: {last_observation}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -191,6 +227,76 @@ fn persisted_row(db: &std::path::Path, port: u16) -> DeviceRow {
 }
 
 #[test]
+fn serve_startup_persists_identity_and_tier_before_bind_and_poller() {
+    const SERIAL: &str = "FIXTURESERIAL-STARTUP-BEFORE-BIND";
+    let sim = SimDevice::start_with_serial(
+        SimConfig {
+            kind: DeviceKind::Express,
+            tier: SimTier::Limited,
+        },
+        SERIAL,
+    );
+    let directory = tempfile::tempdir().expect("isolated startup directory");
+    let db = directory.path().join("startup.db");
+    let targets = directory.path().join("targets.toml");
+    write_targets(&targets, &[sim.port()]);
+    assert!(!db.exists(), "startup must create the database");
+
+    // Startup discovery precedes bind; the poller starts only after bind succeeds.
+    // Holding this listener therefore isolates real startup writes without a
+    // production test switch or a race against the poller's next observation.
+    let occupied = TcpListener::bind("127.0.0.1:0").expect("hold serve bind port");
+    let port = occupied.local_addr().expect("read occupied port").port();
+    let mut daemon = Daemon(
+        daemon_command(&db, directory.path(), &targets, port)
+            .spawn()
+            .expect("spawn real serve with occupied bind port"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = daemon.0.try_wait().expect("poll failed-bind serve") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "serve did not report the occupied bind port"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let mut stderr = String::new();
+    daemon
+        .0
+        .stderr
+        .take()
+        .expect("captured serve diagnostics")
+        .read_to_string(&mut stderr)
+        .expect("read failed-bind diagnostics");
+    assert_eq!(status.code(), Some(1), "occupied bind exit: {status}");
+    assert!(
+        stderr.contains("HTTP server failed:") && stderr.contains("already in use"),
+        "serve must report the occupied listener, not another failure: {stderr}"
+    );
+    let requests = sim.received_requests();
+    assert!(
+        requests
+            .iter()
+            .map(|(method, path)| (method.as_str(), path.as_str()))
+            .eq([("GET", "/query/device-info"), ("GET", "/query/apps")]),
+        "startup must probe the configured target before bind, with no poller reads: {requests:?}"
+    );
+    assert_persisted_identity_and_tier(
+        &db,
+        sim.port(),
+        SERIAL,
+        "Sim Express",
+        "SIMX1",
+        false,
+        "limited",
+    );
+    drop(occupied);
+}
+
+#[test]
 fn serve_startup_discovers_and_records_identity_and_limited_tier_before_info() {
     const SERIAL: &str = "FIXTURESERIAL-SERVE-STARTUP";
     let sim = SimDevice::start_with_serial(
@@ -241,14 +347,39 @@ fn serve_startup_discovers_and_records_identity_and_limited_tier_before_info() {
             && !inventory_body.contains("FIXTUREDEVICEID"),
         "inventory response leaked a fixture identifier: {inventory_body}"
     );
-    assert_eq!(
-        startup_requests,
-        vec![
-            ("GET".into(), "/query/device-info".into()),
-            ("GET".into(), "/query/apps".into()),
-        ],
-        "startup must probe identity once and record the existing Limited 403 classifier result"
+    const STARTUP_PROBES: [&str; 2] = ["/query/device-info", "/query/apps"];
+    assert!(
+        startup_requests.len() >= STARTUP_PROBES.len(),
+        "startup discovery probes missing: {startup_requests:?}"
     );
+    for (index, expected_path) in STARTUP_PROBES.iter().enumerate() {
+        assert_eq!(startup_requests[index].0.as_str(), "GET");
+        assert_eq!(
+            startup_requests[index].1.as_str(),
+            *expected_path,
+            "startup discovery probe {index} was out of order: {startup_requests:?}"
+        );
+    }
+    const POLLER_PROBES: [&str; 5] = [
+        "/query/device-info",
+        "/query/apps",
+        "/query/active-app",
+        "/query/media-player",
+        "/query/tv-active-channel",
+    ];
+    for (index, (method, path)) in startup_requests[STARTUP_PROBES.len()..].iter().enumerate() {
+        assert_eq!(method.as_str(), "GET");
+        assert_eq!(
+            path.as_str(),
+            POLLER_PROBES[index % POLLER_PROBES.len()],
+            "post-startup requests must follow the daemon poller sequence: {startup_requests:?}"
+        );
+    }
+    // Startup discovery runs before bind; the independent inventory poller
+    // starts after the listener and may add a request suffix to this log.
+    // Keep the startup probes strict while attributing only that known suffix
+    // to the separate poller phase.
+    wait_for_fresh_limited_state(port, &target_id);
 
     {
         let store = SqliteStore::open(&db).expect("open startup store for controlled omission");
