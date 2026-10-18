@@ -1,8 +1,13 @@
 # zestroku-sim design (bead zestroku-m7f-sim-9bt)
 
-Status: design only; the crate does not exist yet. m7f unblocks when m7b closes.
-Entries marked FILL are behaviours not yet sampled from a real device; they must
-be sampled read-only (scrubbed into fixtures) before the matching machine is coded.
+Status (2026-10-18): the `zestroku-sim` library, a read-only `two-devices`
+scenario CLI, and a consolidated real-binary integration walk exist. The
+original bead `zestroku-m7f-sim-9bt` is OPEN; its historical close receipt
+`ev_16f0b9eabf22ab2e520577d3266e908cb1ab45c81e21b7cb2872a48ffd101098`
+does not establish completion of its current full acceptance. This is the
+target design; §9 distinguishes implemented behavior from remaining targets.
+Entries marked `FILL` remain unverified wire behavior and must be sampled
+read-only into scrubbed fixtures before they can be asserted as product behavior.
 
 Ground truth: `ECP-WIRE-DOC.md` §1–§4 and `CROSS_DEVICE_DIFF.md` in
 `skill-library-growth/candidates/edge-library/roku/` (canonical copies live there),
@@ -11,7 +16,8 @@ the scrubbed fixtures in that directory's `fixtures/`, and the existing
 `crates/zestroku-cli/src/transport.rs` (the server template).
 
 ## 0. Shape
-- New crate `zestroku-sim` (lib + `zestroku sim --scenario <name>` subcommand later).
+- Existing library crate `zestroku-sim`; `zestroku sim --scenario two-devices [--json]`
+  implements the bounded read-only walk described in §8.
   deps: asupersync (workspace), zestroku-proto (reuse `query`, parsers for round-trip
   asserts), zestroku-types. No tokio, no reqwest, `#![forbid(unsafe_code)]`.
 - One `SimDevice` = one `Http1Listener` on `127.0.0.1:0` (ephemeral) + an
@@ -84,7 +90,7 @@ Wrapper-not-filter invariant (finding 1) is a property test: for every route R,
   (finding 2: census must be re-walked).
 - **TV-only:** `Tv.tv_channel` machine: `Some(Channel)`/`None`; Express routes it 404.
 
-## 4. Faults (fault-injection acceptance)
+## 4. Faults (target design; current implemented subset in §9)
 - `Suspend(device)`: stop accepting (drop listener) => client sees connect refused.
   `Resume`: rebind SAME port if free (else new port = the IP-change scenario).
 - `Latency(d)`: sleep in handler using asupersync time (no tokio sleep).
@@ -95,51 +101,54 @@ Wrapper-not-filter invariant (finding 1) is a property test: for every route R,
   latency scenarios < 5s for success, > 5s for the Unreachable path (use a tiny test
   override of the timeout rather than a 6 s sleep).
 
-## 5. e2e suite (rch workers, no LAN)
-- Lives in `crates/zestroku-cli/tests/e2e_sim.rs` (or sim/tests) and drives the REAL
-  `zestroku` binary via `CARGO_BIN_EXE_zestroku` against sim ports; each command and
-  response logged as JSON lines to a tempdir artifact (acceptance wording).
-- Matrix (acceptance: devices/info/apps/key/launch): per tier x per device kind.
-  Planted negatives: (1) sim Limited returns the wrong 403 body => tier-gate parser test
-  red; (2) sim returns 403 under Permissive => wrapper invariant red; (3) `key` without
-  confirmation token => refused, no POST observed by the sim (sim exposes
-  `received_requests()` so "no POST arrived" is asserted, not inferred).
-- `ZESTROKU_E2E_LIVE=1` lane: same test fns, endpoint source switches from sim to
-  targets.toml of real devices; skipped (not failed) when unset; documented in
-  docs/LIVE-VERIFY.md-style section; never run in CI.
+## 5. Implemented end-to-end walk and remaining matrix
 
-## 6. SSDP responder (for `devices` without --no-ssdp)
-UDP responder bound to 127.0.0.1:0 answering M-SEARCH with `ST: roku:ecp`,
-`Location: http://127.0.0.1:<port>/`. The CLI's scan target is currently the constant
-SSDP_ADDR in ssdp_io — needs an injectable target (env `ZESTROKU_SSDP_ADDR` or a
-function arg) before the sim can exercise the SSDP leg; flagged as a core touch
-(OrangeShore's ssdp_io) — otherwise e2e covers seeds-only only, and the SSDP socket
-keeps its loopback unit test. Also sim serves two other STs (DIAL, rtvaccel) from a
-second responder to prove the ST filter end-to-end.
+`crates/zestroku-cli/tests/e2e_sim.rs` drives the real binary through explicit-target
+discovery, info, apps, key and launch against a Permissive simulator. It writes a
+temporary `e2e.jsonl` command/response trace with confirmation arguments redacted.
+Additional real-socket coverage remains distributed across `sim_routes.rs`,
+`devices_store.rs`, `devices_scan.rs`, `info_tier.rs`, `mutation_cli.rs`,
+`installed_apps_api.rs`, `mcp_stdio.rs`, and `serve.rs`. This is not implementation
+of every scenario in §8 or a generic scenario-matrix runner.
 
-## 7. Open questions for the m7f claimant
-1. Crate placement for e2e (sim/tests vs cli/tests): pick cli/tests so
-   `CARGO_BIN_EXE_zestroku` is available.
-2. Sim lock primitive: repo rules forbid std Mutex unwraps — use parking-free
-   pattern (handler owns state behind asupersync sync primitive or Arc<std::sync::Mutex>
-   with `lock().map_err`).
-3. Unknown real behaviors to PROBE (read-only, Permissive, now doable): key POST error
-   codes, media-player XML on both devices, `launch` of absent id. Collect scrubbed
-   samples into fixtures/ before coding the machines; machines marked FILL above must
-   not ship until sampled.
-4. m7f dependency: blocked by m7b close. Sim crate scaffold itself (Cargo.toml,
-   workspace member) touches root Cargo.toml + crates/zestroku-sim only; no overlap
-   with active reservations.
+The integration test implements an opt-in `ZESTROKU_E2E_LIVE=1` and
+`ZESTROKU_E2E_TARGET=host:port` branch. That branch performs discovery, info and
+apps reads only, without the simulator tier override or automatically minted
+approval grants; it returns before key and launch. Source implementation is not
+evidence that this exact live branch has been executed. Manual owner-LAN checks
+in `docs/LIVE-VERIFY.md` and separate physical-device read receipts are distinct
+from executing this test branch. Live mutations remain owner-approved and never
+run in CI.
 
-## 8. Scenario table (`zestroku sim --scenario <name>`)
+The current live test branch still seeds fixture device and permissive tier rows
+in its private database before the read walk. It is not a fresh persisted-tier
+discovery/authorization proof and must not be promoted into live mutation proof.
 
-Each scenario is a list of steps over named virtual devices (`express`, `tv`) that the
-e2e suite and a human can both run. A step is `Serve`, `SetTier`, `Suspend`, `Resume`,
-`IpChange`, `Latency`, `Garbage`, or `Expect` (an assertion on the sim's request log).
+## 6. SSDP e2e boundary (separate from SimDevice)
+
+`zestroku-core::ssdp_io::sweep_to` can target a loopback UDP responder, and `ssdp_sweep_loopback.rs` exercises that discovery seam. `SimDevice` itself serves ECP only; it is not an SSDP responder. Normal discovery still uses the fixed multicast destination, so no simulator-to-full-SSDP end-to-end test exists in this tree.
+
+## 7. Superseded m7f implementation questions and remaining FILL items
+
+The original m7f bead remains open. Test placement is `crates/zestroku-cli/tests`;
+`SimDevice` owns state behind `Arc<Mutex<_>>` and recovers poisoned state in
+`Shared::lock`. The §2 route and §4 fault table above remains a design target;
+only sampled wire facts may be treated as device behavior. `sweep_to(target, mx)`
+is independently testable; an SSDP responder inside SimDevice is not implemented.
+
+## 8. Scenario CLI and remaining target matrix
+
+`zestroku sim --scenario two-devices --json` starts an Express and a TV simulator
+and emits eight JSONL observations: device-info, apps, active-app and
+tv-active-channel for each. The Express channel endpoint expects 404; the TV
+expects 200. This uses the real loopback transport directly, not a subprocess
+invocation of each named CLI command, daemon-backed discovery, or full SSDP.
+No other scenario name in this table is exposed by that command. Except for this
+bounded `two-devices` read walk, the table remains a target matrix.
 
 | Scenario | Devices | Steps | What it proves |
 |---|---|---|---|
-| `two-devices` | express + tv, both Permissive | Serve both; `devices`, `info`, `apps`, `active-app` on each | The §1 read workflows: both devices inventoried, TV-only `tv-active-channel` present on the TV and 404 on the express |
+| `two-devices` | express + tv, both Permissive | Implemented CLI: GET device-info, apps, active-app and tv-active-channel on each | Eight loopback observations and expected TV/Express endpoint status; not a complete discovery or daemon workflow |
 | `limited-gate` | express, Limited | Serve; `apps`, `media-player`, `key Home` | Exact 40-byte Limited 403 body and headers; `key` refused locally before any POST (`Expect` no POST received) |
 | `tier-flip` | express, Limited then Permissive | `apps` (403) -> `SetTier(Permissive)` -> `apps` (200) -> `icon/<absent id>` (404) | Wrapper-not-filter: every Limited 403 becomes 200 or 404, never 403; census must be re-walked after a flip |
 | `launch-key` | express, Permissive | `launch <id> --confirm` -> `active-app` -> `key Home --confirm` -> `active-app` | Focus and active-app transitions; launch of an absent id is 404; the action log gets a denied row without `--confirm` and an approved row with it |
@@ -150,6 +159,27 @@ e2e suite and a human can both run. A step is `Serve`, `SetTier`, `Suspend`, `Re
 | `slow-device` | express | `Latency(d)` below then above the transport timeout | Timeout maps to Unreachable, not a hang; success under the timeout |
 | `garbage-body` | express | `Garbage` on `device-info` and `active-app` | Parsers return Malformed; the CLI exits non-zero with a message and no panic |
 
-Each scenario has a planted negative recorded next to its test: break the property it
-proves (wrong 403 body, a Permissive 403, a POST that slips past the gate) and the
-matching test must go red.
+Each remaining scenario requires a planted negative that breaks its intended
+property (for example, wrong 403 body or a POST slipping past the gate). Existing
+route negatives do not establish causal coverage for every target scenario.
+
+## 9. As-built status and remaining parity gaps (2026-10-18)
+
+| Capability | Source state | Evidence boundary |
+|---|---|---|
+| Loopback ECP simulator | Implemented as a library `SimDevice` with a real `Http1Listener`, allow-listed Host, ephemeral port, and request log. | `crates/zestroku-sim/src/lib.rs`, including `SimDevice::start`, `received_requests`, `suspend`, and `resume`. |
+| Tier and basic state | Limited/Permissive, app list, active app, key focus, launch, TV-only endpoint, malformed apps and identity placeholders are modeled. | `crates/zestroku-sim/src/lib.rs`; route and planted-negative coverage is in `crates/zestroku-sim/tests/sim_routes.rs`. |
+| Fault injection | Suspend/resume, tier flip, malformed apps and unknown identity are implemented. | No latency, arbitrary truncation/garbage mode, or IP-change API is present in `SimDevice`. |
+| End-to-end tests | `e2e_sim.rs` is a consolidated real-binary discovery/info/apps/key/launch walk with a temporary redacted JSONL trace; other integration files provide additional coverage. | Simulator branches and opt-in live branch have different scopes; no generic execution of the full §8 matrix is claimed. |
+| Scenario CLI | `sim --scenario two-devices [--json]` is implemented. | `main.rs` routes to `sim_scenario.rs`; eight direct-transport read observations, not CLI discovery or every planned scenario. |
+| Live lane | `e2e_sim.rs` implements the explicit-target live switch for three read commands only. | No live grants or mutations; implementation alone does not prove a successful physical-device execution of that branch. |
+
+The historical m7f close receipt is not fresh evidence for a later revision or
+completion of the reopened original. Current published source `3168e55` passed
+CI run `39120804853`; the full immutable workspace run RCH650 also passed, with
+its exact source overlay recorded in
+`docs/evidence/receipts/frontend-policy-consumers-20261018.receipt.json`.
+Separately, the retrieved macOS binary from `343e325` executed
+`sim --scenario two-devices --json` with eight expected observations; that older
+artifact is not a native macOS build of `3168e55`. None of these results establishes
+all target faults, full SSDP, automated physical-device parity, or a full m7f close.
