@@ -7,6 +7,7 @@ mod mutation_daemon;
 
 use std::path::Path;
 use std::process::{Command, Output};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use mutation_daemon::{http_free_port, mint_http_approval, seed_http_device, start_http_daemon};
