@@ -301,6 +301,38 @@ mod tests {
     #[test]
     fn cli_exits_map_to_registry() {
         const DOCUMENTED_EXITS: [i32; 7] = [1, 2, 3, 4, 5, 6, 7];
+        // Pin each semantic default from docs/ERRORS.md independently of the
+        // implementation; valid public classes alone would miss swapped codes.
+        const DOCUMENTED_DEFAULTS: [(&str, i32); 23] = [
+            ("UNKNOWN_DEVICE", 2),
+            ("AMBIGUOUS_NAME", 4),
+            ("AMBIGUOUS_APP", 2),
+            ("DEVICE_UNREACHABLE", 5),
+            ("DEVICE_SUSPENDED", 5),
+            ("TIER_REFUSED", 3),
+            ("CONFIRMATION_REQUIRED", 4),
+            ("POLICY_DENIED", 5),
+            ("APP_NOT_INSTALLED", 2),
+            ("STORE_UNAVAILABLE", 1),
+            ("LAN_BLOCKED_BY_OS_POLICY", 5),
+            ("DAEMON_UNAVAILABLE", 1),
+            ("DOCTOR_WARN", 6),
+            ("DOCTOR_FAIL", 7),
+            ("DIRECT_CONNECTION_FAILED", 1),
+            ("INVALID_DAEMON_URL", 1),
+            ("INVALID_DEVICE_TARGET", 2),
+            ("PROTOCOL_ERROR", 1),
+            ("INVALID_ARGUMENT", 2),
+            ("CONFIGURATION_ERROR", 1),
+            ("RUNTIME_UNAVAILABLE", 1),
+            ("OUTPUT_ERROR", 1),
+            ("INSTALL_FAILED", 5),
+        ];
+        assert_eq!(
+            ErrorCode::all().map(|code| (code.as_str(), code.cli_exit())),
+            DOCUMENTED_DEFAULTS,
+            "semantic defaults must match the documented numeric contract"
+        );
         for code in ErrorCode::all() {
             assert!(
                 DOCUMENTED_EXITS.contains(&code.cli_exit()),

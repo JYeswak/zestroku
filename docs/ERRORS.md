@@ -46,6 +46,8 @@ Missing, malformed or unregistered daemon semantic metadata is `PROTOCOL_ERROR`,
 
 Exit **0** means the command's success contract; it does not represent an error code. Public failure classes **1–7** are catalogued. The additive snapshot retains the original `TIER_REFUSED` spelling; renaming it must fail the snapshot. Unknown/unmapped failure classes must not be silently accepted by the mapping checks.
 
+The mapping regression pins each semantic code's documented default, not merely membership in a valid exit class: swapping two valid defaults is still a contract violation. Contextual exits remain the responsibility of each operation's consumer regression.
+
 ## One failure, three frontends
 
 The parity contract uses a real missing-inventory target: HTTP responds non-success with `UNKNOWN_DEVICE`; the MCP read tool preserves that same code and metadata; the real CLI read reports `[UNKNOWN_DEVICE]` on stderr, leaves stdout empty, and retains its read-failure exit **1**. This is one shared failure, not three independently fabricated response fixtures.
