@@ -27,9 +27,22 @@ impl Drop for Daemon {
 }
 
 fn start(db: &std::path::Path, port: u16) -> Daemon {
+    // Isolated from LAN discovery: public --no-ssdp plus an explicit empty
+    // target file, so a Mac running this test never probes real devices. The
+    // store-seeded sim row keeps the daemon's own poller active.
+    let targets = db.with_extension("targets.toml");
+    std::fs::write(&targets, "target = []\n").expect("write isolated empty startup targets");
     let child = Command::new(env!("CARGO_BIN_EXE_zestroku"))
         .env("ZESTROKU_DB", db)
-        .args(["serve", "--bind", &format!("127.0.0.1:{port}")])
+        .env_remove("ZESTROKU_TARGETS")
+        .args([
+            "serve",
+            "--bind",
+            &format!("127.0.0.1:{port}"),
+            "--no-ssdp",
+            "--targets",
+        ])
+        .arg(&targets)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
