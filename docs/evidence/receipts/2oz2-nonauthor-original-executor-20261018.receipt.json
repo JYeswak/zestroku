@@ -1,0 +1,20 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_fa472f5770ac1ffd7c75af690c0a81c1c777058ba4803e8c9c3aeec85e99a224",
+ "limitations": [
+  "Original executor seam only. Stock local Rust suites actually run and missing Kit registration stays UNKNOWN. Full workspace and overall mission remain RED/UNKNOWN; no installed resident release or physical-device acceptance. Native remote control proves RCH_REQUIRE_REMOTE environment at actual adapter, not a new remote compiler run."
+ ],
+ "operation": "zestroku-2oz.2 non-author original executor acceptance",
+ "parameters": {
+  "bead": "zestroku-2oz.2",
+  "implementer": "BeigeLeopard",
+  "source": "424544f01df59fb50e6beb47934d56a83c21465b",
+  "verifier": "JadeDuck"
+ },
+ "producer": "JadeDuck",
+ "result_ref": {
+  "bytes": 69321,
+  "sha256": "207069869e23c80100ac51cdf0df43d0fa6004bb2cd8709f1c0951240937f880"
+ }
+}
