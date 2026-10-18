@@ -19,13 +19,13 @@ fn raw_http_cannot_spend_a_cli_bound_grant() {
     let api_port = http_free_port();
     let api_host = format!("127.0.0.1:{api_port}");
     let daemon_url = format!("http://{api_host}");
-    let _daemon = start_http_daemon(&db, api_port);
     let token = mint_http_approval(
         &db,
         sim.port(),
         &launch(1001),
         zestroku_core::mutation::ClientPrincipal::Cli,
     );
+    let _daemon = start_http_daemon(&db, api_port);
     let path = format!("/v1/devices/{target}/launch");
 
     // The raw HTTP helper spoofs X-Zestroku-Client: cli, but the omitted body
@@ -98,13 +98,13 @@ fn http_bound_grant_refuses_a_forged_body_client_without_consumption() {
     let target = seed_http_device(&db, sim.port());
     let api_port = http_free_port();
     let api_host = format!("127.0.0.1:{api_port}");
-    let _daemon = start_http_daemon(&db, api_port);
     let token = mint_http_approval(
         &db,
         sim.port(),
         &launch(1001),
         ClientPrincipal::LoopbackHttp,
     );
+    let _daemon = start_http_daemon(&db, api_port);
     let path = format!("/v1/devices/{target}/launch");
 
     let (status, headers, body) = post_json_to_daemon(

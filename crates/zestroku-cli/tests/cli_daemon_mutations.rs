@@ -69,7 +69,8 @@ fn cli_mutations_use_daemon_authority_and_completed_audit() {
     let target = seed_http_device(&daemon_db, sim.port());
     let api_port = http_free_port();
     let daemon_url = format!("http://127.0.0.1:{api_port}");
-    let _daemon = start_http_daemon(&daemon_db, api_port);
+    // Provision fixture grants before the resident poller can contend for the store.
+    // This consumer test does not promise contention-free approval issuance.
     let launch_token = mint_http_approval(
         &daemon_db,
         sim.port(),
@@ -88,6 +89,7 @@ fn cli_mutations_use_daemon_authority_and_completed_audit() {
         &keypress_raw("Home"),
         zestroku_core::mutation::ClientPrincipal::Cli,
     );
+    let _daemon = start_http_daemon(&daemon_db, api_port);
 
     let launched = run_cli(
         &client_db,
@@ -343,13 +345,13 @@ fn cli_app_name_launch_preserves_requested_name_in_daemon_audit() {
     let target = seed_http_device(&daemon_db, sim.port());
     let api_port = http_free_port();
     let daemon_url = format!("http://127.0.0.1:{api_port}");
-    let _daemon = start_http_daemon(&daemon_db, api_port);
     let token = mint_http_approval(
         &daemon_db,
         sim.port(),
         &launch(1001),
         zestroku_core::mutation::ClientPrincipal::Cli,
     );
+    let _daemon = start_http_daemon(&daemon_db, api_port);
     let private_name = format!("label-{token}");
     for with_confirmation in [false, true] {
         let mut args = vec!["launch", target.as_str(), "--app", private_name.as_str()];
@@ -718,13 +720,13 @@ fn unsupported_daemon_policy_refuses_without_dispatch_or_spending_approval() {
     let target = seed_http_device(&daemon_db, sim.port());
     let api_port = http_free_port();
     let daemon_url = format!("http://127.0.0.1:{api_port}");
-    let _daemon = start_http_daemon(&daemon_db, api_port);
     let token = mint_http_approval(
         &daemon_db,
         sim.port(),
         &launch(1001),
         zestroku_core::mutation::ClientPrincipal::Cli,
     );
+    let _daemon = start_http_daemon(&daemon_db, api_port);
     let policy_path = directory.path().join("policy.toml");
     std::fs::write(&policy_path, "[quiet_hours]\nenabled = true\n")
         .expect("write unsupported restriction");
