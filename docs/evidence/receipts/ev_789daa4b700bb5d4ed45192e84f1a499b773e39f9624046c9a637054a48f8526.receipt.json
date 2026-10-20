@@ -1,0 +1,25 @@
+{
+ "authority": "test",
+ "confidence": "observed",
+ "evidence_id": "ev_789daa4b700bb5d4ed45192e84f1a499b773e39f9624046c9a637054a48f8526",
+ "limitations": [
+  "Remote Linux RCH only; not hosted CI, Darwin artifact, or live Roku proof.",
+  "First attempt killed by remote 30-min deadline during cold -j1 compile (exit 137, no test output); retry on warm pool green.",
+  "CLI smoke: remote binary ran exit 0 but reports version unknown and wrapper returned 102 on ELF artifact sync; no source binding from --version, no LAN scan performed.",
+  "No physical-LAN or full .12 security completion claim from this leaf."
+ ],
+ "operation": "zestroku.ssdp-sweep.nonauthor-rerun",
+ "parameters": {
+  "base": "65ca080b692bdf6d12354bc66d488e4a99d95f86",
+  "bead_id": "zestroku-zestroku-doctrine-a0h.15",
+  "command": "rch exec --base 65ca080 --clean-overlay --no-overlay -- cargo test -j 1 --locked -p zestroku-core --lib --test ssdp_sweep_loopback -- --nocapture",
+  "integration_result": "3 passed; 0 failed",
+  "lib_result": "41 passed; 0 failed",
+  "overlay_fingerprint": "fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195"
+ },
+ "producer": "SandyOrchid",
+ "result_ref": {
+  "bytes": 11280,
+  "sha256": "ddabb49cf29a3145c32b37d18f0fc267c7ba3c4d3cc71eb9676d6cda07a0a8e6"
+ }
+}

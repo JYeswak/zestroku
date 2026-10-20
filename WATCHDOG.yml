@@ -1,0 +1,5 @@
+advisors:
+  - name: default
+    enabled: false
+  - name: Advisor 2
+    model: openai-codex/gpt-6.1-sol:medium
