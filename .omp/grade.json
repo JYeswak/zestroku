@@ -1,0 +1,1 @@
+{"test_command": ["env", "-u", "RCH_WORKER", "RCH_REQUIRE_REMOTE=1", "rch", "exec", "--base", "{sha}", "--clean-overlay", "--no-overlay", "--", "cargo", "test", "-j", "2", "--locked", "--workspace"]}
